@@ -72,6 +72,56 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .get(
+    "/:phoneNumber/fetch/jid/:jitToFetch",
+    async ({ params }) => {
+      const { phoneNumber, jitToFetch } = params;
+      try {
+        const fetchResponse = await baileys.fetchStatus(
+          phoneNumber,
+          jitToFetch,
+        );
+
+        return {
+          success: true,
+          data: fetchResponse,
+        };
+      } catch (e) {
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not found", { status: 401 });
+        }
+        if (e instanceof PhoneStatusNotFoundError) {
+          return new Response("Status not found", { status: 404 });
+        }
+        throw e;
+      }
+    },
+    {
+      params: t.Object({
+        phoneNumber: t.String({
+          minLength: 13,
+          maxLength: 14,
+          description: "Phone number for connection",
+        }),
+        jitToFetch: t.String({
+          description: "Jid to fetch status from",
+        }),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Fetch response",
+          },
+          401: {
+            description: "Phone number not found",
+          },
+          404: {
+            description: "Status not found",
+          },
+        },
+      },
+    },
+  )
   .post(
     "/:phoneNumber",
     async ({ params, body }) => {
