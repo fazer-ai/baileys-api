@@ -7,3 +7,9 @@ export const phoneNumberParams = t.Object({
     description: "Phone number for connection",
   }),
 });
+
+export class PhoneStatusNotFoundError extends Error {
+  constructor() {
+    super("Status requested not found");
+  }
+}

@@ -3,7 +3,10 @@ import {
   BaileysAlreadyConnectedError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import { phoneNumberParams } from "@/controller/common";
+import {
+  PhoneStatusNotFoundError,
+  phoneNumberParams,
+} from "@/controller/common";
 import { authMiddleware } from "@/middleware/auth";
 import { jidEncode } from "@whiskeysockets/baileys";
 import Elysia, { t } from "elysia";
@@ -17,6 +20,58 @@ const connectionsController = new Elysia({
 })
   // TODO: Use auth data to limit access to existing connections.
   .use(authMiddleware)
+  .get(
+    "/:phoneNumber/fetch/phone/:phoneNumberToFetch",
+    async ({ params }) => {
+      const { phoneNumber, phoneNumberToFetch } = params;
+      try {
+        const fetchResponse = await baileys.fetchStatus(
+          phoneNumber,
+          jidEncode(phoneNumberToFetch, "s.whatsapp.net"),
+        );
+
+        return {
+          success: true,
+          data: fetchResponse,
+        };
+      } catch (e) {
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not found", { status: 401 });
+        }
+        if (e instanceof PhoneStatusNotFoundError) {
+          return new Response("Status not found", { status: 404 });
+        }
+        throw e;
+      }
+    },
+    {
+      params: t.Object({
+        phoneNumber: t.String({
+          minLength: 13,
+          maxLength: 14,
+          description: "Phone number for connection",
+        }),
+        phoneNumberToFetch: t.String({
+          minLength: 13,
+          maxLength: 14,
+          description: "Phone number to fetch status from",
+        }),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Fetch response",
+          },
+          401: {
+            description: "Phone number not found",
+          },
+          404: {
+            description: "Status not found",
+          },
+        },
+      },
+    },
+  )
   .post(
     "/:phoneNumber",
     async ({ params, body }) => {
@@ -72,18 +127,25 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { type, recipient, message } = body;
 
-      if (type !== "text") {
-        return new Response("Only text messages are supported", {
-          status: 400,
+      try {
+        if (type !== "text") {
+          return new Response("Only text messages are supported", {
+            status: 400,
+          });
+        }
+
+        const result = await baileys.sendMessage(phoneNumber, {
+          toJid: jidEncode(recipient, "s.whatsapp.net"),
+          conversation: message,
         });
+
+        return { success: true, data: result };
+      } catch (e) {
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not found", { status: 404 });
+        }
+        throw e;
       }
-
-      const result = await baileys.sendMessage(phoneNumber, {
-        toJid: jidEncode(recipient, "s.whatsapp.net"),
-        conversation: message,
-      });
-
-      return { success: true, data: result };
     },
     {
       params: phoneNumberParams,
@@ -105,6 +167,12 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Message sent successfully",
+          },
+          400: {
+            description: "Only text messages are supported",
+          },
+          404: {
+            description: "Phone number not found",
           },
         },
       },

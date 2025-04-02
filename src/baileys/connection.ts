@@ -1,5 +1,6 @@
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import config from "@/config";
+import { PhoneStatusNotFoundError } from "@/controller/common";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
@@ -93,6 +94,19 @@ export class BaileysConnection {
     this.socket.ev.on("message-receipt.update", (event) =>
       this.handleMessageReceiptUpdate(event),
     );
+  }
+
+  async fetchStatus(jid: string) {
+    if (!this.socket) {
+      throw new BaileysNotConnectedError();
+    }
+
+    const status = await this.socket.fetchStatus(jid);
+    if (!status) {
+      throw new PhoneStatusNotFoundError();
+    }
+
+    return status;
   }
 
   private async close() {

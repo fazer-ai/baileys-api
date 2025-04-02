@@ -57,6 +57,15 @@ export class BaileysConnectionsHandler {
     this.connections[phoneNumber] = connection;
   }
 
+  async fetchStatus(phoneNumber: string, jid: string) {
+    const connection = this.connections[phoneNumber];
+    if (!connection) {
+      throw new BaileysNotConnectedError();
+    }
+
+    return await connection.fetchStatus(jid);
+  }
+
   sendPresenceUpdate(
     phoneNumber: string,
     { type, toJid }: { type: WAPresence; toJid?: string | undefined },
