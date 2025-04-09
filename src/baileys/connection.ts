@@ -36,7 +36,7 @@ export class BaileysNotConnectedError extends Error {
 }
 
 export class BaileysConnection {
-  static LOGGER_OMIT_KEYS = ["qr", "qrDataUrl"];
+  private LOGGER_OMIT_KEYS = ["qr", "qrDataUrl"];
 
   private clientName: string;
   private phoneNumber: string;
@@ -244,7 +244,7 @@ export class BaileysConnection {
     },
   ) {
     const sanitizedPayload = deepSanitizeObject(payload, {
-      omitKeys: BaileysConnection.LOGGER_OMIT_KEYS,
+      omitKeys: this.LOGGER_OMIT_KEYS,
     });
 
     logger.debug(
