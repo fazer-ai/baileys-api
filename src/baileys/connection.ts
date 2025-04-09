@@ -260,7 +260,10 @@ export class BaileysConnection {
     let delay = retryInterval;
 
     while (attempt <= maxRetries) {
-      const { response, error } = await this.sendPayload(payload, options);
+      const { response, error } = await this.sendPayloadToWebhook(
+        payload,
+        options,
+      );
       if (response) {
         if (response.ok) {
           logger.debug(
@@ -311,7 +314,7 @@ export class BaileysConnection {
     );
   }
 
-  private async sendPayload(
+  private async sendPayloadToWebhook(
     payload: {
       event: keyof BaileysEventMap;
       data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
