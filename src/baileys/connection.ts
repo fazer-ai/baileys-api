@@ -202,10 +202,16 @@ export class BaileysConnection {
   }
 
   private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
-    this.sendToWebhook({
-      event: "messages.update",
-      data,
-    });
+    this.sendToWebhook(
+      {
+        event: "messages.update",
+        data,
+      },
+      {
+        awaitResponse: true,
+        retryDelayMs: 10000,
+      },
+    );
   }
 
   private handleMessageReceiptUpdate(
