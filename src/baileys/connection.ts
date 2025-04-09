@@ -1,5 +1,6 @@
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import config from "@/config";
+import { asyncSleep } from "@/helpers/asyncSleep";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
@@ -33,14 +34,9 @@ export class BaileysNotConnectedError extends Error {
     super("Phone number not connected");
   }
 }
-export class WebhookRetryExceededError extends Error {
-  constructor(retries: number) {
-    super(`Event exceeded maximum retry attempts (${retries}).`);
-  }
-}
 
 export class BaileysConnection {
-  private LOGGER_OMIT_KEYS = ["qr", "qrDataUrl"];
+  static LOGGER_OMIT_KEYS = ["qr", "qrDataUrl"];
 
   private clientName: string;
   private phoneNumber: string;
@@ -209,7 +205,6 @@ export class BaileysConnection {
       },
       {
         awaitResponse: true,
-        retryDelayMs: 10000,
       },
     );
   }
@@ -246,79 +241,87 @@ export class BaileysConnection {
     },
     options?: {
       awaitResponse?: boolean;
-      retries?: number;
-      retryDelayMs?: number;
-      retryMaxDelayMs?: number;
-      retryMultiplier?: number;
     },
-  ): Promise<Response | null> {
-    const policy = {
-      awaitResponse: false,
-      retries: 3,
-      retryDelayMs: 5000,
-      retryMaxDelayMs: 30000,
-      retryMultiplier: 2,
-      ...options,
-    };
-
+  ) {
     const sanitizedPayload = deepSanitizeObject(payload, {
-      omitKeys: this.LOGGER_OMIT_KEYS,
+      omitKeys: BaileysConnection.LOGGER_OMIT_KEYS,
     });
 
-    if (!policy.awaitResponse) {
-      logger.debug(
-        "[%s] [sendToWebhook] %o",
-        this.phoneNumber,
-        sanitizedPayload,
-      );
-      return await this.sendPayload(payload);
-    }
-
     logger.debug(
-      "[%s] [sendToWebhook] (%o) %o",
+      "[%s] [sendToWebhook] (options: %o) payload=%o",
       this.phoneNumber,
-      policy,
+      options || {},
       sanitizedPayload,
     );
 
+    const { maxRetries, retryInterval, backoffFactor } =
+      config.webhook.retryPolicy;
     let attempt = 0;
-    let delay = policy.retryDelayMs;
+    let delay = retryInterval;
 
-    while (true) {
-      try {
-        attempt++;
-
-        const response = await this.sendPayload(payload);
-        if (response && response.status < 400) {
-          return response;
-        }
-
-        if (attempt >= policy.retries) {
-          logger.error(
-            `[%s] [sendToWebhook] %o - Exhausted ${policy.retries} retries. Giving up.`,
+    while (attempt <= maxRetries) {
+      const { response, error } = await this.sendPayload(payload, options);
+      if (response) {
+        if (response.ok) {
+          logger.debug(
+            "[%s] [sendToWebhook] [SUCCESS] payload=%o response=%o",
             this.phoneNumber,
             sanitizedPayload,
+            response,
           );
-          throw new WebhookRetryExceededError(policy.retries);
+          return response;
         }
+        logger.error(
+          "[%s] [sendToWebhook] [ERROR] payload=%o response=%o",
+          this.phoneNumber,
+          sanitizedPayload,
+          { status: response.status, statusText: response.statusText },
+        );
+      }
 
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        delay *= policy.retryMultiplier;
-        delay = delay < policy.retryMaxDelayMs ? delay : policy.retryMaxDelayMs;
-      } catch (error) {
-        const e = error as Error;
-        logger.error("Failed to send to webhook: %s", e.stack || e.message);
-        return null;
+      if (error) {
+        logger.error(
+          "[%s] [sendToWebhook] [ERROR] payload=%o error=%o",
+          this.phoneNumber,
+          sanitizedPayload,
+          error.stack || error.message,
+        );
+      }
+
+      attempt++;
+      if (attempt <= maxRetries) {
+        logger.info(
+          "[%s] [sendToWebhook] [RETRYING] payload=%o attempt=%d/%d delay=%dms",
+          this.phoneNumber,
+          sanitizedPayload,
+          attempt,
+          maxRetries,
+          delay,
+        );
+        const jitter = Math.floor(Math.random() * 1000);
+        await asyncSleep(delay + jitter);
+        delay *= backoffFactor;
       }
     }
+
+    logger.error(
+      "[%s] [sendToWebhook] [FAILED] payload=%o",
+      this.phoneNumber,
+      sanitizedPayload,
+    );
   }
 
-  private async sendPayload(payload: {
-    event: keyof BaileysEventMap;
-    data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
-  }): Promise<Response | null> {
+  private async sendPayload(
+    payload: {
+      event: keyof BaileysEventMap;
+      data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
+    },
+    options?: {
+      awaitResponse?: boolean;
+    },
+  ): Promise<{ response?: Response; error?: Error }> {
     try {
-      return await fetch(this.webhookUrl, {
+      const response = await fetch(this.webhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -326,12 +329,12 @@ export class BaileysConnection {
         body: JSON.stringify({
           ...payload,
           webhookVerifyToken: this.webhookVerifyToken,
+          awaitResponse: options?.awaitResponse,
         }),
       });
+      return { response };
     } catch (error) {
-      const e = error as Error;
-      logger.error("Failed to send to webhook:\n%s", e.stack || e.message);
-      return null;
+      return { error: error as Error };
     }
   }
 }
