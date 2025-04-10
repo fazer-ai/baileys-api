@@ -322,6 +322,7 @@ export class BaileysConnection {
     payload: {
       event: keyof BaileysEventMap;
       data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
+      media?: (string | null)[];
     },
     options?: {
       awaitResponse?: boolean;
