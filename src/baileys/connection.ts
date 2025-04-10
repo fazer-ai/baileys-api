@@ -14,6 +14,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
+import { MediaHandler } from "./mediaHandler";
 
 export interface BaileysConnectionOptions {
   clientName?: string;
@@ -190,10 +191,12 @@ export class BaileysConnection {
     });
   }
 
-  private handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+  private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    const media = await new MediaHandler(data).process();
     this.sendToWebhook({
       event: "messages.upsert",
       data,
+      media,
     });
   }
 
@@ -238,6 +241,7 @@ export class BaileysConnection {
     payload: {
       event: keyof BaileysEventMap;
       data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
+      media?: (string | null)[];
     },
     options?: {
       awaitResponse?: boolean;
