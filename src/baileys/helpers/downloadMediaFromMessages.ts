@@ -48,6 +48,7 @@ function extractMediaMessage(message: proto.IMessage): {
 } {
   const mediaMapping: [keyof proto.IMessage, MediaType][] = [
     ["imageMessage", "image"],
+    ["stickerMessage", "image"],
     ["videoMessage", "video"],
     ["audioMessage", "audio"],
     ["documentMessage", "document"],
