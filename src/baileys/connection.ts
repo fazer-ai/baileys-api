@@ -37,7 +37,21 @@ export class BaileysNotConnectedError extends Error {
 }
 
 export class BaileysConnection {
-  private LOGGER_OMIT_KEYS = ["qr", "qrDataUrl"];
+  private LOGGER_OMIT_KEYS = [
+    "qr",
+    "qrDataUrl",
+    "fileSha256",
+    "jpegThumbnail",
+    "fileEncSha256",
+    "scansSidecar",
+    "midQualityFileSha256",
+    "mediaKey",
+    "senderKeyHash",
+    "recipientKeyHash",
+    "messageSecret",
+    "thumbnailSha256",
+    "thumbnailEncSha256",
+  ];
 
   private clientName: string;
   private phoneNumber: string;
