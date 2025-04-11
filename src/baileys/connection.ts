@@ -1,3 +1,4 @@
+import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
@@ -14,7 +15,6 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
-import { MediaHandler } from "./mediaHandler";
 
 export interface BaileysConnectionOptions {
   clientName?: string;
@@ -192,11 +192,11 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
-    const media = await new MediaHandler(data).process();
+    const media = await downloadMediaFromMessages(data.messages);
     this.sendToWebhook({
       event: "messages.upsert",
       data,
-      media,
+      extra: { media },
     });
   }
 
@@ -241,7 +241,7 @@ export class BaileysConnection {
     payload: {
       event: keyof BaileysEventMap;
       data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
-      media?: (string | null)[];
+      extra?: unknown;
     },
     options?: {
       awaitResponse?: boolean;
@@ -322,7 +322,7 @@ export class BaileysConnection {
     payload: {
       event: keyof BaileysEventMap;
       data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
-      media?: (string | null)[];
+      extra?: unknown;
     },
     options?: {
       awaitResponse?: boolean;
