@@ -23,7 +23,7 @@
     "@biomejs/biome": "1.9.4",
     "@types/qrcode": "^1.5.5",
     "bun-types": "latest",
-    "pino-caller": "^3.4.0"
+    "pino-caller": "^4.0.0"
   },
   "patchedDependencies": {
     "@whiskeysockets/baileys@6.7.16": "patches/@whiskeysockets%2Fbaileys@6.7.16.patch",
