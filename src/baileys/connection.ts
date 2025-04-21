@@ -5,11 +5,13 @@ import { asyncSleep } from "@/helpers/asyncSleep";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
+  type AnyMessageContent,
   type AuthenticationState,
   type BaileysEventMap,
-  type WAPresence,
   type ConnectionState,
+  type MiscMessageGenerationOptions,
   type WAConnectionState,
+  type WAPresence,
   Browsers,
   DisconnectReason,
   makeCacheableSignalKeyStore,
@@ -127,12 +129,16 @@ export class BaileysConnection {
     await this.close();
   }
 
-  sendMessage(remoteJid: string, conversation: string) {
+  sendMessage(
+    remoteJid: string,
+    messageContent: AnyMessageContent,
+    options?: MiscMessageGenerationOptions,
+  ) {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }
 
-    return this.socket.sendMessage(remoteJid, { text: conversation });
+    return this.socket.sendMessage(remoteJid, messageContent, options);
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {

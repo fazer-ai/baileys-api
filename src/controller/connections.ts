@@ -70,20 +70,67 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-message",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { type, recipient, message } = body;
+      const {
+        type,
+        recipient,
+        messageContent: rawMessageContent,
+        options,
+      } = body;
+      const supportedTypes = [
+        "text",
+        "audio",
+        "image",
+        "video",
+        "document",
+        "sticker",
+      ];
 
-      if (type !== "text") {
-        return new Response("Only text messages are supported", {
-          status: 400,
-        });
+      if (!supportedTypes.includes(type)) {
+        return new Response("Unsupported message type", { status: 400 });
       }
 
-      const result = await baileys.sendMessage(phoneNumber, {
-        toJid: jidEncode(recipient, "s.whatsapp.net"),
-        conversation: message,
-      });
+      const messageContent = { ...rawMessageContent };
 
-      return { success: true, data: result };
+      switch (type) {
+        case "audio": {
+          messageContent.audio = Buffer.from(messageContent.audio, "base64");
+          messageContent.ptt = true;
+          break;
+        }
+        case "image": {
+          messageContent.image = Buffer.from(messageContent.image, "base64");
+          break;
+        }
+        case "video": {
+          messageContent.video = Buffer.from(messageContent.video, "base64");
+          break;
+        }
+        case "document": {
+          messageContent.document = Buffer.from(
+            messageContent.document,
+            "base64",
+          );
+          break;
+        }
+        case "sticker": {
+          messageContent.sticker = Buffer.from(
+            messageContent.sticker,
+            "base64",
+          );
+          break;
+        }
+        default:
+          break;
+      }
+
+      return {
+        success: true,
+        data: await baileys.sendMessage(phoneNumber, {
+          toJid: jidEncode(recipient, "s.whatsapp.net"),
+          messageContent,
+          options,
+        }),
+      };
     },
     {
       params: phoneNumberParams,
@@ -96,10 +143,8 @@ const connectionsController = new Elysia({
           description: "Recipient phone number",
           examples: ["+1234567890"],
         }),
-        message: t.String({
-          description: "Message to be sent",
-          examples: ["Hello, this is a test message"],
-        }),
+        messageContent: t.Any(),
+        options: t.Optional(t.Any()),
       }),
       detail: {
         responses: {
