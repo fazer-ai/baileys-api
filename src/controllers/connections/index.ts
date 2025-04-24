@@ -3,10 +3,11 @@ import {
   BaileysAlreadyConnectedError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import { phoneNumberParams } from "@/controller/common";
-import { authMiddleware } from "@/middleware/auth";
+import { buildMessageContent } from "@/controllers/connections/helpers";
+import { authMiddleware } from "@/middlewares/auth";
 import { jidEncode } from "@whiskeysockets/baileys";
 import Elysia, { t } from "elysia";
+import { anyMessageContent, phoneNumberParams } from "./types";
 
 const connectionsController = new Elysia({
   prefix: "/connections",
@@ -70,81 +71,24 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-message",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const {
-        type,
-        recipient,
-        messageContent: rawMessageContent,
-        options,
-      } = body;
-      const supportedTypes = [
-        "text",
-        "audio",
-        "image",
-        "video",
-        "document",
-        "sticker",
-      ];
-
-      if (!supportedTypes.includes(type)) {
-        return new Response("Unsupported message type", { status: 400 });
-      }
-
-      const messageContent = { ...rawMessageContent };
-
-      switch (type) {
-        case "audio": {
-          messageContent.audio = Buffer.from(messageContent.audio, "base64");
-          messageContent.ptt = true;
-          break;
-        }
-        case "image": {
-          messageContent.image = Buffer.from(messageContent.image, "base64");
-          break;
-        }
-        case "video": {
-          messageContent.video = Buffer.from(messageContent.video, "base64");
-          break;
-        }
-        case "document": {
-          messageContent.document = Buffer.from(
-            messageContent.document,
-            "base64",
-          );
-          break;
-        }
-        case "sticker": {
-          messageContent.sticker = Buffer.from(
-            messageContent.sticker,
-            "base64",
-          );
-          break;
-        }
-        default:
-          break;
-      }
+      const { recipient, messageContent } = body;
 
       return {
         success: true,
         data: await baileys.sendMessage(phoneNumber, {
           toJid: jidEncode(recipient, "s.whatsapp.net"),
-          messageContent,
-          options,
+          messageContent: buildMessageContent(messageContent),
         }),
       };
     },
     {
       params: phoneNumberParams,
       body: t.Object({
-        type: t.String({
-          description: "Type of message to be sent",
-          examples: ["text"],
-        }),
         recipient: t.String({
           description: "Recipient phone number",
           examples: ["+1234567890"],
         }),
-        messageContent: t.Any(),
-        options: t.Optional(t.Any()),
+        messageContent: anyMessageContent,
       }),
       detail: {
         responses: {

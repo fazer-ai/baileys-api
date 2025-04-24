@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import redis, { initializeRedis } from "@/lib/redis";
-import { REDIS_KEY_PREFIX } from "@/middleware/auth";
+import { REDIS_KEY_PREFIX } from "@/middlewares/auth";
 
 async function createApiKey(role: "user" | "admin", key?: string) {
   const apiKey = key || crypto.randomBytes(24).toString("hex");

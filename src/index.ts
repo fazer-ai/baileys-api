@@ -1,8 +1,8 @@
 import baileys from "@/baileys";
 import config from "@/config";
-import adminController from "@/controller/admin";
-import connectionsController from "@/controller/connections";
-import statusController from "@/controller/status";
+import adminController from "@/controllers/admin";
+import connectionsController from "@/controllers/connections";
+import statusController from "@/controllers/status";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
 import swagger from "@elysiajs/swagger";

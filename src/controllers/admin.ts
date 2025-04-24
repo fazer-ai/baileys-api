@@ -1,5 +1,5 @@
 import baileys from "@/baileys";
-import { adminGuard } from "@/middleware/auth";
+import { adminGuard } from "@/middlewares/auth";
 import Elysia from "elysia";
 
 const adminController = new Elysia({

@@ -1,4 +1,4 @@
-import { authMiddleware } from "@/middleware/auth";
+import { authMiddleware } from "@/middlewares/auth";
 import Elysia from "elysia";
 
 const statusController = new Elysia({
