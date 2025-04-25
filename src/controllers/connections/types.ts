@@ -30,5 +30,6 @@ export const anyMessageContent = t.Union([
   t.Object({
     audio: t.String({ description: "Base64 encoded audio data" }),
     mimetype: t.Optional(t.String()),
+    ptt: t.Optional(t.Boolean()),
   }),
 ]);

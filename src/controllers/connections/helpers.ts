@@ -30,8 +30,9 @@ export function buildMessageContent(
     return {
       ...content,
       audio: Buffer.from(content.audio, "base64"),
-      ptt: true,
     };
   }
+
+  // NOTE: This should never happen
   throw new Error("Invalid message content");
 }
