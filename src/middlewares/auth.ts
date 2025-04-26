@@ -1,3 +1,4 @@
+import config from "@/config";
 import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 import type { Elysia } from "elysia";
@@ -37,6 +38,10 @@ export const authMiddleware = (app: Elysia) =>
       }
     })
     .onBeforeHandle(({ auth, set }) => {
+      if (config.env === "development") {
+        return;
+      }
+
       if (!auth) {
         set.status = 401;
         return {
