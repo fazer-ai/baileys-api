@@ -8,6 +8,13 @@ export const phoneNumberParams = t.Object({
   }),
 });
 
+const iMessageKey = t.Object({
+  id: t.Optional(t.String()),
+  remoteJid: t.Optional(t.String()),
+  fromMe: t.Optional(t.Boolean()),
+  participant: t.Optional(t.String()),
+});
+
 export const anyMessageContent = t.Union([
   t.Object({
     text: t.String(),
@@ -34,7 +41,7 @@ export const anyMessageContent = t.Union([
   }),
   t.Object({
     react: t.Object({
-      key: t.Object({ id: t.String() }),
+      key: iMessageKey,
       text: t.String(),
     }),
   }),

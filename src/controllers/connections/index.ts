@@ -5,7 +5,6 @@ import {
 } from "@/baileys/connection";
 import { buildMessageContent } from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
-import { jidEncode } from "@whiskeysockets/baileys";
 import Elysia, { t } from "elysia";
 import { anyMessageContent, phoneNumberParams } from "./types";
 
@@ -71,12 +70,12 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-message",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { recipient, messageContent } = body;
+      const { jid, messageContent } = body;
 
       return {
         success: true,
         data: await baileys.sendMessage(phoneNumber, {
-          toJid: jidEncode(recipient, "s.whatsapp.net"),
+          toJid: jid,
           messageContent: buildMessageContent(messageContent),
         }),
       };
@@ -84,9 +83,9 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        recipient: t.String({
-          description: "Recipient phone number",
-          examples: ["+1234567890"],
+        jid: t.String({
+          description: "Recipient jid",
+          examples: ["551101234567@s.whatsapp.net"],
         }),
         messageContent: anyMessageContent,
       }),
