@@ -32,6 +32,9 @@ export function buildMessageContent(
       audio: Buffer.from(content.audio, "base64"),
     };
   }
+  if ("react" in content) {
+    return { react: content.react };
+  }
 
   // NOTE: This should never happen
   throw new Error("Invalid message content");

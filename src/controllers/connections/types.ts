@@ -32,4 +32,10 @@ export const anyMessageContent = t.Union([
     mimetype: t.Optional(t.String()),
     ptt: t.Optional(t.Boolean()),
   }),
+  t.Object({
+    react: t.Object({
+      key: t.Object({ id: t.String() }),
+      text: t.String(),
+    }),
+  }),
 ]);
