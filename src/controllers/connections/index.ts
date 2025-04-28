@@ -75,7 +75,7 @@ const connectionsController = new Elysia({
       return {
         success: true,
         data: await baileys.sendMessage(phoneNumber, {
-          toJid: jid,
+          jid,
           messageContent: buildMessageContent(messageContent),
         }),
       };

@@ -130,7 +130,7 @@ export class BaileysConnection {
   }
 
   sendMessage(
-    remoteJid: string,
+    jid: string,
     messageContent: AnyMessageContent,
     options?: MiscMessageGenerationOptions,
   ) {
@@ -138,7 +138,7 @@ export class BaileysConnection {
       throw new BaileysNotConnectedError();
     }
 
-    return this.socket.sendMessage(remoteJid, messageContent, options);
+    return this.socket.sendMessage(jid, messageContent, options);
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {

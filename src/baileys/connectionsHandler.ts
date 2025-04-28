@@ -72,10 +72,10 @@ export class BaileysConnectionsHandler {
   sendMessage(
     phoneNumber: string,
     {
-      toJid,
+      jid,
       messageContent,
     }: {
-      toJid: string;
+      jid: string;
       messageContent: AnyMessageContent;
     },
   ) {
@@ -84,7 +84,7 @@ export class BaileysConnectionsHandler {
       throw new BaileysNotConnectedError();
     }
 
-    return connection.sendMessage(toJid, messageContent);
+    return connection.sendMessage(jid, messageContent);
   }
 
   async logout(phoneNumber: string) {
