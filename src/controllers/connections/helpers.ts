@@ -35,6 +35,15 @@ export function buildMessageContent(
   if ("react" in content) {
     return { react: content.react };
   }
+  if ("buttonReply" in content) {
+    return {
+      buttonReply: content.buttonReply,
+      type: content.type,
+    };
+  }
+  if ("listReply" in content) {
+    return { listReply: content.listReply };
+  }
 
   // NOTE: This should never happen
   throw new Error("Invalid message content");
