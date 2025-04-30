@@ -53,4 +53,19 @@ export const anyMessageContent = t.Union([
     }),
     type: t.Union([t.Literal("template"), t.Literal("plain")]),
   }),
+  t.Object({
+    listReply: t.Object({
+      title: t.Optional(t.String()),
+      listType: t.Optional(
+        t.Enum({
+          UNKNOWN: 0,
+          SINGLE_SELECT: 1,
+        }),
+      ),
+      singleSelectReply: t.Optional(
+        t.Object({ selectedRowId: t.Optional(t.String()) }),
+      ),
+      description: t.Optional(t.String()),
+    }),
+  }),
 ]);
