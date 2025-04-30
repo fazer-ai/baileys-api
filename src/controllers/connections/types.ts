@@ -45,4 +45,12 @@ export const anyMessageContent = t.Union([
       text: t.String(),
     }),
   }),
+  t.Object({
+    buttonReply: t.Object({
+      displayText: t.String(),
+      id: t.String(),
+      index: t.Number(),
+    }),
+    type: t.Union([t.Literal("template"), t.Literal("plain")]),
+  }),
 ]);
