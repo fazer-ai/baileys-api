@@ -27,11 +27,6 @@ export interface BaileysConnectionOptions {
   onConnectionClose?: () => void;
 }
 
-export class BaileysAlreadyConnectedError extends Error {
-  constructor() {
-    super("Phone number already connected");
-  }
-}
 export class BaileysNotConnectedError extends Error {
   constructor() {
     super("Phone number not connected");
@@ -64,6 +59,7 @@ export class BaileysConnection {
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
+  private clearOnlinePresenceTimeout: NodeJS.Timer | null = null;
 
   constructor(options: BaileysConnectionOptions) {
     this.clientName = options.clientName || "Chrome";
@@ -78,7 +74,7 @@ export class BaileysConnection {
 
   async connect() {
     if (this.socket) {
-      throw new BaileysAlreadyConnectedError();
+      return;
     }
 
     const { state, saveCreds } = await useRedisAuthState(this.phoneNumber, {
@@ -93,6 +89,7 @@ export class BaileysConnection {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
+      markOnlineOnConnect: false,
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
       // TODO: Remove this and drop qrcode-terminal dependency.
@@ -126,6 +123,8 @@ export class BaileysConnection {
       throw new BaileysNotConnectedError();
     }
 
+    await this.sendPresenceUpdate("unavailable");
+
     await this.socket.logout();
     await this.close();
   }
@@ -146,12 +145,24 @@ export class BaileysConnection {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }
-
     if (!this.socket.authState.creds.me) {
       return;
     }
 
-    return this.socket.sendPresenceUpdate(type, toJid);
+    return this.socket.sendPresenceUpdate(type, toJid).then(() => {
+      if (
+        this.clearOnlinePresenceTimeout &&
+        ["unavailable", "available"].includes(type)
+      ) {
+        clearTimeout(this.clearOnlinePresenceTimeout);
+        this.clearOnlinePresenceTimeout = null;
+      }
+      if (type === "available") {
+        this.clearOnlinePresenceTimeout = setTimeout(() => {
+          this.socket?.sendPresenceUpdate("unavailable", toJid);
+        }, 60000);
+      }
+    });
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {

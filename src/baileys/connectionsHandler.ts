@@ -1,5 +1,4 @@
 import {
-  BaileysAlreadyConnectedError,
   BaileysConnection,
   type BaileysConnectionOptions,
   BaileysNotConnectedError,
@@ -43,7 +42,9 @@ export class BaileysConnectionsHandler {
   async connect(options: BaileysConnectionOptions) {
     const { phoneNumber } = options;
     if (this.connections[phoneNumber]) {
-      throw new BaileysAlreadyConnectedError();
+      // NOTE: This triggers a `connection.update` event.
+      await this.connections[phoneNumber].sendPresenceUpdate("available");
+      return;
     }
 
     const connection = new BaileysConnection({
