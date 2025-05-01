@@ -123,8 +123,6 @@ export class BaileysConnection {
       throw new BaileysNotConnectedError();
     }
 
-    await this.sendPresenceUpdate("unavailable");
-
     await this.socket.logout();
     await this.close();
   }
