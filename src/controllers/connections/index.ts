@@ -3,7 +3,7 @@ import { BaileysNotConnectedError } from "@/baileys/connection";
 import { buildMessageContent } from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
 import Elysia, { t } from "elysia";
-import { anyMessageContent, phoneNumberParams } from "./types";
+import { anyMessageContent, iMessageKey, phoneNumberParams } from "./types";
 
 const connectionsController = new Elysia({
   prefix: "/connections",
@@ -136,6 +136,33 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Message sent successfully",
+          },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/read-message",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      let { keys } = body;
+      if (!Array.isArray(keys)) {
+        keys = [keys];
+      }
+      return {
+        success: true,
+        data: await baileys.readMessages(phoneNumber, keys),
+      };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        keys: t.Union([t.Array(iMessageKey), iMessageKey]),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Message read successfully",
           },
         },
       },

@@ -88,6 +88,23 @@ export class BaileysConnectionsHandler {
     return connection.sendMessage(jid, messageContent);
   }
 
+  readMessages(
+    phoneNumber: string,
+    keys: {
+      remoteJid?: string;
+      fromMe?: boolean;
+      id?: string;
+      participant?: string;
+    }[],
+  ) {
+    const connection = this.connections[phoneNumber];
+    if (!connection) {
+      throw new BaileysNotConnectedError();
+    }
+
+    return connection.readMessages(keys);
+  }
+
   async logout(phoneNumber: string) {
     const connection = this.connections[phoneNumber];
     if (!connection) {

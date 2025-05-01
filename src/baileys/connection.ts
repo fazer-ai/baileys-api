@@ -188,6 +188,21 @@ export class BaileysConnection {
     });
   }
 
+  readMessages(
+    keys: {
+      remoteJid?: string;
+      fromMe?: boolean;
+      id?: string;
+      participant?: string;
+    }[],
+  ) {
+    if (!this.socket) {
+      throw new BaileysNotConnectedError();
+    }
+
+    return this.socket.readMessages(keys);
+  }
+
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
 

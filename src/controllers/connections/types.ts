@@ -9,7 +9,7 @@ export const phoneNumberParams = t.Object({
   }),
 });
 
-const iMessageKey = t.Object({
+export const iMessageKey = t.Object({
   id: t.Optional(t.String()),
   remoteJid: t.Optional(t.String()),
   fromMe: t.Optional(t.Boolean()),
