@@ -1,4 +1,5 @@
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
+import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
@@ -9,7 +10,6 @@ import makeWASocket, {
   type AuthenticationState,
   type BaileysEventMap,
   type ConnectionState,
-  type MiscMessageGenerationOptions,
   type WAConnectionState,
   type WAPresence,
   Browsers,
@@ -130,16 +130,29 @@ export class BaileysConnection {
     await this.close();
   }
 
-  sendMessage(
-    jid: string,
-    messageContent: AnyMessageContent,
-    options?: MiscMessageGenerationOptions,
-  ) {
+  async sendMessage(jid: string, messageContent: AnyMessageContent) {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }
 
-    return this.socket.sendMessage(jid, messageContent, options);
+    let waveformProxy: Buffer | null = null;
+    if ("audio" in messageContent && Buffer.isBuffer(messageContent.audio)) {
+      // NOTE: Always send audio as mp3.
+      // Due to limitations in internal Baileys logic used to generate waveform, we use a wav proxy.
+      [messageContent.audio, waveformProxy] = await Promise.all([
+        preprocessAudio(
+          messageContent.audio,
+          // NOTE: Use low quality mp3 for ptt messages for more realistic quality.
+          messageContent.ptt ? "mp3-low" : "mp3-high",
+        ),
+        preprocessAudio(messageContent.audio, "wav"),
+      ]);
+      messageContent.mimetype = "audio/mpeg";
+    }
+
+    return this.socket.sendMessage(jid, messageContent, {
+      waveformProxy,
+    });
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {

@@ -4,7 +4,13 @@ index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2
 diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-600e83f6d48981a8 b/.bun-tag-600e83f6d48981a8
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-72dced8de318edc8 b/.bun-tag-72dced8de318edc8
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-8a7003c32aded7b0 b/.bun-tag-8a7003c32aded7b0
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-e6c8e597fae8e352 b/.bun-tag-e6c8e597fae8e352
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
@@ -34,6 +40,18 @@ index e9d112cb1f7f68f50333abddd3adb63eb7d8dc77..4c35eb5448d32c6a555ee9aacd0d69aa
          logger.error({ err }, `unexpected error in '${msg}'`);
      };
      /** await the next incoming message */
+diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
+index b5e9016e8921bf75f1922b6941d4c3e7983278fa..1985798cefa4e7c8466b73050dbb0112d1e36cde 100644
+--- a/lib/Types/Message.d.ts
++++ b/lib/Types/Message.d.ts
+@@ -215,6 +215,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+     font?: number;
+     /** if it is broadcast */
+     broadcast?: boolean;
++    waveformProxy?: Buffer | null;
+ };
+ export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
+     userJid: string;
 diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
 index fbb29b18e8c0c50bbf42ef10de178480da53e76b..b9f9cd31ce2fc564a3c5769c6cf62c925bd7f282 100644
 --- a/lib/Utils/auth-utils.js
@@ -55,3 +73,16 @@ index fbb29b18e8c0c50bbf42ef10de178480da53e76b..b9f9cd31ce2fc564a3c5769c6cf62c92
          isInTransaction,
          async transaction(work) {
              let result;
+diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
+index bf7efffa7572042ddb1d973cbbbcebd9e8f2162c..17425664d912ca7f9b5acca826c03d0597077bed 100644
+--- a/lib/Utils/messages.js
++++ b/lib/Utils/messages.js
+@@ -140,7 +140,7 @@ const prepareWAMessageMedia = async (message, options) => {
+                     logger === null || logger === void 0 ? void 0 : logger.debug('computed audio duration');
+                 }
+                 if (requiresWaveformProcessing) {
+-                    uploadData.waveform = await (0, messages_media_1.getAudioWaveform)(bodyPath, logger);
++                    uploadData.waveform = await (0, messages_media_1.getAudioWaveform)(options.waveformProxy || bodyPath, logger);
+                     logger === null || logger === void 0 ? void 0 : logger.debug('processed waveform');
+                 }
+                 if (requiresAudioBackground) {

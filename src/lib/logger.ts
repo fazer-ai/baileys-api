@@ -1,4 +1,3 @@
-// biome-ignore lint/correctness/noNodejsModules: <explanation>
 import path, { join } from "node:path";
 import config from "@/config";
 import pino from "pino";
@@ -49,10 +48,11 @@ export function deepSanitizeObject(
 }
 
 export const baileysLogger = pino({
-  level: config.baileys.logLevel,
+  level: "debug",
   transport: {
     targets: [
       {
+        level: config.baileys.logLevel,
         target: "pino-pretty",
         options: {
           colorize: true,
@@ -60,6 +60,7 @@ export const baileysLogger = pino({
         } as PrettyOptions,
       },
       {
+        level: config.baileys.logLevel,
         target: "pino-roll",
         options: {
           file: path.join("logs", "baileys"),

@@ -23,7 +23,8 @@
         "noUndeclaredDependencies": "off",
         "useImportExtensions": "off",
         // NOTE: This isn't React...
-        "useHookAtTopLevel": "off"
+        "useHookAtTopLevel": "off",
+        "noNodejsModules": "off"
       },
       "performance": {
         "useTopLevelRegex": "off"
