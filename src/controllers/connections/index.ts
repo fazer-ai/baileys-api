@@ -1,8 +1,5 @@
 import baileys from "@/baileys";
-import {
-  BaileysAlreadyConnectedError,
-  BaileysNotConnectedError,
-} from "@/baileys/connection";
+import { BaileysNotConnectedError } from "@/baileys/connection";
 import { buildMessageContent } from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
 import Elysia, { t } from "elysia";
@@ -22,20 +19,12 @@ const connectionsController = new Elysia({
     async ({ params, body }) => {
       const { phoneNumber } = params;
       const { clientName, webhookUrl, webhookVerifyToken } = body;
-      try {
-        await baileys.connect({
-          clientName,
-          phoneNumber,
-          webhookUrl,
-          webhookVerifyToken,
-        });
-      } catch (e) {
-        if (e instanceof BaileysAlreadyConnectedError) {
-          await baileys.sendPresenceUpdate(phoneNumber, {
-            type: "available",
-          });
-        }
-      }
+      await baileys.connect({
+        clientName,
+        phoneNumber,
+        webhookUrl,
+        webhookVerifyToken,
+      });
     },
     {
       params: phoneNumberParams,
@@ -61,6 +50,60 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Connection initiated",
+          },
+        },
+      },
+    },
+  )
+  .patch(
+    "/:phoneNumber/presence",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { type, toJid } = body;
+
+      return {
+        success: true,
+        data: await baileys.sendPresenceUpdate(phoneNumber, {
+          type,
+          toJid,
+        }),
+      };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        type: t.Union(
+          [
+            t.Literal("unavailable"),
+            t.Literal("available"),
+            t.Literal("composing"),
+            t.Literal("recording"),
+            t.Literal("paused"),
+          ],
+          {
+            description:
+              "Presence type. `available` is automatically reset to `unavailable` after 60s. `composing` and `recording` are automatically held for ~25s by WhatsApp. `paused` can be used to reset `composing` and `recording` early.",
+            examples: [
+              "unavailable",
+              "available",
+              "composing",
+              "recording",
+              "paused",
+            ],
+          },
+        ),
+        toJid: t.Optional(
+          t.String({
+            description:
+              "Recipient jid. Required for `composing`, `recording`, and `paused`.",
+            examples: ["551101234567@s.whatsapp.net"],
+          }),
+        ),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Presence update sent successfully",
           },
         },
       },
