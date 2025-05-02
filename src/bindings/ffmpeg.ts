@@ -1,0 +1,7 @@
+import { path } from "@ffmpeg-installer/ffmpeg";
+import ffmpeg from "fluent-ffmpeg";
+
+ffmpeg.setFfmpegPath(path);
+
+// biome-ignore lint/style/noDefaultExport: <explanation>
+export default ffmpeg;

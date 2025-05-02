@@ -5,6 +5,7 @@
       "name": "@fazer-ai/baileys-api",
       "dependencies": {
         "@elysiajs/swagger": "^1.2.2",
+        "@ffmpeg-installer/ffmpeg": "^1.1.0",
         "@hapi/boom": "^10.0.1",
         "@whiskeysockets/baileys": "^6.7.16",
         "elysia": "^1.2.25",
@@ -73,6 +74,24 @@
     "@eslint/object-schema": ["@eslint/object-schema@2.1.6", "", {}, "sha512-RBMg5FRL0I0gs51M/guSAj5/e14VQ4tpZnQNWwuDT66P14I43ItmPfIZRhO9fUVIPOAQXU47atlywZ/czoqFPA=="],
 
     "@eslint/plugin-kit": ["@eslint/plugin-kit@0.2.8", "", { "dependencies": { "@eslint/core": "^0.13.0", "levn": "^0.4.1" } }, "sha512-ZAoA40rNMPwSm+AeHpCq8STiNAwzWLJuP8Xv4CHIc9wv/PSuExjMrmjfYNj682vW0OOiZ1HKxzvjQr9XZIisQA=="],
+
+    "@ffmpeg-installer/darwin-arm64": ["@ffmpeg-installer/darwin-arm64@4.1.5", "", { "os": "darwin", "cpu": "arm64" }, "sha512-hYqTiP63mXz7wSQfuqfFwfLOfwwFChUedeCVKkBtl/cliaTM7/ePI9bVzfZ2c+dWu3TqCwLDRWNSJ5pqZl8otA=="],
+
+    "@ffmpeg-installer/darwin-x64": ["@ffmpeg-installer/darwin-x64@4.1.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-Z4EyG3cIFjdhlY8wI9aLUXuH8nVt7E9SlMVZtWvSPnm2sm37/yC2CwjUzyCQbJbySnef1tQwGG2Sx+uWhd9IAw=="],
+
+    "@ffmpeg-installer/ffmpeg": ["@ffmpeg-installer/ffmpeg@1.1.0", "", { "optionalDependencies": { "@ffmpeg-installer/darwin-arm64": "4.1.5", "@ffmpeg-installer/darwin-x64": "4.1.0", "@ffmpeg-installer/linux-arm": "4.1.3", "@ffmpeg-installer/linux-arm64": "4.1.4", "@ffmpeg-installer/linux-ia32": "4.1.0", "@ffmpeg-installer/linux-x64": "4.1.0", "@ffmpeg-installer/win32-ia32": "4.1.0", "@ffmpeg-installer/win32-x64": "4.1.0" } }, "sha512-Uq4rmwkdGxIa9A6Bd/VqqYbT7zqh1GrT5/rFwCwKM70b42W5gIjWeVETq6SdcL0zXqDtY081Ws/iJWhr1+xvQg=="],
+
+    "@ffmpeg-installer/linux-arm": ["@ffmpeg-installer/linux-arm@4.1.3", "", { "os": "linux", "cpu": "arm" }, "sha512-NDf5V6l8AfzZ8WzUGZ5mV8O/xMzRag2ETR6+TlGIsMHp81agx51cqpPItXPib/nAZYmo55Bl2L6/WOMI3A5YRg=="],
+
+    "@ffmpeg-installer/linux-arm64": ["@ffmpeg-installer/linux-arm64@4.1.4", "", { "os": "linux", "cpu": "arm64" }, "sha512-dljEqAOD0oIM6O6DxBW9US/FkvqvQwgJ2lGHOwHDDwu/pX8+V0YsDL1xqHbj1DMX/+nP9rxw7G7gcUvGspSoKg=="],
+
+    "@ffmpeg-installer/linux-ia32": ["@ffmpeg-installer/linux-ia32@4.1.0", "", { "os": "linux", "cpu": "ia32" }, "sha512-0LWyFQnPf+Ij9GQGD034hS6A90URNu9HCtQ5cTqo5MxOEc7Rd8gLXrJvn++UmxhU0J5RyRE9KRYstdCVUjkNOQ=="],
+
+    "@ffmpeg-installer/linux-x64": ["@ffmpeg-installer/linux-x64@4.1.0", "", { "os": "linux", "cpu": "x64" }, "sha512-Y5BWhGLU/WpQjOArNIgXD3z5mxxdV8c41C+U15nsE5yF8tVcdCGet5zPs5Zy3Ta6bU7haGpIzryutqCGQA/W8A=="],
+
+    "@ffmpeg-installer/win32-ia32": ["@ffmpeg-installer/win32-ia32@4.1.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-FV2D7RlaZv/lrtdhaQ4oETwoFUsUjlUiasiZLDxhEUPdNDWcH1OU9K1xTvqz+OXLdsmYelUDuBS/zkMOTtlUAw=="],
+
+    "@ffmpeg-installer/win32-x64": ["@ffmpeg-installer/win32-x64@4.1.0", "", { "os": "win32", "cpu": "x64" }, "sha512-Drt5u2vzDnIONf4ZEkKtFlbvwj6rI3kxw1Ck9fpudmtgaZIHD4ucsWB2lCZBXRxJgXR+2IMSti+4rtM4C4rXgg=="],
 
     "@hapi/boom": ["@hapi/boom@10.0.1", "", { "dependencies": { "@hapi/hoek": "^11.0.2" } }, "sha512-ERcCZaEjdH3OgSJlyjVk8pHIFeus91CjKP3v+MpgBNp5IvGzP2l/bRiD78nqYcKPaZdbKkK5vDBVPd2ohHBlsA=="],
 

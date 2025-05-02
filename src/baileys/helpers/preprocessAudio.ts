@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import ffmpeg from "@/bindings/ffmpeg";
 import { promisify } from "@/helpers/promisify";
-import ffmpeg from "fluent-ffmpeg";
 
 function bufferToStream(buffer: Buffer) {
   const stream = new Readable();
