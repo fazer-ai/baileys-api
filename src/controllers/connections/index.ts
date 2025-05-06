@@ -142,13 +142,11 @@ const connectionsController = new Elysia({
     },
   )
   .post(
-    "/:phoneNumber/read-message",
+    "/:phoneNumber/read-messages",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      let { keys } = body;
-      if (!Array.isArray(keys)) {
-        keys = [keys];
-      }
+      const { keys } = body;
+
       return {
         success: true,
         data: await baileys.readMessages(phoneNumber, keys),
@@ -157,7 +155,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        keys: t.Union([t.Array(iMessageKey), iMessageKey]),
+        keys: t.Array(iMessageKey),
       }),
       detail: {
         responses: {

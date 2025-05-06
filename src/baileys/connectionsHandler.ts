@@ -5,7 +5,11 @@ import {
 } from "@/baileys/connection";
 import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
 import logger from "@/lib/logger";
-import type { AnyMessageContent, WAPresence } from "@whiskeysockets/baileys";
+import type {
+  AnyMessageContent,
+  WAPresence,
+  proto,
+} from "@whiskeysockets/baileys";
 
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
@@ -58,16 +62,19 @@ export class BaileysConnectionsHandler {
     this.connections[phoneNumber] = connection;
   }
 
-  sendPresenceUpdate(
-    phoneNumber: string,
-    { type, toJid }: { type: WAPresence; toJid?: string | undefined },
-  ) {
+  private getConnection(phoneNumber: string) {
     const connection = this.connections[phoneNumber];
     if (!connection) {
       throw new BaileysNotConnectedError();
     }
+    return connection;
+  }
 
-    return connection.sendPresenceUpdate(type, toJid);
+  sendPresenceUpdate(
+    phoneNumber: string,
+    { type, toJid }: { type: WAPresence; toJid?: string | undefined },
+  ) {
+    return this.getConnection(phoneNumber).sendPresenceUpdate(type, toJid);
   }
 
   sendMessage(
@@ -80,38 +87,15 @@ export class BaileysConnectionsHandler {
       messageContent: AnyMessageContent;
     },
   ) {
-    const connection = this.connections[phoneNumber];
-    if (!connection) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return connection.sendMessage(jid, messageContent);
+    return this.getConnection(phoneNumber).sendMessage(jid, messageContent);
   }
 
-  readMessages(
-    phoneNumber: string,
-    keys: {
-      remoteJid?: string;
-      fromMe?: boolean;
-      id?: string;
-      participant?: string;
-    }[],
-  ) {
-    const connection = this.connections[phoneNumber];
-    if (!connection) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return connection.readMessages(keys);
+  readMessages(phoneNumber: string, keys: proto.IMessageKey[]) {
+    return this.getConnection(phoneNumber).readMessages(keys);
   }
 
   async logout(phoneNumber: string) {
-    const connection = this.connections[phoneNumber];
-    if (!connection) {
-      throw new BaileysNotConnectedError();
-    }
-
-    await connection.logout();
+    await this.getConnection(phoneNumber).logout();
     delete this.connections[phoneNumber];
   }
 

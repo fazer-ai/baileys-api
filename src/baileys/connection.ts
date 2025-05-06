@@ -12,6 +12,7 @@ import makeWASocket, {
   type ConnectionState,
   type WAConnectionState,
   type WAPresence,
+  type proto,
   Browsers,
   DisconnectReason,
   makeCacheableSignalKeyStore,
@@ -188,14 +189,7 @@ export class BaileysConnection {
     });
   }
 
-  readMessages(
-    keys: {
-      remoteJid?: string;
-      fromMe?: boolean;
-      id?: string;
-      participant?: string;
-    }[],
-  ) {
+  readMessages(keys: proto.IMessageKey[]) {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }
