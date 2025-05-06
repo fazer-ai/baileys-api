@@ -8,7 +8,7 @@
     "manage-api-keys": "LOG_LEVEL=warn bun run scripts/manage-api-keys.ts"
   },
   "dependencies": {
-    "@elysiajs/swagger": "^1.2.2",
+    "@elysiajs/swagger": "^1.3.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.7.16",
