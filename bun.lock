@@ -24,7 +24,7 @@
         "@biomejs/biome": "1.9.4",
         "@types/fluent-ffmpeg": "^2.1.27",
         "@types/qrcode": "^1.5.5",
-        "bun-git-hooks": "^0.2.15",
+        "bun-git-hooks": "^0.2.16",
         "bun-types": "latest",
         "pino-caller": "^4.0.0",
       },
@@ -291,7 +291,7 @@
 
     "buffer-from": ["buffer-from@1.1.2", "", {}, "sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ=="],
 
-    "bun-git-hooks": ["bun-git-hooks@0.2.15", "", { "bin": { "git-hooks": "dist/bin/cli.js", "bun-git-hooks": "dist/bin/cli.js" } }, "sha512-wIXu2AlcsgvqOcG2MAEN7pvPvKi+K8ESe8xDhBp49Y8AD+yUcEcbWFhh8+/tYWOVMFVHNVjPXHcmx4xqP1zABA=="],
+    "bun-git-hooks": ["bun-git-hooks@0.2.16", "", { "bin": { "git-hooks": "dist/bin/cli.js", "bun-git-hooks": "dist/bin/cli.js" } }, "sha512-xMqVjRKnhgFJIRfGPHzhGGWMOekqWvo36VlP7v+aUMGg4Qjgk2YsdVIItpx94P5/IwKyWvwAdngXJDmhcxTz/Q=="],
 
     "bun-types": ["bun-types@1.2.12", "", { "dependencies": { "@types/node": "*" } }, "sha512-tvWMx5vPqbRXgE8WUZI94iS1xAYs8bkqESR9cxBB1Wi+urvfTrF1uzuDgBHFAdO0+d2lmsbG3HmeKMvUyj6pWA=="],
 
