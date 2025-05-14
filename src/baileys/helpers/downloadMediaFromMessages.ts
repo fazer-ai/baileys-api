@@ -2,6 +2,7 @@ import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import logger from "@/lib/logger";
 import {
   type BaileysEventMap,
+  type DownloadableMessage,
   type MediaType,
   downloadContentFromMessage,
   type proto,
@@ -76,4 +77,22 @@ async function streamToBuffer(stream: AsyncIterable<Buffer>): Promise<Buffer> {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+
+export async function getMediaBuffer(
+  mediaMessage: DownloadableMessage,
+  type: MediaType,
+  opts?: {
+    startByte?: number;
+    endByte?: number;
+  },
+): Promise<Buffer> {
+  const stream = await downloadContentFromMessage(mediaMessage, type, opts);
+  const buffer = streamToBuffer(stream);
+
+  if (type === "audio") {
+    return preprocessAudio(await buffer, "mp3-high");
+  }
+
+  return buffer;
 }
