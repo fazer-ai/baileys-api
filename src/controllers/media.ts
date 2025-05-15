@@ -32,6 +32,16 @@ const mediaController = new Elysia({
           description: "Message ID to download media from",
         }),
       }),
+      detail: {
+        responses: {
+          200: {
+            description: "Media file",
+          },
+          404: {
+            description: "File not found",
+          },
+        },
+      },
     },
   );
 

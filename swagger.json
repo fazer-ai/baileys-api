@@ -1005,7 +1005,12 @@
           }
         ],
         "responses": {
-          "200": {}
+          "200": {
+            "description": "Media file"
+          },
+          "404": {
+            "description": "File not found"
+          }
         }
       }
     }
