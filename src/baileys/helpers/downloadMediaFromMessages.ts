@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import logger from "@/lib/logger";
@@ -24,7 +23,6 @@ export async function downloadMediaFromMessages(
 ) {
   const downloadedMedia: Record<string, string> = {};
   const mediaDir = path.resolve(process.cwd(), "media");
-  await mkdir(mediaDir, { recursive: true });
 
   for (const { key, message } of messages) {
     // biome-ignore lint/complexity/useSimplifiedLogicExpression: <explanation>
