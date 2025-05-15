@@ -163,6 +163,16 @@
                     "description": "Token for verifying webhook",
                     "example": "a3f4b2",
                     "type": "string"
+                  },
+                  "options": {
+                    "type": "object",
+                    "properties": {
+                      "includeMedia": {
+                        "description": "Include media in messages.upsert event payload as base64 string",
+                        "default": true,
+                        "type": "boolean"
+                      }
+                    }
                   }
                 },
                 "required": [
@@ -191,6 +201,16 @@
                     "description": "Token for verifying webhook",
                     "example": "a3f4b2",
                     "type": "string"
+                  },
+                  "options": {
+                    "type": "object",
+                    "properties": {
+                      "includeMedia": {
+                        "description": "Include media in messages.upsert event payload as base64 string",
+                        "default": true,
+                        "type": "boolean"
+                      }
+                    }
                   }
                 },
                 "required": [
@@ -219,6 +239,16 @@
                     "description": "Token for verifying webhook",
                     "example": "a3f4b2",
                     "type": "string"
+                  },
+                  "options": {
+                    "type": "object",
+                    "properties": {
+                      "includeMedia": {
+                        "description": "Include media in messages.upsert event payload as base64 string",
+                        "default": true,
+                        "type": "boolean"
+                      }
+                    }
                   }
                 },
                 "required": [

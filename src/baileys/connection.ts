@@ -26,7 +26,7 @@ export interface BaileysConnectionOptions {
   webhookUrl: string;
   webhookVerifyToken: string;
   isReconnect?: boolean;
-  returnBuffer?: boolean;
+  includeMedia?: boolean;
   onConnectionClose?: () => void;
 }
 
@@ -59,7 +59,7 @@ export class BaileysConnection {
   private webhookUrl: string;
   private webhookVerifyToken: string;
   private isReconnect: boolean;
-  private returnBuffer: boolean;
+  private includeMedia: boolean;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -74,7 +74,7 @@ export class BaileysConnection {
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
-    this.returnBuffer = !!options.returnBuffer;
+    this.includeMedia = options.includeMedia ? options.includeMedia : true;
   }
 
   async connect() {
@@ -264,7 +264,7 @@ export class BaileysConnection {
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
     const media = await downloadMediaFromMessages(data.messages, {
-      returnBuffer: this.returnBuffer,
+      includeMedia: this.includeMedia,
     });
     this.sendToWebhook({
       event: "messages.upsert",

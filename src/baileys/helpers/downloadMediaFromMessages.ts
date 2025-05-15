@@ -18,7 +18,7 @@ type MediaMessage =
 export async function downloadMediaFromMessages(
   messages: BaileysEventMap["messages.upsert"]["messages"],
   options?: {
-    returnBuffer?: boolean;
+    includeMedia?: boolean;
   },
 ) {
   const downloadedMedia: Record<string, string> = {};
@@ -48,7 +48,7 @@ export async function downloadMediaFromMessages(
 
       write(path.join(mediaDir, `${key.id}`), fileBuffer);
 
-      if (options?.returnBuffer) {
+      if (options?.includeMedia) {
         downloadedMedia[key.id] = fileBuffer.toString("base64");
       }
     } catch (error) {
