@@ -46,5 +46,5 @@ package-lock.json
 logs/*
 !logs/.keep
 
-# downloaded medias
-media
+media/*
+!media/.keep
