@@ -7,7 +7,7 @@ import {
   downloadContentFromMessage,
   type proto,
 } from "@whiskeysockets/baileys";
-import { write } from "bun";
+import { file } from "bun";
 
 type MediaMessage =
   | proto.Message.IImageMessage
@@ -15,6 +15,7 @@ type MediaMessage =
   | proto.Message.IVideoMessage
   | proto.Message.IDocumentMessage;
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: <explanation>
 export async function downloadMediaFromMessages(
   messages: BaileysEventMap["messages.upsert"]["messages"],
   options?: {
@@ -36,23 +37,31 @@ export async function downloadMediaFromMessages(
       continue;
     }
 
+    let fileBuffer: Buffer;
     try {
       const stream = await downloadContentFromMessage(mediaMessage, mediaType);
-      const buffer = await streamToBuffer(stream);
-
-      let fileBuffer = buffer;
-      if (message.audioMessage) {
-        fileBuffer = await preprocessAudio(buffer, "mp3-high");
-        message.audioMessage.mimetype = "audio/mp3";
-      }
-
-      write(path.join(mediaDir, `${key.id}`), fileBuffer);
-
-      if (options?.includeMedia) {
-        downloadedMedia[key.id] = fileBuffer.toString("base64");
-      }
+      fileBuffer = await streamToBuffer(stream);
     } catch (error) {
       logger.error("Failed to download media: %s", error);
+      continue;
+    }
+
+    if (message.audioMessage) {
+      fileBuffer = await preprocessAudio(fileBuffer, "mp3-high");
+      message.audioMessage.mimetype = "audio/mp3";
+    }
+
+    // NOTE: This is a workaround for Bun's file writing issue.
+    let downloadFailed = false;
+    try {
+      await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
+    } catch (error) {
+      logger.error("Failed to write media file: %s", error);
+      downloadFailed = true;
+    }
+
+    if (options?.includeMedia || downloadFailed) {
+      downloadedMedia[key.id] = fileBuffer.toString("base64");
     }
   }
 
