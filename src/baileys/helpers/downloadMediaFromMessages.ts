@@ -4,7 +4,6 @@ import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import logger from "@/lib/logger";
 import {
   type BaileysEventMap,
-  type DownloadableMessage,
   type MediaType,
   downloadContentFromMessage,
   type proto,
