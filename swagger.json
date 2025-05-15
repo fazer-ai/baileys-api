@@ -981,6 +981,33 @@
           }
         }
       }
+    },
+    "/media/{messageId}": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Message ID to download media from",
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "messageId",
+            "required": true
+          }
+        ],
+        "operationId": "getMediaByMessageId",
+        "tags": [
+          "Media"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {}
+        }
+      }
     }
   }
 }
