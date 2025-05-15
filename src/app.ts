@@ -1,6 +1,7 @@
 import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
+import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
 import logger from "@/lib/logger";
 import cors from "@elysiajs/cors";
@@ -87,7 +88,8 @@ const app = new Elysia()
   )
   .use(statusController)
   .use(adminController)
-  .use(connectionsController);
+  .use(connectionsController)
+  .use(mediaController);
 
 if (config.env === "development") {
   app.use(cors());

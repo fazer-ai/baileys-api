@@ -1,3 +1,5 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import logger from "@/lib/logger";
 import {
@@ -7,6 +9,7 @@ import {
   downloadContentFromMessage,
   type proto,
 } from "@whiskeysockets/baileys";
+import { write } from "bun";
 
 type MediaMessage =
   | proto.Message.IImageMessage
@@ -16,8 +19,13 @@ type MediaMessage =
 
 export async function downloadMediaFromMessages(
   messages: BaileysEventMap["messages.upsert"]["messages"],
+  options?: {
+    returnBuffer?: boolean;
+  },
 ) {
   const downloadedMedia: Record<string, string> = {};
+  const mediaDir = path.resolve(process.cwd(), "media");
+  await mkdir(mediaDir, { recursive: true });
 
   for (const { key, message } of messages) {
     // biome-ignore lint/complexity/useSimplifiedLogicExpression: <explanation>
@@ -35,12 +43,16 @@ export async function downloadMediaFromMessages(
       const stream = await downloadContentFromMessage(mediaMessage, mediaType);
       const buffer = await streamToBuffer(stream);
 
+      let fileBuffer = buffer;
       if (message.audioMessage) {
-        const processedAudio = await preprocessAudio(buffer, "mp3-high");
+        fileBuffer = await preprocessAudio(buffer, "mp3-high");
         message.audioMessage.mimetype = "audio/mp3";
-        downloadedMedia[key.id] = processedAudio.toString("base64");
-      } else {
-        downloadedMedia[key.id] = buffer.toString("base64");
+      }
+
+      write(path.join(mediaDir, `${key.id}`), fileBuffer);
+
+      if (options?.returnBuffer) {
+        downloadedMedia[key.id] = fileBuffer.toString("base64");
       }
     } catch (error) {
       logger.error("Failed to download media: %s", error);
@@ -77,22 +89,4 @@ async function streamToBuffer(stream: AsyncIterable<Buffer>): Promise<Buffer> {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
-}
-
-export async function getMediaBuffer(
-  mediaMessage: DownloadableMessage,
-  type: MediaType,
-  opts?: {
-    startByte?: number;
-    endByte?: number;
-  },
-): Promise<Buffer> {
-  const stream = await downloadContentFromMessage(mediaMessage, type, opts);
-  const buffer = streamToBuffer(stream);
-
-  if (type === "audio") {
-    return preprocessAudio(await buffer, "mp3-high");
-  }
-
-  return buffer;
 }
