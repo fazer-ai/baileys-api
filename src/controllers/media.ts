@@ -30,6 +30,7 @@ const mediaController = new Elysia({
       params: t.Object({
         messageId: t.String({
           description: "Message ID to download media from",
+          pattern: "^[A-Z0-9]{1,35}$",
         }),
       }),
       detail: {

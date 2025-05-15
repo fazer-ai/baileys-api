@@ -1018,7 +1018,8 @@
           {
             "description": "Message ID to download media from",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[A-Z0-9]{1,35}$"
             },
             "in": "path",
             "name": "messageId",
