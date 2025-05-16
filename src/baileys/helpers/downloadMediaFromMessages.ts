@@ -1,3 +1,4 @@
+import path from "node:path";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import logger from "@/lib/logger";
 import {
@@ -6,6 +7,7 @@ import {
   downloadContentFromMessage,
   type proto,
 } from "@whiskeysockets/baileys";
+import { file } from "bun";
 
 type MediaMessage =
   | proto.Message.IImageMessage
@@ -15,8 +17,12 @@ type MediaMessage =
 
 export async function downloadMediaFromMessages(
   messages: BaileysEventMap["messages.upsert"]["messages"],
+  options?: {
+    includeMedia?: boolean;
+  },
 ) {
   const downloadedMedia: Record<string, string> = {};
+  const mediaDir = path.resolve(process.cwd(), "media");
 
   for (const { key, message } of messages) {
     // biome-ignore lint/complexity/useSimplifiedLogicExpression: <explanation>
@@ -32,15 +38,18 @@ export async function downloadMediaFromMessages(
 
     try {
       const stream = await downloadContentFromMessage(mediaMessage, mediaType);
-      const buffer = await streamToBuffer(stream);
+      let fileBuffer = await streamToBuffer(stream);
 
       if (message.audioMessage) {
-        const processedAudio = await preprocessAudio(buffer, "mp3-high");
+        fileBuffer = await preprocessAudio(fileBuffer, "mp3-high");
         message.audioMessage.mimetype = "audio/mp3";
-        downloadedMedia[key.id] = processedAudio.toString("base64");
-      } else {
-        downloadedMedia[key.id] = buffer.toString("base64");
       }
+
+      if (options?.includeMedia) {
+        downloadedMedia[key.id] = fileBuffer.toString("base64");
+      }
+
+      await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
     } catch (error) {
       logger.error("Failed to download media: %s", error);
     }

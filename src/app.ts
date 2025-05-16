@@ -1,7 +1,9 @@
 import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
+import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import cors from "@elysiajs/cors";
 import swagger from "@elysiajs/swagger";
@@ -18,12 +20,13 @@ const app = new Elysia()
     );
   })
   .onError(({ path, error, code }) => {
-    logger.error("%s\n%s", path, (error as Error).stack);
+    logger.error("%s\n%s", path, errorToString(error));
     switch (code) {
       case "INTERNAL_SERVER_ERROR": {
         const message =
-          config.env === "development" ? error.stack : "Something went wrong";
-        logger.error("%s\n%s", path, error.stack);
+          config.env === "development"
+            ? errorToString(error)
+            : "Something went wrong";
         return new Response(message, { status: 500 });
       }
       default:
@@ -65,11 +68,15 @@ const app = new Elysia()
           },
           {
             name: "Connections",
-            description: "Manage connections",
+            description: "WhatsApp connections operations",
           },
           {
             name: "Admin",
             description: "Admin operations",
+          },
+          {
+            name: "Media",
+            description: "Retrieve media content from a message",
           },
         ],
         components: {
@@ -87,7 +94,8 @@ const app = new Elysia()
   )
   .use(statusController)
   .use(adminController)
-  .use(connectionsController);
+  .use(connectionsController)
+  .use(mediaController);
 
 if (config.env === "development") {
   app.use(cors());

@@ -1,4 +1,5 @@
 import config from "@/config";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 import type { Elysia } from "elysia";
@@ -33,7 +34,7 @@ export const authMiddleware = (app: Elysia) =>
         const auth = JSON.parse(raw) as AuthData;
         return { auth };
       } catch (error) {
-        logger.error("Auth middleware error %o", error);
+        logger.error("Auth middleware error %s", errorToString(error));
         return { auth: null };
       }
     })

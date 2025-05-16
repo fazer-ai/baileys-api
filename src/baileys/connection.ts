@@ -4,6 +4,7 @@ import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
+import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
@@ -26,6 +27,7 @@ export interface BaileysConnectionOptions {
   webhookUrl: string;
   webhookVerifyToken: string;
   isReconnect?: boolean;
+  includeMedia?: boolean;
   onConnectionClose?: () => void;
 }
 
@@ -58,6 +60,7 @@ export class BaileysConnection {
   private webhookUrl: string;
   private webhookVerifyToken: string;
   private isReconnect: boolean;
+  private includeMedia: boolean;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -72,6 +75,8 @@ export class BaileysConnection {
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
+    // TODO(v2): Change default to false.
+    this.includeMedia = options.includeMedia ?? true;
   }
 
   async connect() {
@@ -153,11 +158,10 @@ export class BaileysConnection {
       }
     } catch (error) {
       // NOTE: This usually means ffmpeg is not installed.
-      const e = error as Error;
       logger.error(
-        "[%s] [sendMessage] [ERROR] error=%o",
+        "[%s] [sendMessage] [ERROR] error=%s",
         this.phoneNumber,
-        e.stack || e.message,
+        errorToString(error),
       );
     }
 
@@ -260,7 +264,9 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
-    const media = await downloadMediaFromMessages(data.messages);
+    const media = await downloadMediaFromMessages(data.messages, {
+      includeMedia: this.includeMedia,
+    });
     this.sendToWebhook({
       event: "messages.upsert",
       data,
@@ -356,10 +362,10 @@ export class BaileysConnection {
 
       if (error) {
         logger.error(
-          "[%s] [sendToWebhook] [ERROR] payload=%o error=%o",
+          "[%s] [sendToWebhook] [ERROR] payload=%o error=%s",
           this.phoneNumber,
           sanitizedPayload,
-          error.stack || error.message,
+          errorToString(error),
         );
       }
 

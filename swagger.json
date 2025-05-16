@@ -36,11 +36,15 @@
     },
     {
       "name": "Connections",
-      "description": "Manage connections"
+      "description": "WhatsApp connections operations"
     },
     {
       "name": "Admin",
       "description": "Admin operations"
+    },
+    {
+      "name": "Media",
+      "description": "Retrieve media content from a message"
     }
   ],
   "components": {
@@ -163,6 +167,11 @@
                     "description": "Token for verifying webhook",
                     "example": "a3f4b2",
                     "type": "string"
+                  },
+                  "includeMedia": {
+                    "description": "Include media in messages.upsert event payload as base64 string",
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -191,6 +200,11 @@
                     "description": "Token for verifying webhook",
                     "example": "a3f4b2",
                     "type": "string"
+                  },
+                  "includeMedia": {
+                    "description": "Include media in messages.upsert event payload as base64 string",
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -219,6 +233,11 @@
                     "description": "Token for verifying webhook",
                     "example": "a3f4b2",
                     "type": "string"
+                  },
+                  "includeMedia": {
+                    "description": "Include media in messages.upsert event payload as base64 string",
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -978,6 +997,40 @@
                 ]
               }
             }
+          }
+        }
+      }
+    },
+    "/media/{messageId}": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Message ID to download media from",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z0-9]{1,64}$"
+            },
+            "in": "path",
+            "name": "messageId",
+            "required": true
+          }
+        ],
+        "operationId": "getMediaByMessageId",
+        "tags": [
+          "Media"
+        ],
+        "description": "Media file download",
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media file"
+          },
+          "404": {
+            "description": "File not found"
           }
         }
       }
