@@ -18,7 +18,7 @@
     "build-swagger": "LOG_LEVEL=warn bun scripts/build-swagger.ts"
   },
   "dependencies": {
-    "@elysiajs/cors": "^1.3.1",
+    "@elysiajs/cors": "^1.3.3",
     "@elysiajs/swagger": "^1.3.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@hapi/boom": "^10.0.1",
