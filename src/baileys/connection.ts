@@ -75,7 +75,8 @@ export class BaileysConnection {
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
-    this.includeMedia = options.includeMedia ? options.includeMedia : true;
+    // TODO(v2): Change default to false.
+    this.includeMedia = options.includeMedia ?? true;
   }
 
   async connect() {

@@ -18,13 +18,13 @@ const connectionsController = new Elysia({
     "/:phoneNumber",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { clientName, webhookUrl, webhookVerifyToken, options } = body;
+      const { clientName, webhookUrl, webhookVerifyToken, includeMedia } = body;
       await baileys.connect({
         clientName,
         phoneNumber,
         webhookUrl,
         webhookVerifyToken,
-        ...options,
+        includeMedia,
       });
     },
     {
@@ -46,15 +46,12 @@ const connectionsController = new Elysia({
           description: "Token for verifying webhook",
           example: "a3f4b2",
         }),
-        options: t.Optional(
-          t.Object({
-            includeMedia: t.Optional(
-              t.Boolean({
-                description:
-                  "Include media in messages.upsert event payload as base64 string",
-                default: true,
-              }),
-            ),
+        includeMedia: t.Optional(
+          t.Boolean({
+            description:
+              "Include media in messages.upsert event payload as base64 string",
+            // TODO(v2): Change default to false.
+            default: true,
           }),
         ),
       }),

@@ -68,11 +68,15 @@ const app = new Elysia()
           },
           {
             name: "Connections",
-            description: "Manage connections",
+            description: "WhatsApp connections operations",
           },
           {
             name: "Admin",
             description: "Admin operations",
+          },
+          {
+            name: "Media",
+            description: "Retrieve media content from a message",
           },
         ],
         components: {

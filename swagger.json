@@ -36,11 +36,15 @@
     },
     {
       "name": "Connections",
-      "description": "Manage connections"
+      "description": "WhatsApp connections operations"
     },
     {
       "name": "Admin",
       "description": "Admin operations"
+    },
+    {
+      "name": "Media",
+      "description": "Retrieve media content from a message"
     }
   ],
   "components": {
@@ -164,15 +168,10 @@
                     "example": "a3f4b2",
                     "type": "string"
                   },
-                  "options": {
-                    "type": "object",
-                    "properties": {
-                      "includeMedia": {
-                        "description": "Include media in messages.upsert event payload as base64 string",
-                        "default": true,
-                        "type": "boolean"
-                      }
-                    }
+                  "includeMedia": {
+                    "description": "Include media in messages.upsert event payload as base64 string",
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -202,15 +201,10 @@
                     "example": "a3f4b2",
                     "type": "string"
                   },
-                  "options": {
-                    "type": "object",
-                    "properties": {
-                      "includeMedia": {
-                        "description": "Include media in messages.upsert event payload as base64 string",
-                        "default": true,
-                        "type": "boolean"
-                      }
-                    }
+                  "includeMedia": {
+                    "description": "Include media in messages.upsert event payload as base64 string",
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -240,15 +234,10 @@
                     "example": "a3f4b2",
                     "type": "string"
                   },
-                  "options": {
-                    "type": "object",
-                    "properties": {
-                      "includeMedia": {
-                        "description": "Include media in messages.upsert event payload as base64 string",
-                        "default": true,
-                        "type": "boolean"
-                      }
-                    }
+                  "includeMedia": {
+                    "description": "Include media in messages.upsert event payload as base64 string",
+                    "default": true,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -1019,7 +1008,7 @@
             "description": "Message ID to download media from",
             "schema": {
               "type": "string",
-              "pattern": "^[A-Z0-9]{1,35}$"
+              "pattern": "^[A-Z0-9]{1,64}$"
             },
             "in": "path",
             "name": "messageId",
@@ -1030,6 +1019,7 @@
         "tags": [
           "Media"
         ],
+        "description": "Media file download",
         "security": [
           {
             "xApiKey": []

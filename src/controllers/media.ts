@@ -8,9 +8,11 @@ const mediaController = new Elysia({
   prefix: "/media",
   detail: {
     tags: ["Media"],
+    description: "Media file download",
     security: [{ xApiKey: [] }],
   },
 })
+  // TODO: Use auth data to limit access to existing connections.
   .use(authMiddleware)
   .get(
     ":messageId",
@@ -30,7 +32,9 @@ const mediaController = new Elysia({
       params: t.Object({
         messageId: t.String({
           description: "Message ID to download media from",
-          pattern: "^[A-Z0-9]{1,35}$",
+          // NOTE: From empirical testing, most message IDs are below 33 characters.
+          // To avoid any issues, we set the max length to 64 characters.
+          pattern: "^[A-Z0-9]{1,64}$",
         }),
       }),
       detail: {
