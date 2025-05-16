@@ -1,5 +1,6 @@
 import app from "@/app";
 import config from "@/config";
+import { errorToString } from "@/helpers/errorToString";
 import { file, spawnSync } from "bun";
 
 async function getGitIndexContent(filePath: string): Promise<string | null> {
@@ -91,7 +92,7 @@ async function checkOrUpdateSwagger(): Promise<number> {
     return 0;
   } catch (error) {
     if (error instanceof Error) {
-      console.error(`Error during swagger check: ${error.message}`);
+      console.error(`Error during swagger check: ${errorToString(error)}`);
     } else {
       console.error(`An unknown error occurred during swagger check.`);
     }

@@ -4,6 +4,7 @@ import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
+import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
@@ -156,11 +157,10 @@ export class BaileysConnection {
       }
     } catch (error) {
       // NOTE: This usually means ffmpeg is not installed.
-      const e = error as Error;
       logger.error(
-        "[%s] [sendMessage] [ERROR] error=%o",
+        "[%s] [sendMessage] [ERROR] error=%s",
         this.phoneNumber,
-        e.stack || e.message,
+        errorToString(error),
       );
     }
 
@@ -361,10 +361,10 @@ export class BaileysConnection {
 
       if (error) {
         logger.error(
-          "[%s] [sendToWebhook] [ERROR] payload=%o error=%o",
+          "[%s] [sendToWebhook] [ERROR] payload=%o error=%s",
           this.phoneNumber,
           sanitizedPayload,
-          error.stack || error.message,
+          errorToString(error),
         );
       }
 

@@ -1,11 +1,12 @@
 import config from "@/config";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import { createClient } from "redis";
 
 const redis = createClient(config.redis);
 
-redis.on("error", (err) => {
-  logger.error("Redis client error\n%o", err);
+redis.on("error", (error) => {
+  logger.error("Redis client error\n%s", errorToString(error));
 });
 
 redis.on("connect", async () => {
