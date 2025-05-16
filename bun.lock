@@ -4,7 +4,7 @@
     "": {
       "name": "@fazer-ai/baileys-api",
       "dependencies": {
-        "@elysiajs/cors": "^1.3.1",
+        "@elysiajs/cors": "^1.3.3",
         "@elysiajs/swagger": "^1.3.0",
         "@ffmpeg-installer/ffmpeg": "^1.1.0",
         "@hapi/boom": "^10.0.1",
@@ -57,7 +57,7 @@
 
     "@cacheable/node-cache": ["@cacheable/node-cache@1.5.4", "", { "dependencies": { "cacheable": "^1.8.9", "hookified": "^1.8.1", "keyv": "^5.3.2" } }, "sha512-RXWM+5LMncoGdR5tdtbGb9kVQlfu0Wlxss6WaCAmslUesieLw1K1L42u0E9QfRYTWyfwaY5n/KytCxpL3GIsLQ=="],
 
-    "@elysiajs/cors": ["@elysiajs/cors@1.3.1", "", { "peerDependencies": { "elysia": ">= 1.3.0" } }, "sha512-JYfVDD1ndplEVw7tcZBYcpUcPzKfDTTZCyAuml1ld7uKS3r+yIzbySvGaJI2A9q1gWY/r9DsSwd0N86B2TPUQQ=="],
+    "@elysiajs/cors": ["@elysiajs/cors@1.3.3", "", { "peerDependencies": { "elysia": ">= 1.3.0" } }, "sha512-mYIU6PyMM6xIJuj7d27Vt0/wuzVKIEnFPjcvlkyd7t/m9xspAG37cwNjFxVOnyvY43oOd2I/oW2DB85utXpA2Q=="],
 
     "@elysiajs/swagger": ["@elysiajs/swagger@1.3.0", "", { "dependencies": { "@scalar/themes": "^0.9.52", "@scalar/types": "^0.0.12", "openapi-types": "^12.1.3", "pathe": "^1.1.2" }, "peerDependencies": { "elysia": ">= 1.3.0" } }, "sha512-0fo3FWkDRPNYpowJvLz3jBHe9bFe6gruZUyf+feKvUEEMG9ZHptO1jolSoPE0ffFw1BgN1/wMsP19p4GRXKdfg=="],
 
