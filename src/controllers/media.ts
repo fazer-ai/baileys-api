@@ -22,7 +22,7 @@ const mediaController = new Elysia({
       const mediaPath = path.resolve(process.cwd(), "media", messageId);
       const media = file(mediaPath);
       try {
-        return await media.arrayBuffer();
+        return await media.stream();
       } catch (error) {
         logger.error("[ERROR] %s", error);
         return new Response("File not found", { status: 404 });
