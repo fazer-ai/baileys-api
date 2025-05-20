@@ -88,6 +88,7 @@ export class BaileysConnection {
       clientName: this.clientName,
       webhookUrl: this.webhookUrl,
       webhookVerifyToken: this.webhookVerifyToken,
+      includeMedia: this.includeMedia,
     });
     this.clearAuthState = state.keys.clear;
 
