@@ -267,11 +267,18 @@ export class BaileysConnection {
     const media = await downloadMediaFromMessages(data.messages, {
       includeMedia: this.includeMedia,
     });
-    this.sendToWebhook({
+    let payload: {
+      event: keyof BaileysEventMap;
+      data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
+      extra?: unknown;
+    } = {
       event: "messages.upsert",
       data,
-      extra: { media },
-    });
+    };
+    if (Object.keys(media).length > 0) {
+      payload = { ...payload, extra: { media } };
+    }
+    this.sendToWebhook(payload);
   }
 
   private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
