@@ -169,6 +169,43 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/unread-chat",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, lastMessage } = body;
+
+      return {
+        success: true,
+        data: await baileys.unreadMessages(phoneNumber, jid, lastMessage),
+      };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: t.String({
+          description: "Recipient jid",
+          example: "551101234567@s.whatsapp.net",
+        }),
+        lastMessage: t.Object(
+          {
+            key: iMessageKey,
+            messageTimestamp: t.Number(),
+          },
+          {
+            description: "Last message in the chat",
+          },
+        ),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Chat message was unread successfully",
+          },
+        },
+      },
+    },
+  )
   .delete(
     "/:phoneNumber",
     async ({ params }) => {
