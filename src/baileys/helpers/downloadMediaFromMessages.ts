@@ -20,7 +20,7 @@ export async function downloadMediaFromMessages(
   options?: {
     includeMedia?: boolean;
   },
-) {
+): Promise<Record<string, string> | null> {
   const downloadedMedia: Record<string, string> = {};
   const mediaDir = path.resolve(process.cwd(), "media");
 
@@ -55,7 +55,7 @@ export async function downloadMediaFromMessages(
     }
   }
 
-  return downloadedMedia;
+  return Object.keys(downloadedMedia).length > 0 ? downloadedMedia : null;
 }
 
 function extractMediaMessage(message: proto.IMessage): {
