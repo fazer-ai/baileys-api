@@ -1,9 +1,10 @@
 import { t } from "elysia";
 
-export const jid = (moreInfo = "") => {
-  const description = moreInfo
-    ? "Recipient whatsapp jid"
-    : `Recipient whatsapp jid [${moreInfo}]`;
+export const jid = (moreInfo?: string) => {
+  const description =
+    moreInfo === undefined
+      ? "Recipient whatsapp jid"
+      : `Recipient whatsapp jid [${moreInfo}]`;
   return t.String({
     description: description,
     example: "551101234567@s.whatsapp.net",

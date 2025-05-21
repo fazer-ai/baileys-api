@@ -335,7 +335,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -362,7 +362,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -389,7 +389,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -442,7 +442,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -586,7 +586,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -730,7 +730,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1040,7 +1040,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1086,7 +1086,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1132,7 +1132,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1550,7 +1550,7 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -1900,7 +1900,7 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -2250,7 +2250,7 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid []",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
