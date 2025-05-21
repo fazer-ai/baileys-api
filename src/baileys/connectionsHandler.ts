@@ -7,6 +7,7 @@ import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
 import logger from "@/lib/logger";
 import type {
   AnyMessageContent,
+  ChatModification,
   MinimalMessage,
   WAPresence,
   proto,
@@ -101,6 +102,10 @@ export class BaileysConnectionsHandler {
     lastMessage: MinimalMessage,
   ) {
     return this.getConnection(phoneNumber).unreadMessages(jid, lastMessage);
+  }
+
+  chatModify(phoneNumber: string, mod: ChatModification, jid: string) {
+    return this.getConnection(phoneNumber).chatModify(mod, jid);
   }
 
   async logout(phoneNumber: string) {

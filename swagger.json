@@ -276,7 +276,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Disconnect initiated"
+            "description": "Disconnected"
           },
           "404": {
             "description": "Phone number not found"
@@ -335,7 +335,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient jid. Required for `composing`, `recording`, and `paused`.",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -362,7 +362,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient jid. Required for `composing`, `recording`, and `paused`.",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -389,7 +389,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient jid. Required for `composing`, `recording`, and `paused`.",
+                    "description": "Recipient whatsapp jid",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -442,7 +442,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient jid",
+                    "description": "Recipient whatsapp jid []",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -586,7 +586,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient jid",
+                    "description": "Recipient whatsapp jid []",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -730,7 +730,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient jid",
+                    "description": "Recipient whatsapp jid []",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1040,7 +1040,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient jid",
+                    "description": "Recipient whatsapp jid []",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1086,7 +1086,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient jid",
+                    "description": "Recipient whatsapp jid []",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1132,7 +1132,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient jid",
+                    "description": "Recipient whatsapp jid []",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1170,6 +1170,1094 @@
                 "required": [
                   "jid",
                   "lastMessage"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/chat-modify": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberChat-modify",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chat modification was successfully applied"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mod": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pushNameSetting": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "pushNameSetting"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pin": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "pin"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mute": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "mute"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "clear": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "clear"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "deleteForMe": {
+                            "type": "object",
+                            "properties": {
+                              "deleteMedia": {
+                                "type": "boolean"
+                              },
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "timestamp": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "deleteMedia",
+                              "key",
+                              "timestamp"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "deleteForMe"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "star": {
+                            "type": "object",
+                            "properties": {
+                              "messages": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "id"
+                                  ]
+                                }
+                              },
+                              "star": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "messages",
+                              "star"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "star"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "markRead": {
+                            "type": "boolean"
+                          },
+                          "lastMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "remoteJid": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    },
+                                    "participant": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "messageTimestamp": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "messageTimestamp"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "markRead",
+                          "lastMessages"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "delete": {
+                            "const": true,
+                            "type": "boolean"
+                          },
+                          "lastMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "remoteJid": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    },
+                                    "participant": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "messageTimestamp": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "messageTimestamp"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "delete",
+                          "lastMessages"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addLabel": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Label name",
+                                "type": "string"
+                              },
+                              "color": {
+                                "description": "Label color ID",
+                                "type": "number"
+                              },
+                              "deleted": {
+                                "description": "Is label has been deleted",
+                                "type": "boolean"
+                              },
+                              "predefinedId": {
+                                "description": "WhatsApp has 5 predefined labels (New customer, New order & etc)",
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "id"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addChatLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addChatLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "removeChatLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "removeChatLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addMessageLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              },
+                              "messageId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId",
+                              "messageId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addMessageLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "removeMessageLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              },
+                              "messageId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId",
+                              "messageId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "removeMessageLabel"
+                        ]
+                      }
+                    ]
+                  },
+                  "jid": {
+                    "description": "Recipient whatsapp jid []",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mod",
+                  "jid"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mod": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pushNameSetting": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "pushNameSetting"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pin": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "pin"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mute": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "mute"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "clear": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "clear"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "deleteForMe": {
+                            "type": "object",
+                            "properties": {
+                              "deleteMedia": {
+                                "type": "boolean"
+                              },
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "timestamp": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "deleteMedia",
+                              "key",
+                              "timestamp"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "deleteForMe"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "star": {
+                            "type": "object",
+                            "properties": {
+                              "messages": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "id"
+                                  ]
+                                }
+                              },
+                              "star": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "messages",
+                              "star"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "star"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "markRead": {
+                            "type": "boolean"
+                          },
+                          "lastMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "remoteJid": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    },
+                                    "participant": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "messageTimestamp": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "messageTimestamp"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "markRead",
+                          "lastMessages"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "delete": {
+                            "const": true,
+                            "type": "boolean"
+                          },
+                          "lastMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "remoteJid": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    },
+                                    "participant": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "messageTimestamp": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "messageTimestamp"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "delete",
+                          "lastMessages"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addLabel": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Label name",
+                                "type": "string"
+                              },
+                              "color": {
+                                "description": "Label color ID",
+                                "type": "number"
+                              },
+                              "deleted": {
+                                "description": "Is label has been deleted",
+                                "type": "boolean"
+                              },
+                              "predefinedId": {
+                                "description": "WhatsApp has 5 predefined labels (New customer, New order & etc)",
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "id"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addChatLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addChatLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "removeChatLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "removeChatLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addMessageLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              },
+                              "messageId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId",
+                              "messageId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addMessageLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "removeMessageLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              },
+                              "messageId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId",
+                              "messageId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "removeMessageLabel"
+                        ]
+                      }
+                    ]
+                  },
+                  "jid": {
+                    "description": "Recipient whatsapp jid []",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mod",
+                  "jid"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mod": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pushNameSetting": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "pushNameSetting"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pin": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "pin"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mute": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "mute"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "clear": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "clear"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "deleteForMe": {
+                            "type": "object",
+                            "properties": {
+                              "deleteMedia": {
+                                "type": "boolean"
+                              },
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "timestamp": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "deleteMedia",
+                              "key",
+                              "timestamp"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "deleteForMe"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "star": {
+                            "type": "object",
+                            "properties": {
+                              "messages": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "id"
+                                  ]
+                                }
+                              },
+                              "star": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "messages",
+                              "star"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "star"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "markRead": {
+                            "type": "boolean"
+                          },
+                          "lastMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "remoteJid": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    },
+                                    "participant": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "messageTimestamp": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "messageTimestamp"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "markRead",
+                          "lastMessages"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "delete": {
+                            "const": true,
+                            "type": "boolean"
+                          },
+                          "lastMessages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "remoteJid": {
+                                      "type": "string"
+                                    },
+                                    "fromMe": {
+                                      "type": "boolean"
+                                    },
+                                    "participant": {
+                                      "type": "string"
+                                    }
+                                  }
+                                },
+                                "messageTimestamp": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "messageTimestamp"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "delete",
+                          "lastMessages"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addLabel": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "Label name",
+                                "type": "string"
+                              },
+                              "color": {
+                                "description": "Label color ID",
+                                "type": "number"
+                              },
+                              "deleted": {
+                                "description": "Is label has been deleted",
+                                "type": "boolean"
+                              },
+                              "predefinedId": {
+                                "description": "WhatsApp has 5 predefined labels (New customer, New order & etc)",
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "id"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addChatLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addChatLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "removeChatLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "removeChatLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "addMessageLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              },
+                              "messageId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId",
+                              "messageId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "addMessageLabel"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "removeMessageLabel": {
+                            "type": "object",
+                            "properties": {
+                              "labelId": {
+                                "type": "string"
+                              },
+                              "messageId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "labelId",
+                              "messageId"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "removeMessageLabel"
+                        ]
+                      }
+                    ]
+                  },
+                  "jid": {
+                    "description": "Recipient whatsapp jid []",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mod",
+                  "jid"
                 ]
               }
             }

@@ -3,7 +3,13 @@ import { BaileysNotConnectedError } from "@/baileys/connection";
 import { buildMessageContent } from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
 import Elysia, { t } from "elysia";
-import { anyMessageContent, iMessageKey, phoneNumberParams } from "./types";
+import {
+  anyMessageContent,
+  chatModification,
+  iMessageKey,
+  jid,
+  phoneNumberParams,
+} from "./types";
 
 const connectionsController = new Elysia({
   prefix: "/connections",
@@ -25,6 +31,9 @@ const connectionsController = new Elysia({
         webhookUrl,
         webhookVerifyToken,
         includeMedia,
+      });
+      return new Response("Connection initiated", {
+        status: 200,
       });
     },
     {
@@ -68,15 +77,11 @@ const connectionsController = new Elysia({
     "/:phoneNumber/presence",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { type, toJid } = body;
 
-      return {
-        success: true,
-        data: await baileys.sendPresenceUpdate(phoneNumber, {
-          type,
-          toJid,
-        }),
-      };
+      await baileys.sendPresenceUpdate(phoneNumber, body);
+      return new Response("Presence update sent successfully", {
+        status: 200,
+      });
     },
     {
       params: phoneNumberParams,
@@ -96,11 +101,7 @@ const connectionsController = new Elysia({
           },
         ),
         toJid: t.Optional(
-          t.String({
-            description:
-              "Recipient jid. Required for `composing`, `recording`, and `paused`.",
-            example: "551101234567@s.whatsapp.net",
-          }),
+          jid("Required for `composing`, `recording`, and `paused`"),
         ),
       }),
       detail: {
@@ -129,10 +130,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: t.String({
-          description: "Recipient jid",
-          example: "551101234567@s.whatsapp.net",
-        }),
+        jid: jid(),
         messageContent: anyMessageContent,
       }),
       detail: {
@@ -175,18 +173,15 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, lastMessage } = body;
 
-      return {
-        success: true,
-        data: await baileys.unreadMessages(phoneNumber, jid, lastMessage),
-      };
+      await baileys.unreadMessages(phoneNumber, jid, lastMessage);
+      return new Response("Chat message was unread successfully", {
+        status: 200,
+      });
     },
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: t.String({
-          description: "Recipient jid",
-          example: "551101234567@s.whatsapp.net",
-        }),
+        jid: jid(),
         lastMessage: t.Object(
           {
             key: iMessageKey,
@@ -206,12 +201,41 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/chat-modify",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, mod } = body;
+
+      await baileys.chatModify(phoneNumber, mod, jid);
+      return new Response("Chat modification was successfully applied", {
+        status: 200,
+      });
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        mod: chatModification,
+        jid: jid(),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Chat modification was successfully applied",
+          },
+        },
+      },
+    },
+  )
   .delete(
     "/:phoneNumber",
     async ({ params }) => {
       const { phoneNumber } = params;
       try {
         await baileys.logout(phoneNumber);
+        return new Response("Disconnected", {
+          status: 200,
+        });
       } catch (e) {
         if (e instanceof BaileysNotConnectedError) {
           return new Response("Phone number not found", { status: 404 });
@@ -224,7 +248,7 @@ const connectionsController = new Elysia({
       detail: {
         responses: {
           200: {
-            description: "Disconnect initiated",
+            description: "Disconnected",
           },
           404: {
             description: "Phone number not found",

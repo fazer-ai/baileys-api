@@ -11,6 +11,7 @@ import makeWASocket, {
   type AnyMessageContent,
   type AuthenticationState,
   type BaileysEventMap,
+  type ChatModification,
   type ConnectionState,
   type MinimalMessage,
   type WAConnectionState,
@@ -205,14 +206,15 @@ export class BaileysConnection {
   }
 
   unreadMessages(jid: string, lastMessage: MinimalMessage) {
+    this.chatModify({ markRead: false, lastMessages: [lastMessage] }, jid);
+  }
+
+  chatModify(mod: ChatModification, jid: string) {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }
 
-    return this.socket.chatModify(
-      { markRead: false, lastMessages: [lastMessage] },
-      jid,
-    );
+    this.socket.chatModify(mod, jid);
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {

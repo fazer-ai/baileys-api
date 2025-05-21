@@ -1,5 +1,15 @@
 import { t } from "elysia";
 
+export const jid = (moreInfo = "") => {
+  const description = moreInfo
+    ? "Recipient whatsapp jid"
+    : `Recipient whatsapp jid [${moreInfo}]`;
+  return t.String({
+    description: description,
+    example: "551101234567@s.whatsapp.net",
+  });
+};
+
 export const phoneNumberParams = t.Object({
   phoneNumber: t.String({
     minLength: 6,
@@ -49,5 +59,90 @@ export const anyMessageContent = t.Union([
         example: "👍",
       }),
     }),
+  }),
+]);
+
+const lastMessageList = t.Array(
+  t.Object({
+    key: iMessageKey,
+    messageTimestamp: t.Number(),
+  }),
+);
+
+const chatLabelAssociationActionBody = t.Object({
+  labelId: t.String(),
+});
+
+const messageLabelAssociationActionBody = t.Object({
+  labelId: t.String(),
+  messageId: t.String(),
+});
+
+export const chatModification = t.Union([
+  t.Object({
+    pushNameSetting: t.String(),
+  }),
+  t.Object({
+    pin: t.Boolean(),
+  }),
+  t.Object({
+    mute: t.Number(),
+  }),
+  t.Object({
+    clear: t.Boolean(),
+  }),
+  t.Object({
+    deleteForMe: t.Object({
+      deleteMedia: t.Boolean(),
+      key: iMessageKey,
+      timestamp: t.Number(),
+    }),
+  }),
+  t.Object({
+    star: t.Object({
+      messages: t.Array(
+        t.Object({
+          id: t.String(),
+          fromMe: t.Optional(t.Boolean()),
+        }),
+      ),
+      star: t.Boolean(),
+    }),
+  }),
+  t.Object({
+    markRead: t.Boolean(),
+    lastMessages: lastMessageList,
+  }),
+  t.Object({
+    delete: t.Literal(true),
+    lastMessages: lastMessageList,
+  }),
+  t.Object({
+    addLabel: t.Object({
+      id: t.String(),
+      name: t.Optional(t.String({ description: "Label name" })),
+      color: t.Optional(t.Number({ description: "Label color ID" })),
+      deleted: t.Optional(
+        t.Boolean({ description: "Is label has been deleted" }),
+      ),
+      predefinedId: t.Optional(
+        t.Number({
+          description:
+            "WhatsApp has 5 predefined labels (New customer, New order & etc)",
+        }),
+      ),
+    }),
+  }),
+  t.Object({
+    addChatLabel: chatLabelAssociationActionBody,
+  }),
+  t.Object({
+    removeChatLabel: chatLabelAssociationActionBody,
+  }),
+  t.Object({
+    addMessageLabel: messageLabelAssociationActionBody,
+  }),
+  t.Object({
+    removeMessageLabel: messageLabelAssociationActionBody,
   }),
 ]);
