@@ -168,40 +168,6 @@ const connectionsController = new Elysia({
     },
   )
   .post(
-    "/:phoneNumber/unread-chat",
-    async ({ params, body }) => {
-      const { phoneNumber } = params;
-      const { jid, lastMessage } = body;
-
-      await baileys.unreadMessages(phoneNumber, jid, lastMessage);
-      return new Response("Chat message was unread successfully", {
-        status: 200,
-      });
-    },
-    {
-      params: phoneNumberParams,
-      body: t.Object({
-        jid: jid(),
-        lastMessage: t.Object(
-          {
-            key: iMessageKey,
-            messageTimestamp: t.Number(),
-          },
-          {
-            description: "Last message in the chat",
-          },
-        ),
-      }),
-      detail: {
-        responses: {
-          200: {
-            description: "Chat message was unread successfully",
-          },
-        },
-      },
-    },
-  )
-  .post(
     "/:phoneNumber/chat-modify",
     async ({ params, body }) => {
       const { phoneNumber } = params;

@@ -13,7 +13,6 @@ import makeWASocket, {
   type BaileysEventMap,
   type ChatModification,
   type ConnectionState,
-  type MinimalMessage,
   type WAConnectionState,
   type WAPresence,
   type proto,
@@ -203,10 +202,6 @@ export class BaileysConnection {
     }
 
     return this.socket.readMessages(keys);
-  }
-
-  unreadMessages(jid: string, lastMessage: MinimalMessage) {
-    this.chatModify({ markRead: false, lastMessages: [lastMessage] }, jid);
   }
 
   chatModify(mod: ChatModification, jid: string) {

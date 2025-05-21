@@ -8,7 +8,6 @@ import logger from "@/lib/logger";
 import type {
   AnyMessageContent,
   ChatModification,
-  MinimalMessage,
   WAPresence,
   proto,
 } from "@whiskeysockets/baileys";
@@ -94,14 +93,6 @@ export class BaileysConnectionsHandler {
 
   readMessages(phoneNumber: string, keys: proto.IMessageKey[]) {
     return this.getConnection(phoneNumber).readMessages(keys);
-  }
-
-  unreadMessages(
-    phoneNumber: string,
-    jid: string,
-    lastMessage: MinimalMessage,
-  ) {
-    return this.getConnection(phoneNumber).unreadMessages(jid, lastMessage);
   }
 
   chatModify(phoneNumber: string, mod: ChatModification, jid: string) {
