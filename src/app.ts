@@ -15,7 +15,7 @@ const app = new Elysia()
       "%s %s [%s] %o",
       request.method,
       request.url,
-      set.status,
+      (response as Response).status ?? set.status,
       response ?? {},
     );
   })

@@ -1019,7 +1019,6 @@
         "tags": [
           "Media"
         ],
-        "description": "Media file download",
         "security": [
           {
             "xApiKey": []

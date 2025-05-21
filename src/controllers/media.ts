@@ -1,5 +1,4 @@
 import path from "node:path";
-import logger from "@/lib/logger";
 import { authMiddleware } from "@/middlewares/auth";
 import { file } from "bun";
 import Elysia, { t } from "elysia";
@@ -8,7 +7,6 @@ const mediaController = new Elysia({
   prefix: "/media",
   detail: {
     tags: ["Media"],
-    description: "Media file download",
     security: [{ xApiKey: [] }],
   },
 })
@@ -20,13 +18,11 @@ const mediaController = new Elysia({
       const { messageId } = params;
 
       const mediaPath = path.resolve(process.cwd(), "media", messageId);
-      const media = file(mediaPath);
-      try {
-        return await media.stream();
-      } catch (error) {
-        logger.error("[ERROR] %s", error);
-        return new Response("File not found", { status: 404 });
+      const mediaFile = file(mediaPath);
+      if (await mediaFile.exists()) {
+        return mediaFile.stream();
       }
+      return new Response("File not found", { status: 404 });
     },
     {
       params: t.Object({
