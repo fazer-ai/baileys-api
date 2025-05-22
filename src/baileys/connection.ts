@@ -24,7 +24,6 @@ import { toDataURL } from "qrcode";
 
 export interface BaileysConnectionOptions {
   clientName?: string;
-  phoneNumber: string;
   webhookUrl: string;
   webhookVerifyToken: string;
   isReconnect?: boolean;
@@ -56,8 +55,8 @@ export class BaileysConnection {
     "appStateSyncKeyShare",
   ];
 
-  private clientName: string;
   private phoneNumber: string;
+  private clientName: string;
   private webhookUrl: string;
   private webhookVerifyToken: string;
   private isReconnect: boolean;
@@ -67,9 +66,9 @@ export class BaileysConnection {
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: NodeJS.Timer | null = null;
 
-  constructor(options: BaileysConnectionOptions) {
+  constructor(phoneNumber: string, options: BaileysConnectionOptions) {
+    this.phoneNumber = phoneNumber;
     this.clientName = options.clientName || "Chrome";
-    this.phoneNumber = options.phoneNumber;
     this.webhookUrl = options.webhookUrl;
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.onConnectionClose = options.onConnectionClose || null;
@@ -209,7 +208,7 @@ export class BaileysConnection {
       throw new BaileysNotConnectedError();
     }
 
-    this.socket.chatModify(mod, jid);
+    return this.socket.chatModify(mod, jid);
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
