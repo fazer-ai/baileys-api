@@ -24,6 +24,7 @@ const connectionsController = new Elysia({
     "/:phoneNumber",
     async ({ params, body }) => {
       const { phoneNumber } = params;
+
       await baileys.connect(phoneNumber, body);
     },
     {
