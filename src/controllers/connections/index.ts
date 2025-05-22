@@ -107,11 +107,20 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, messageContent } = body;
 
+      const response = await baileys.sendMessage(phoneNumber, {
+        jid,
+        messageContent: buildMessageContent(messageContent),
+      });
+
+      if (!response) {
+        return new Response("Message not sent", { status: 500 });
+      }
+
       return {
-        data: await baileys.sendMessage(phoneNumber, {
-          jid,
-          messageContent: buildMessageContent(messageContent),
-        }),
+        data: {
+          key: response.key,
+          messageTimestamp: response.messageTimestamp,
+        },
       };
     },
     {
@@ -124,6 +133,19 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Message sent successfully",
+            content: {
+              "application/json": {
+                schema: t.Object({
+                  data: t.Object({
+                    key: iMessageKey,
+                    messageTimestamp: t.String(),
+                  }),
+                }),
+              },
+            },
+          },
+          500: {
+            description: "Message not sent",
           },
         },
       },

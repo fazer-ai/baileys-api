@@ -431,7 +431,51 @@
         ],
         "responses": {
           "200": {
-            "description": "Message sent successfully"
+            "description": "Message sent successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "remoteJid": {
+                              "type": "string"
+                            },
+                            "fromMe": {
+                              "type": "boolean"
+                            },
+                            "participant": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "messageTimestamp": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "messageTimestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Message not sent"
           }
         },
         "requestBody": {
