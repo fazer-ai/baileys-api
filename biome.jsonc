@@ -5,7 +5,7 @@
     "indentStyle": "space",
     "indentWidth": 2,
     "lineEnding": "lf",
-    "include": ["src/**/*.ts", "scripts/**/*.ts"]
+    "include": ["src/**/*.ts", "scripts/**/*.ts", "git-hooks.config.ts"]
   },
   "organizeImports": {
     "enabled": true,

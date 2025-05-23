@@ -2,6 +2,10 @@ import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMe
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
+import type {
+  BaileysConnectionOptions,
+  BaileysConnectionWebhookPayload,
+} from "@/baileys/types";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
@@ -21,15 +25,6 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
-
-export interface BaileysConnectionOptions {
-  clientName?: string;
-  webhookUrl: string;
-  webhookVerifyToken: string;
-  isReconnect?: boolean;
-  includeMedia?: boolean;
-  onConnectionClose?: () => void;
-}
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -273,20 +268,18 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
-    const media = await downloadMediaFromMessages(data.messages, {
-      includeMedia: this.includeMedia,
-    });
-    let payload: {
-      event: keyof BaileysEventMap;
-      data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
-      extra?: unknown;
-    } = {
+    const payload: BaileysConnectionWebhookPayload = {
       event: "messages.upsert",
       data,
     };
-    if (Object.keys(media).length > 0) {
-      payload = { ...payload, extra: { media } };
+
+    const media = await downloadMediaFromMessages(data.messages, {
+      includeMedia: this.includeMedia,
+    });
+    if (media) {
+      payload.extra = { media };
     }
+
     this.sendToWebhook(payload);
   }
 
@@ -328,18 +321,17 @@ export class BaileysConnection {
   }
 
   private async sendToWebhook(
-    payload: {
-      event: keyof BaileysEventMap;
-      data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
-      extra?: unknown;
-    },
+    payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;
     },
   ) {
-    const sanitizedPayload = deepSanitizeObject(payload, {
-      omitKeys: this.LOGGER_OMIT_KEYS,
-    });
+    const sanitizedPayload = deepSanitizeObject(
+      { ...payload },
+      {
+        omitKeys: this.LOGGER_OMIT_KEYS,
+      },
+    );
 
     logger.debug(
       "[%s] [sendToWebhook] (options: %o) payload=%o",
@@ -409,11 +401,7 @@ export class BaileysConnection {
   }
 
   private async sendPayloadToWebhook(
-    payload: {
-      event: keyof BaileysEventMap;
-      data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
-      extra?: unknown;
-    },
+    payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;
     },

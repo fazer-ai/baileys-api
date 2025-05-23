@@ -102,6 +102,6 @@ export async function getRedisSavedAuthStateIds<T>(): Promise<
   const metadata = await multi.execAsPipeline();
   return ids.map((id, i) => ({
     id,
-    metadata: JSON.parse(metadata[i] as string),
+    metadata: JSON.parse(metadata[i].toString()),
   }));
 }

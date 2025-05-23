@@ -1,9 +1,9 @@
 import {
   BaileysConnection,
-  type BaileysConnectionOptions,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
 import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
+import type { BaileysConnectionOptions } from "@/baileys/types";
 import logger from "@/lib/logger";
 import type {
   AnyMessageContent,
