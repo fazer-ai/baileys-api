@@ -2,7 +2,6 @@ import type { BaileysEventMap } from "@whiskeysockets/baileys";
 
 export interface BaileysConnectionOptions {
   clientName?: string;
-  phoneNumber: string;
   webhookUrl: string;
   webhookVerifyToken: string;
   isReconnect?: boolean;
