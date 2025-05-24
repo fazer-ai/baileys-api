@@ -43,7 +43,7 @@
     "pino-caller": "^4.0.0"
   },
   "patchedDependencies": {
-    "@whiskeysockets/baileys@6.7.16": "patches/@whiskeysockets%2Fbaileys@6.7.16.patch",
+    "@whiskeysockets/baileys@6.7.17": "patches/@whiskeysockets%2Fbaileys@6.7.17.patch",
     "pino-pretty@13.0.0": "patches/pino-pretty@13.0.0.patch"
   }
 }

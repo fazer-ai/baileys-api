@@ -1,21 +1,3 @@
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-2fe232c6b90d5adf b/.bun-tag-2fe232c6b90d5adf
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-600e83f6d48981a8 b/.bun-tag-600e83f6d48981a8
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-72dced8de318edc8 b/.bun-tag-72dced8de318edc8
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-8a7003c32aded7b0 b/.bun-tag-8a7003c32aded7b0
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-aa4cf5b7cd5bc17f b/.bun-tag-aa4cf5b7cd5bc17f
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-e6c8e597fae8e352 b/.bun-tag-e6c8e597fae8e352
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
 index 977c048b64a6894165e58bca12c80cb13cce5658..692093cd3b6d8a274ccfafd2e6aaa3aad8d02ffe 100644
 --- a/lib/Socket/Client/websocket.js
@@ -30,10 +12,10 @@ index 977c048b64a6894165e58bca12c80cb13cce5658..692093cd3b6d8a274ccfafd2e6aaa3aa
              (_b = this.socket) === null || _b === void 0 ? void 0 : _b.on(event, (...args) => this.emit(event, ...args));
          }
 diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
-index e9d112cb1f7f68f50333abddd3adb63eb7d8dc77..4c35eb5448d32c6a555ee9aacd0d69aac9a299e8 100644
+index 9b39302799cbd768f46d3a4bd6cd7a50ed495e38..0a82c0810063d117d298acfab08a68034ef6ea48 100644
 --- a/lib/Socket/socket.js
 +++ b/lib/Socket/socket.js
-@@ -77,6 +77,9 @@ const makeSocket = (config) => {
+@@ -80,6 +80,9 @@ const makeSocket = (config) => {
      };
      /** log & process any unexpected errors */
      const onUnexpectedError = (err, msg) => {
@@ -44,10 +26,10 @@ index e9d112cb1f7f68f50333abddd3adb63eb7d8dc77..4c35eb5448d32c6a555ee9aacd0d69aa
      };
      /** await the next incoming message */
 diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
-index b5e9016e8921bf75f1922b6941d4c3e7983278fa..0037c3306322797cd911819505e3f4ab4b468405 100644
+index 897b25857d68f818f719d40dec1816a01479835e..b9d794119a5f30817856a5ab44e76cbd2b60023c 100644
 --- a/lib/Types/Message.d.ts
 +++ b/lib/Types/Message.d.ts
-@@ -111,7 +111,7 @@ export type AnyMediaMessageContent = (({
+@@ -107,7 +107,7 @@ export type AnyMediaMessageContent = (({
      isAnimated?: boolean;
  } & WithDimensions) | ({
      document: WAMediaUpload;
@@ -56,7 +38,7 @@ index b5e9016e8921bf75f1922b6941d4c3e7983278fa..0037c3306322797cd911819505e3f4ab
      fileName?: string;
      caption?: string;
  } & Contextable)) & {
-@@ -215,6 +215,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+@@ -211,6 +211,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
      font?: number;
      /** if it is broadcast */
      broadcast?: boolean;
@@ -65,7 +47,7 @@ index b5e9016e8921bf75f1922b6941d4c3e7983278fa..0037c3306322797cd911819505e3f4ab
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
 diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
-index fbb29b18e8c0c50bbf42ef10de178480da53e76b..b9f9cd31ce2fc564a3c5769c6cf62c925bd7f282 100644
+index 7a6127e952e87a794e516b977c9a74bd0cf5526d..9d04e9141e2ff467d9b7b740d7b15cb3ef75f2bc 100644
 --- a/lib/Utils/auth-utils.js
 +++ b/lib/Utils/auth-utils.js
 @@ -124,6 +124,16 @@ const addTransactionCapability = (state, logger, { maxCommitRetries, delayBetwee
@@ -86,10 +68,10 @@ index fbb29b18e8c0c50bbf42ef10de178480da53e76b..b9f9cd31ce2fc564a3c5769c6cf62c92
          async transaction(work) {
              let result;
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
-index bf7efffa7572042ddb1d973cbbbcebd9e8f2162c..17425664d912ca7f9b5acca826c03d0597077bed 100644
+index 13fb17ded091029f7b1130da33ea971538bc88fd..2b5b3f809eab92d43af98685ae1347db02bfc85b 100644
 --- a/lib/Utils/messages.js
 +++ b/lib/Utils/messages.js
-@@ -140,7 +140,7 @@ const prepareWAMessageMedia = async (message, options) => {
+@@ -141,7 +141,7 @@ const prepareWAMessageMedia = async (message, options) => {
                      logger === null || logger === void 0 ? void 0 : logger.debug('computed audio duration');
                  }
                  if (requiresWaveformProcessing) {
