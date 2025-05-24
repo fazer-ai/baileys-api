@@ -9,6 +9,7 @@
         "@ffmpeg-installer/ffmpeg": "^1.1.0",
         "@hapi/boom": "^10.0.1",
         "@whiskeysockets/baileys": "^6.7.17",
+        "audio-decode": "^2.2.3",
         "elysia": "^1.3.1",
         "fluent-ffmpeg": "^2.1.3",
         "link-preview-js": "^3.0.15",
@@ -31,8 +32,8 @@
     },
   },
   "patchedDependencies": {
+    "pino-pretty@13.0.0": "patches/pino-pretty@13.0.0.patch",
     "@whiskeysockets/baileys@6.7.17": "patches/@whiskeysockets%2Fbaileys@6.7.17.patch",
-    "pino-pretty@13.0.0": "patches/pino-pretty@13.0.0.patch"
   },
   "packages": {
     "@biomejs/biome": ["@biomejs/biome@1.9.4", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "1.9.4", "@biomejs/cli-darwin-x64": "1.9.4", "@biomejs/cli-linux-arm64": "1.9.4", "@biomejs/cli-linux-arm64-musl": "1.9.4", "@biomejs/cli-linux-x64": "1.9.4", "@biomejs/cli-linux-x64-musl": "1.9.4", "@biomejs/cli-win32-arm64": "1.9.4", "@biomejs/cli-win32-x64": "1.9.4" }, "bin": { "biome": "bin/biome" } }, "sha512-1rkd7G70+o9KkTn5KLmDYXihGoTaIGO9PIIN2ZB7UJxFrWw04CZHPYiMRjYsaDvVV7hP1dYNRLxSANLaBFGpog=="],
@@ -60,6 +61,8 @@
     "@elysiajs/swagger": ["@elysiajs/swagger@1.3.0", "", { "dependencies": { "@scalar/themes": "^0.9.52", "@scalar/types": "^0.0.12", "openapi-types": "^12.1.3", "pathe": "^1.1.2" }, "peerDependencies": { "elysia": ">= 1.3.0" } }, "sha512-0fo3FWkDRPNYpowJvLz3jBHe9bFe6gruZUyf+feKvUEEMG9ZHptO1jolSoPE0ffFw1BgN1/wMsP19p4GRXKdfg=="],
 
     "@emnapi/runtime": ["@emnapi/runtime@1.4.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-pBPWdu6MLKROBX05wSNKcNb++m5Er+KQ9QkB+WVM+pW2Kx9hoSrVTnu3BdkI5eBLZoKu/J6mW/B6i6bJB2ytXQ=="],
+
+    "@eshaz/web-worker": ["@eshaz/web-worker@1.2.2", "", {}, "sha512-WxXiHFmD9u/owrzempiDlBB1ZYqiLnm9s6aPc8AlFQalq2tKmqdmMr9GXOupDgzXtqnBipj8Un0gkIm7Sjf8mw=="],
 
     "@eslint-community/eslint-utils": ["@eslint-community/eslint-utils@4.6.1", "", { "dependencies": { "eslint-visitor-keys": "^3.4.3" }, "peerDependencies": { "eslint": "^6.0.0 || ^7.0.0 || >=8.0.0" } }, "sha512-KTsJMmobmbrFLe3LDh0PC2FXpcSYJt/MLjlkh/9LEnmKYLSYmT/0EW9JWANjeoemiuZrmogti0tW5Ch+qNUYDw=="],
 
@@ -197,6 +200,10 @@
 
     "@sinclair/typebox": ["@sinclair/typebox@0.34.33", "", {}, "sha512-5HAV9exOMcXRUxo+9iYB5n09XxzCXnfy4VTNW4xnDv+FgjzAGY989C28BIdljKqmF+ZltUwujE3aossvcVtq6g=="],
 
+    "@thi.ng/bitstream": ["@thi.ng/bitstream@2.4.19", "", { "dependencies": { "@thi.ng/errors": "^2.5.33" } }, "sha512-aa4085YAwjglHu9vA6ypKLtrc/u1WCoNPybhvDgTtvGjpltXTlmsgE6aNwJA5NDM1ZqbMZ2uqM63qY7jddxLGw=="],
+
+    "@thi.ng/errors": ["@thi.ng/errors@2.5.33", "", {}, "sha512-6aKtUITb4nj+2KixXOoawNVJGY6P56Wnmv2YZnQ8SsnKNZAcL7GPbP6/KGg+D2JhnbJPjUDFcH0Fq8bxY+FWoQ=="],
+
     "@tokenizer/token": ["@tokenizer/token@0.3.0", "", {}, "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A=="],
 
     "@types/estree": ["@types/estree@1.0.7", "", {}, "sha512-w28IoSUCJpidD/TGviZwwMJckNESJZXFu7NBZ5YJ4mEUnNraUn9Pm8HSZm/jDF1pDWYKspWE7oVphigUPRakIQ=="],
@@ -229,6 +236,14 @@
 
     "@unhead/schema": ["@unhead/schema@1.11.20", "", { "dependencies": { "hookable": "^5.5.3", "zhead": "^2.2.4" } }, "sha512-0zWykKAaJdm+/Y7yi/Yds20PrUK7XabLe9c3IRcjnwYmSWY6z0Cr19VIs3ozCj8P+GhR+/TI2mwtGlueCEYouA=="],
 
+    "@wasm-audio-decoders/common": ["@wasm-audio-decoders/common@9.0.7", "", { "dependencies": { "@eshaz/web-worker": "1.2.2", "simple-yenc": "^1.0.4" } }, "sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag=="],
+
+    "@wasm-audio-decoders/flac": ["@wasm-audio-decoders/flac@0.2.8", "", { "dependencies": { "@wasm-audio-decoders/common": "9.0.7", "codec-parser": "2.5.0" } }, "sha512-CxvylHiUmtCrf0hUSzYQlD9RtoY/LsPuKR8M6ZjtQrXHzSLir0whWjPs1yb+hDZdK8R1NbESHcz2ZV88eMcKUg=="],
+
+    "@wasm-audio-decoders/ogg-vorbis": ["@wasm-audio-decoders/ogg-vorbis@0.1.18", "", { "dependencies": { "@wasm-audio-decoders/common": "9.0.7", "codec-parser": "2.5.0" } }, "sha512-kEg6b5vW4wAXfGAqe5wzvSuAs2FEhPY/rniYF/Gx3rgxQcPiRI86SBAyIRWFJ7O4CY/JJHX57B1OCDueMlBSLQ=="],
+
+    "@wasm-audio-decoders/opus-ml": ["@wasm-audio-decoders/opus-ml@0.0.1", "", { "dependencies": { "@wasm-audio-decoders/common": "9.0.7" } }, "sha512-FALuUCz10HS2h8KB4L7wmfXncOuBDFvlKRk6Ga2rw8sr/zNIpwCjhhomxH4JKPhVLOnBjZfrPa8aTFIQq74vzQ=="],
+
     "@whiskeysockets/baileys": ["@whiskeysockets/baileys@6.7.17", "", { "dependencies": { "@cacheable/node-cache": "^1.4.0", "@hapi/boom": "^9.1.3", "@whiskeysockets/eslint-config": "github:whiskeysockets/eslint-config", "async-mutex": "^0.5.0", "axios": "^1.6.0", "libsignal": "github:WhiskeySockets/libsignal-node", "lodash": "^4.17.21", "music-metadata": "^7.12.3", "pino": "^9.6", "protobufjs": "^7.2.4", "ws": "^8.13.0" }, "peerDependencies": { "audio-decode": "^2.1.3", "jimp": "^0.16.1", "link-preview-js": "^3.0.0", "sharp": "^0.32.6" }, "optionalPeers": ["audio-decode", "jimp", "link-preview-js", "sharp"] }, "sha512-0cNUTFsf5tkVvL0YJELo3UHRGBwy/Rqhk2s/i2+P5XPDHtDKeErXjwKcCB+aITEi2K32TJn87yg6NVEaI9tLSg=="],
 
     "@whiskeysockets/eslint-config": ["@whiskeysockets/eslint-config@github:whiskeysockets/eslint-config#f264cd0", { "dependencies": { "@typescript-eslint/eslint-plugin": "^8.32.0", "@typescript-eslint/parser": "^8.32.0", "eslint-plugin-simple-import-sort": "^12.1.1" }, "peerDependencies": { "eslint": "*", "typescript": ">=4" } }, "WhiskeySockets-eslint-config-f264cd0"],
@@ -254,6 +269,12 @@
     "asynckit": ["asynckit@0.4.0", "", {}, "sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q=="],
 
     "atomic-sleep": ["atomic-sleep@1.0.0", "", {}, "sha512-kNOjDqAh7px0XWNI+4QbzoiR/nTkHAWNud2uvnJquD1/x5a7EQZMJT0AczqK0Qn67oY/TTQ1LbUKajZpp3I9tQ=="],
+
+    "audio-buffer": ["audio-buffer@5.0.0", "", {}, "sha512-gsDyj1wwUp8u7NBB+eW6yhLb9ICf+0eBmDX8NGaAS00w8/fLqFdxUlL5Ge/U8kB64DlQhdonxYC59dXy1J7H/w=="],
+
+    "audio-decode": ["audio-decode@2.2.3", "", { "dependencies": { "@wasm-audio-decoders/flac": "^0.2.4", "@wasm-audio-decoders/ogg-vorbis": "^0.1.15", "audio-buffer": "^5.0.0", "audio-type": "^2.2.1", "mpg123-decoder": "^1.0.0", "node-wav": "^0.0.2", "ogg-opus-decoder": "^1.6.12", "qoa-format": "^1.0.1" } }, "sha512-Z0lHvMayR/Pad9+O9ddzaBJE0DrhZkQlStrC1RwcAHF3AhQAsdwKHeLGK8fYKyp2DDU6xHxzGb4CLMui12yVrg=="],
+
+    "audio-type": ["audio-type@2.2.1", "", {}, "sha512-En9AY6EG1qYqEy5L/quryzbA4akBpJrnBZNxeKTqGHC2xT9Qc4aZ8b7CcbOMFTTc/MGdoNyp+SN4zInZNKxMYA=="],
 
     "axios": ["axios@1.9.0", "", { "dependencies": { "follow-redirects": "^1.15.6", "form-data": "^4.0.0", "proxy-from-env": "^1.1.0" } }, "sha512-re4CqKTJaURpzbLHtIi6XpDv20/CnpXOtjRY5/CU32L8gU8ek9UIivcfvSWvmKEngmVbrUtPpdDwWDWL7DNHvg=="],
 
@@ -292,6 +313,8 @@
     "cliui": ["cliui@6.0.0", "", { "dependencies": { "string-width": "^4.2.0", "strip-ansi": "^6.0.0", "wrap-ansi": "^6.2.0" } }, "sha512-t6wbgtoCXvAzst7QgXxJYqPt0usEfbgQdftEPbLL/cvv6HPE5VgvqCuAIDR0NgU52ds6rFwqrgakNLrHEjCbrQ=="],
 
     "cluster-key-slot": ["cluster-key-slot@1.1.2", "", {}, "sha512-RMr0FhtfXemyinomL4hrWcYJxmX6deFdCxpJzhDttxgO1+bcCnkk+9drydLVDmAMG7NE6aN/fl4F7ucU/90gAA=="],
+
+    "codec-parser": ["codec-parser@2.5.0", "", {}, "sha512-Ru9t80fV8B0ZiixQl8xhMTLru+dzuis/KQld32/x5T/+3LwZb0/YvQdSKytX9JqCnRdiupvAvyYJINKrXieziQ=="],
 
     "color": ["color@4.2.3", "", { "dependencies": { "color-convert": "^2.0.1", "color-string": "^1.9.0" } }, "sha512-1rXeuUUiGGrykh+CeBdu5Ie7OJwinCgQY0bc7GCRxy5xVHy+moaqkpL/jqQq0MtQOeYcrqEz4abc5f0KtU7W4A=="],
 
@@ -517,13 +540,19 @@
 
     "minimist": ["minimist@1.2.8", "", {}, "sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA=="],
 
+    "mpg123-decoder": ["mpg123-decoder@1.0.2", "", { "dependencies": { "@wasm-audio-decoders/common": "9.0.7" } }, "sha512-cw0Laz57gumQsfCqnNeGtgq64EcyrK/z4qx+kq4iba7iSSXfI7uO3jiHjdHxNp4PB2v08VZYZ2Fr68VM1JkaPQ=="],
+
     "ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
 
     "music-metadata": ["music-metadata@7.14.0", "", { "dependencies": { "@tokenizer/token": "^0.3.0", "content-type": "^1.0.5", "debug": "^4.3.4", "file-type": "^16.5.4", "media-typer": "^1.1.0", "strtok3": "^6.3.0", "token-types": "^4.2.1" } }, "sha512-xrm3w7SV0Wk+OythZcSbaI8mcr/KHd0knJieu8bVpaPfMv/Agz5EooCAPz3OR5hbYMiUG6dgAPKZKnMzV+3amA=="],
 
     "natural-compare": ["natural-compare@1.4.0", "", {}, "sha512-OWND8ei3VtNC9h7V60qff3SVobHr996CTwgxubgyQYEpg290h9J0buyECNNJexkFm5sOajh5G116RYA1c8ZMSw=="],
 
+    "node-wav": ["node-wav@0.0.2", "", {}, "sha512-M6Rm/bbG6De/gKGxOpeOobx/dnGuP0dz40adqx38boqHhlWssBJZgLCPBNtb9NkrmnKYiV04xELq+R6PFOnoLA=="],
+
     "nth-check": ["nth-check@2.1.1", "", { "dependencies": { "boolbase": "^1.0.0" } }, "sha512-lqjrjmaOoAnWfMmBPL+XNnynZh2+swxiX3WUE0s4yEHI6m+AwrK2UZOimIRl3X/4QctVqS8AiZjFqyOGrMXb/w=="],
+
+    "ogg-opus-decoder": ["ogg-opus-decoder@1.7.0", "", { "dependencies": { "@wasm-audio-decoders/common": "9.0.7", "@wasm-audio-decoders/opus-ml": "0.0.1", "codec-parser": "2.5.0", "opus-decoder": "0.7.10" } }, "sha512-/lrj4+ZGjxZCCNiDSlNEckLrCL+UU9N9XtqES7sXq/Lm6PMi8Pwn/D6TTsbvG45krt21ohAh2FqdEsMuI7ZN4w=="],
 
     "on-exit-leak-free": ["on-exit-leak-free@2.1.2", "", {}, "sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA=="],
 
@@ -532,6 +561,8 @@
     "openapi-types": ["openapi-types@12.1.3", "", {}, "sha512-N4YtSYJqghVu4iek2ZUvcN/0aqH1kRDuNqzcycDxhOUpg7GdvLa2F3DgS6yBNhInhv2r/6I0Flkn7CqL8+nIcw=="],
 
     "optionator": ["optionator@0.9.4", "", { "dependencies": { "deep-is": "^0.1.3", "fast-levenshtein": "^2.0.6", "levn": "^0.4.1", "prelude-ls": "^1.2.1", "type-check": "^0.4.0", "word-wrap": "^1.2.5" } }, "sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g=="],
+
+    "opus-decoder": ["opus-decoder@0.7.10", "", { "dependencies": { "@wasm-audio-decoders/common": "9.0.7" } }, "sha512-qUZdyAK+kKy/wUSd/oZ0ULE9U/yskp332n2oBvSP/Jz/wHsHiVRg33f/tRUR8TRiw+ka7AQUclxcr5TbUJo+VA=="],
 
     "p-limit": ["p-limit@2.3.0", "", { "dependencies": { "p-try": "^2.0.0" } }, "sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w=="],
 
@@ -583,6 +614,8 @@
 
     "punycode": ["punycode@1.3.2", "", {}, "sha512-RofWgt/7fL5wP1Y7fxE7/EmTLzQVnB0ycyibJ0OOHIlJqTNzglYFxVwETOcIoJqJmpDXJ9xImDv+Fq34F/d4Dw=="],
 
+    "qoa-format": ["qoa-format@1.0.1", "", { "dependencies": { "@thi.ng/bitstream": "^2.2.12" } }, "sha512-dMB0Z6XQjdpz/Cw4Rf6RiBpQvUSPCfYlQMWvmuWlWkAT7nDQD29cVZ1SwDUB6DYJSitHENwbt90lqfI+7bvMcw=="],
+
     "qrcode": ["qrcode@1.5.4", "", { "dependencies": { "dijkstrajs": "^1.0.1", "pngjs": "^5.0.0", "yargs": "^15.3.1" }, "bin": { "qrcode": "bin/qrcode" } }, "sha512-1ca71Zgiu6ORjHqFBDpnSMTR2ReToX4l1Au1VFLyVeBTFavzQnv5JxMFr3ukHVKpSrSA2MCk0lNJSykjUfz7Zg=="],
 
     "qrcode-terminal": ["qrcode-terminal@0.12.0", "", { "bin": { "qrcode-terminal": "./bin/qrcode-terminal.js" } }, "sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ=="],
@@ -628,6 +661,8 @@
     "shebang-regex": ["shebang-regex@3.0.0", "", {}, "sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A=="],
 
     "simple-swizzle": ["simple-swizzle@0.2.2", "", { "dependencies": { "is-arrayish": "^0.3.1" } }, "sha512-JA//kQgZtbuY83m+xT+tXJkmJncGMTFT+C+g2h2R9uxkYIrE2yy9sgmcLhCnw57/WSD+Eh3J97FPEDFnbXnDUg=="],
+
+    "simple-yenc": ["simple-yenc@1.0.4", "", {}, "sha512-5gvxpSd79e9a3V4QDYUqnqxeD4HGlhCakVpb6gMnDD7lexJggSBJRBO5h52y/iJrdXRilX9UCuDaIJhSWm5OWw=="],
 
     "sonic-boom": ["sonic-boom@4.2.0", "", { "dependencies": { "atomic-sleep": "^1.0.0" } }, "sha512-INb7TM37/mAcsGmc9hyyI6+QR3rR1zVRu36B0NeGXKnOOLiZOfER5SA+N7X7k3yUYRzLWafduTDvJAfDswwEww=="],
 
