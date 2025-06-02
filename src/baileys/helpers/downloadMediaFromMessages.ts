@@ -73,15 +73,12 @@ function extractMediaMessage(message: proto.IMessage): {
 
   for (const [field, type] of mediaMapping) {
     if (message[field]) {
-      if (field === "documentWithCaptionMessage") {
-        // NOTE: For documentWithCaptionMessage, we need to extract the documentMessage
-        return {
-          mediaMessage: message[field]?.message
-            ?.documentMessage as MediaMessage,
-          mediaType: type,
-        };
-      }
-      return { mediaMessage: message[field] as MediaMessage, mediaType: type };
+      return {
+        mediaMessage: (field === "documentWithCaptionMessage"
+          ? message[field]?.message?.documentMessage
+          : message[field]) as MediaMessage,
+        mediaType: type,
+      };
     }
   }
 
