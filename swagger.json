@@ -557,6 +557,9 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "caption": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -707,6 +710,9 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "caption": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -856,6 +862,9 @@
                             "type": "string"
                           },
                           "mimetype": {
+                            "type": "string"
+                          },
+                          "caption": {
                             "type": "string"
                           }
                         },

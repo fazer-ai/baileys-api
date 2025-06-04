@@ -57,6 +57,7 @@ export const anyMessageContent = t.Union([
       document: t.String({ description: "Base64 encoded document data" }),
       fileName: t.Optional(t.String()),
       mimetype: t.Optional(t.String()),
+      caption: t.Optional(t.String()),
     },
     {
       title: "Document message",
