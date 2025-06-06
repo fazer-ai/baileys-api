@@ -200,10 +200,10 @@ const connectionsController = new Elysia({
   )
   .post(
     "/:phoneNumber/fetch-message-history",
-    async ({ params, body }) => {
+    ({ params, body }) => {
       const { phoneNumber } = params;
       const { count, oldestMsgKey, oldestMsgTimestamp } = body;
-      return await baileys.fetchMessageHistory(
+      return baileys.fetchMessageHistory(
         phoneNumber,
         count,
         oldestMsgKey,
@@ -214,6 +214,8 @@ const connectionsController = new Elysia({
       params: phoneNumberParams,
       body: t.Object({
         count: t.Number({
+          minimum: 1,
+          maximum: 50,
           description: "Number of messages to fetch",
           example: 10,
         }),

@@ -1333,6 +1333,8 @@
                 "type": "object",
                 "properties": {
                   "count": {
+                    "minimum": 1,
+                    "maximum": 50,
                     "description": "Number of messages to fetch",
                     "example": 10,
                     "type": "number"
@@ -1370,6 +1372,8 @@
                 "type": "object",
                 "properties": {
                   "count": {
+                    "minimum": 1,
+                    "maximum": 50,
                     "description": "Number of messages to fetch",
                     "example": 10,
                     "type": "number"
@@ -1407,6 +1411,8 @@
                 "type": "object",
                 "properties": {
                   "count": {
+                    "minimum": 1,
+                    "maximum": 50,
                     "description": "Number of messages to fetch",
                     "example": 10,
                     "type": "number"
