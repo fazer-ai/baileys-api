@@ -198,6 +198,35 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/fetch-message-history",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { count, oldestMsgKey, oldestMsgTimestamp } = body;
+      return await baileys.fetchMessageHistory(
+        phoneNumber,
+        count,
+        oldestMsgKey,
+        oldestMsgTimestamp,
+      );
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        count: t.Number({
+          description: "Number of messages to fetch",
+          example: 10,
+        }),
+        oldestMsgKey: iMessageKey,
+        oldestMsgTimestamp: t.Number(),
+      }),
+      detail: {
+        responses: {
+          200: { description: "Message history fetched" },
+        },
+      },
+    },
+  )
   .delete(
     "/:phoneNumber",
     async ({ params }) => {

@@ -112,6 +112,9 @@ export class BaileysConnection {
     this.socket.ev.on("message-receipt.update", (event) =>
       this.handleMessageReceiptUpdate(event),
     );
+    this.socket.ev.on("messaging-history.set", (event) =>
+      this.handleMessagingHistorySet(event),
+    );
   }
 
   private async close() {
@@ -204,6 +207,25 @@ export class BaileysConnection {
     }
 
     return this.socket.chatModify(mod, jid);
+  }
+
+  fetchMessageHistory(
+    count: number,
+    oldestMsgKey: proto.IMessageKey,
+    oldestMsgTimestamp: number,
+  ) {
+    return this.safeSocket().fetchMessageHistory(
+      count,
+      oldestMsgKey,
+      oldestMsgTimestamp,
+    );
+  }
+
+  private safeSocket() {
+    if (!this.socket) {
+      throw new BaileysNotConnectedError();
+    }
+    return this.socket;
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
@@ -302,6 +324,21 @@ export class BaileysConnection {
       event: "message-receipt.update",
       data,
     });
+  }
+
+  private async handleMessagingHistorySet(
+    data: BaileysEventMap["messaging-history.set"],
+  ) {
+    // NOTE: messaging-history.set event has a payload size is typically extensive so it does not include base64 media content, regardless of the `includeMedia` option.
+    await downloadMediaFromMessages(data.messages);
+
+    this.sendToWebhook(
+      {
+        event: "messaging-history.set",
+        data,
+      },
+      { awaitResponse: true },
+    );
   }
 
   private handleWrongPhoneNumber() {
