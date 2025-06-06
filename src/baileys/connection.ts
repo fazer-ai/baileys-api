@@ -125,18 +125,12 @@ export class BaileysConnection {
   }
 
   async logout() {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    await this.socket.logout();
+    await this.safeSocket().logout();
     await this.close();
   }
 
   async sendMessage(jid: string, messageContent: AnyMessageContent) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
+    const socket = this.safeSocket();
 
     let waveformProxy: Buffer | null = null;
     try {
@@ -164,20 +158,18 @@ export class BaileysConnection {
       );
     }
 
-    return this.socket.sendMessage(jid, messageContent, {
+    return socket.sendMessage(jid, messageContent, {
       waveformProxy,
     });
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-    if (!this.socket.authState.creds.me) {
+    const socket = this.safeSocket();
+    if (!socket.authState.creds.me) {
       return;
     }
 
-    return this.socket.sendPresenceUpdate(type, toJid).then(() => {
+    return socket.sendPresenceUpdate(type, toJid).then(() => {
       if (
         this.clearOnlinePresenceTimeout &&
         ["unavailable", "available"].includes(type)
@@ -187,26 +179,18 @@ export class BaileysConnection {
       }
       if (type === "available") {
         this.clearOnlinePresenceTimeout = setTimeout(() => {
-          this.socket?.sendPresenceUpdate("unavailable", toJid);
+          socket.sendPresenceUpdate("unavailable", toJid);
         }, 60000);
       }
     });
   }
 
   readMessages(keys: proto.IMessageKey[]) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return this.socket.readMessages(keys);
+    return this.safeSocket().readMessages(keys);
   }
 
   chatModify(mod: ChatModification, jid: string) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return this.socket.chatModify(mod, jid);
+    return this.safeSocket().chatModify(mod, jid);
   }
 
   fetchMessageHistory(
