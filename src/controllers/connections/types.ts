@@ -41,6 +41,12 @@ export const connectionOptions = t.Object({
       default: true,
     }),
   ),
+  syncFullHistory: t.Optional(
+    t.Boolean({
+      description: "Sync full history of messages on connection.",
+      default: false,
+    }),
+  ),
 });
 
 export const iMessageKey = t.Object({
