@@ -6,6 +6,7 @@ import Elysia, { t } from "elysia";
 import {
   anyMessageContent,
   chatModification,
+  connectionOptions,
   iMessageKey,
   jid,
   phoneNumberParams,
@@ -29,32 +30,7 @@ const connectionsController = new Elysia({
     },
     {
       params: phoneNumberParams,
-      body: t.Object({
-        clientName: t.Optional(
-          t.String({
-            description: "Name of the client to be used on WhatsApp connection",
-            example: "My WhatsApp Client",
-          }),
-        ),
-        webhookUrl: t.String({
-          format: "uri",
-          description: "URL for receiving updates",
-          example: "http://localhost:3026/whatsapp/+1234567890",
-        }),
-        webhookVerifyToken: t.String({
-          minLength: 6,
-          description: "Token for verifying webhook",
-          example: "a3f4b2",
-        }),
-        includeMedia: t.Optional(
-          t.Boolean({
-            description:
-              "Include media in messages.upsert event payload as base64 string",
-            // TODO(v2): Change default to false.
-            default: true,
-          }),
-        ),
-      }),
+      body: connectionOptions,
       detail: {
         responses: {
           200: {
