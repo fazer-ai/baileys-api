@@ -56,6 +56,7 @@ export class BaileysConnection {
   private webhookVerifyToken: string;
   private isReconnect: boolean;
   private includeMedia: boolean;
+  private syncFullHistory: boolean;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -72,6 +73,7 @@ export class BaileysConnection {
     this.isReconnect = !!options.isReconnect;
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
+    this.syncFullHistory = options.syncFullHistory ?? false;
   }
 
   async connect() {
@@ -84,6 +86,7 @@ export class BaileysConnection {
       webhookUrl: this.webhookUrl,
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
     });
     this.clearAuthState = state.keys.clear;
 
@@ -97,6 +100,7 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       // TODO: Remove this and drop qrcode-terminal dependency.
       printQRInTerminal: config.baileys.printQr,
+      syncFullHistory: true,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
