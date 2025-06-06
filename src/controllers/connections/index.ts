@@ -6,6 +6,7 @@ import Elysia, { t } from "elysia";
 import {
   anyMessageContent,
   chatModification,
+  connectionOptions,
   iMessageKey,
   jid,
   phoneNumberParams,
@@ -29,32 +30,7 @@ const connectionsController = new Elysia({
     },
     {
       params: phoneNumberParams,
-      body: t.Object({
-        clientName: t.Optional(
-          t.String({
-            description: "Name of the client to be used on WhatsApp connection",
-            example: "My WhatsApp Client",
-          }),
-        ),
-        webhookUrl: t.String({
-          format: "uri",
-          description: "URL for receiving updates",
-          example: "http://localhost:3026/whatsapp/+1234567890",
-        }),
-        webhookVerifyToken: t.String({
-          minLength: 6,
-          description: "Token for verifying webhook",
-          example: "a3f4b2",
-        }),
-        includeMedia: t.Optional(
-          t.Boolean({
-            description:
-              "Include media in messages.upsert event payload as base64 string",
-            // TODO(v2): Change default to false.
-            default: true,
-          }),
-        ),
-      }),
+      body: connectionOptions,
       detail: {
         responses: {
           200: {
@@ -194,6 +170,37 @@ const connectionsController = new Elysia({
           200: {
             description: "Chat modification was successfully applied",
           },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/fetch-message-history",
+    ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { count, oldestMsgKey, oldestMsgTimestamp } = body;
+      return baileys.fetchMessageHistory(
+        phoneNumber,
+        count,
+        oldestMsgKey,
+        oldestMsgTimestamp,
+      );
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        count: t.Number({
+          minimum: 1,
+          maximum: 50,
+          description: "Number of messages to fetch",
+          example: 10,
+        }),
+        oldestMsgKey: iMessageKey,
+        oldestMsgTimestamp: t.Number(),
+      }),
+      detail: {
+        responses: {
+          200: { description: "Message history fetched" },
         },
       },
     },

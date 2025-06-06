@@ -1,13 +1,17 @@
 import type { BaileysEventMap } from "@whiskeysockets/baileys";
 
-export interface BaileysConnectionOptions {
+export interface ExternalBaileysConnectionOptions {
   clientName?: string;
   webhookUrl: string;
   webhookVerifyToken: string;
-  isReconnect?: boolean;
   includeMedia?: boolean;
-  onConnectionClose?: () => void;
+  syncFullHistory?: boolean;
 }
+
+export type BaileysConnectionOptions = ExternalBaileysConnectionOptions & {
+  isReconnect?: boolean;
+  onConnectionClose?: () => void;
+};
 
 export interface BaileysConnectionWebhookPayload {
   event: keyof BaileysEventMap;

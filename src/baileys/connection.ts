@@ -56,6 +56,7 @@ export class BaileysConnection {
   private webhookVerifyToken: string;
   private isReconnect: boolean;
   private includeMedia: boolean;
+  private syncFullHistory: boolean;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -72,6 +73,7 @@ export class BaileysConnection {
     this.isReconnect = !!options.isReconnect;
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
+    this.syncFullHistory = options.syncFullHistory ?? false;
   }
 
   async connect() {
@@ -84,6 +86,7 @@ export class BaileysConnection {
       webhookUrl: this.webhookUrl,
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
     });
     this.clearAuthState = state.keys.clear;
 
@@ -97,6 +100,7 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       // TODO: Remove this and drop qrcode-terminal dependency.
       printQRInTerminal: config.baileys.printQr,
+      syncFullHistory: true,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
@@ -112,6 +116,9 @@ export class BaileysConnection {
     this.socket.ev.on("message-receipt.update", (event) =>
       this.handleMessageReceiptUpdate(event),
     );
+    this.socket.ev.on("messaging-history.set", (event) =>
+      this.handleMessagingHistorySet(event),
+    );
   }
 
   private async close() {
@@ -122,18 +129,12 @@ export class BaileysConnection {
   }
 
   async logout() {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    await this.socket.logout();
+    await this.safeSocket().logout();
     await this.close();
   }
 
   async sendMessage(jid: string, messageContent: AnyMessageContent) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
+    const socket = this.safeSocket();
 
     let waveformProxy: Buffer | null = null;
     try {
@@ -161,20 +162,18 @@ export class BaileysConnection {
       );
     }
 
-    return this.socket.sendMessage(jid, messageContent, {
+    return socket.sendMessage(jid, messageContent, {
       waveformProxy,
     });
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-    if (!this.socket.authState.creds.me) {
+    const socket = this.safeSocket();
+    if (!socket.authState.creds.me) {
       return;
     }
 
-    return this.socket.sendPresenceUpdate(type, toJid).then(() => {
+    return socket.sendPresenceUpdate(type, toJid).then(() => {
       if (
         this.clearOnlinePresenceTimeout &&
         ["unavailable", "available"].includes(type)
@@ -184,26 +183,37 @@ export class BaileysConnection {
       }
       if (type === "available") {
         this.clearOnlinePresenceTimeout = setTimeout(() => {
-          this.socket?.sendPresenceUpdate("unavailable", toJid);
+          socket.sendPresenceUpdate("unavailable", toJid);
         }, 60000);
       }
     });
   }
 
   readMessages(keys: proto.IMessageKey[]) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return this.socket.readMessages(keys);
+    return this.safeSocket().readMessages(keys);
   }
 
   chatModify(mod: ChatModification, jid: string) {
+    return this.safeSocket().chatModify(mod, jid);
+  }
+
+  fetchMessageHistory(
+    count: number,
+    oldestMsgKey: proto.IMessageKey,
+    oldestMsgTimestamp: number,
+  ) {
+    return this.safeSocket().fetchMessageHistory(
+      count,
+      oldestMsgKey,
+      oldestMsgTimestamp,
+    );
+  }
+
+  private safeSocket() {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }
-
-    return this.socket.chatModify(mod, jid);
+    return this.socket;
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
@@ -302,6 +312,21 @@ export class BaileysConnection {
       event: "message-receipt.update",
       data,
     });
+  }
+
+  private async handleMessagingHistorySet(
+    data: BaileysEventMap["messaging-history.set"],
+  ) {
+    // NOTE: messaging-history.set event has a payload size is typically extensive so it does not include base64 media content, regardless of the `includeMedia` option.
+    await downloadMediaFromMessages(data.messages);
+
+    this.sendToWebhook(
+      {
+        event: "messaging-history.set",
+        data,
+      },
+      { awaitResponse: true },
+    );
   }
 
   private handleWrongPhoneNumber() {

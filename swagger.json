@@ -172,6 +172,11 @@
                     "description": "Include media in messages.upsert event payload as base64 string",
                     "default": true,
                     "type": "boolean"
+                  },
+                  "syncFullHistory": {
+                    "description": "Sync full history of messages on connection.",
+                    "default": false,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -205,6 +210,11 @@
                     "description": "Include media in messages.upsert event payload as base64 string",
                     "default": true,
                     "type": "boolean"
+                  },
+                  "syncFullHistory": {
+                    "description": "Sync full history of messages on connection.",
+                    "default": false,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -237,6 +247,11 @@
                   "includeMedia": {
                     "description": "Include media in messages.upsert event payload as base64 string",
                     "default": true,
+                    "type": "boolean"
+                  },
+                  "syncFullHistory": {
+                    "description": "Sync full history of messages on connection.",
+                    "default": false,
                     "type": "boolean"
                   }
                 },
@@ -1287,6 +1302,161 @@
                 "required": [
                   "mod",
                   "jid"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/fetch-message-history": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberFetch-message-history",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Message history fetched"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "count": {
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Number of messages to fetch",
+                    "example": 10,
+                    "type": "number"
+                  },
+                  "oldestMsgKey": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "oldestMsgTimestamp": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "oldestMsgKey",
+                  "oldestMsgTimestamp"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "count": {
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Number of messages to fetch",
+                    "example": 10,
+                    "type": "number"
+                  },
+                  "oldestMsgKey": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "oldestMsgTimestamp": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "oldestMsgKey",
+                  "oldestMsgTimestamp"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "count": {
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Number of messages to fetch",
+                    "example": 10,
+                    "type": "number"
+                  },
+                  "oldestMsgKey": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "oldestMsgTimestamp": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "count",
+                  "oldestMsgKey",
+                  "oldestMsgTimestamp"
                 ]
               }
             }

@@ -97,6 +97,19 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).chatModify(mod, jid);
   }
 
+  fetchMessageHistory(
+    phoneNumber: string,
+    count: number,
+    oldestMsgKey: proto.IMessageKey,
+    oldestMsgTimestamp: number,
+  ) {
+    return this.getConnection(phoneNumber).fetchMessageHistory(
+      count,
+      oldestMsgKey,
+      oldestMsgTimestamp,
+    );
+  }
+
   async logout(phoneNumber: string) {
     await this.getConnection(phoneNumber).logout();
     delete this.connections[phoneNumber];
