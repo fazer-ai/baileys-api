@@ -3,7 +3,10 @@ import {
   BaileysNotConnectedError,
 } from "@/baileys/connection";
 import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
-import type { BaileysConnectionOptions } from "@/baileys/types";
+import type {
+  BaileysConnectionOptions,
+  FetchMessageHistoryOptions,
+} from "@/baileys/types";
 import logger from "@/lib/logger";
 import type {
   AnyMessageContent,
@@ -99,9 +102,7 @@ export class BaileysConnectionsHandler {
 
   fetchMessageHistory(
     phoneNumber: string,
-    count: number,
-    oldestMsgKey: proto.IMessageKey,
-    oldestMsgTimestamp: number,
+    { count, oldestMsgKey, oldestMsgTimestamp }: FetchMessageHistoryOptions,
   ) {
     return this.getConnection(phoneNumber).fetchMessageHistory(
       count,

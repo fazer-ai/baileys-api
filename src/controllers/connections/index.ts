@@ -178,13 +178,7 @@ const connectionsController = new Elysia({
     "/:phoneNumber/fetch-message-history",
     ({ params, body }) => {
       const { phoneNumber } = params;
-      const { count, oldestMsgKey, oldestMsgTimestamp } = body;
-      return baileys.fetchMessageHistory(
-        phoneNumber,
-        count,
-        oldestMsgKey,
-        oldestMsgTimestamp,
-      );
+      return baileys.fetchMessageHistory(phoneNumber, body);
     },
     {
       params: phoneNumberParams,
