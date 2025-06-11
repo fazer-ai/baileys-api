@@ -346,15 +346,6 @@ export class BaileysConnection {
     let delay = retryInterval;
 
     while (attempt <= maxRetries) {
-      if (!this.socket) {
-        logger.warn(
-          "[%s] [sendToWebhook] Socket closed, skipping webhook with payload=%o",
-          this.phoneNumber,
-          sanitizedPayload,
-        );
-        return;
-      }
-
       const { response, error } = await this.sendPayloadToWebhook(
         payload,
         options,
