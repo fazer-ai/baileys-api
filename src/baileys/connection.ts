@@ -100,7 +100,7 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       // TODO: Remove this and drop qrcode-terminal dependency.
       printQRInTerminal: config.baileys.printQr,
-      syncFullHistory: true,
+      syncFullHistory: this.syncFullHistory,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
