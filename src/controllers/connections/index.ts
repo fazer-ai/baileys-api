@@ -54,6 +54,13 @@ const connectionsController = new Elysia({
             default: true,
           }),
         ),
+        proxyUrl: t.Optional(
+          t.String({
+            format: "uri",
+            description: "URL of the proxy to use for the connection",
+            example: "socks5://user:password@host:port",
+          }),
+        ),
       }),
       detail: {
         responses: {

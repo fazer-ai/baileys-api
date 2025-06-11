@@ -172,6 +172,12 @@
                     "description": "Include media in messages.upsert event payload as base64 string",
                     "default": true,
                     "type": "boolean"
+                  },
+                  "proxyUrl": {
+                    "format": "uri",
+                    "description": "URL of the proxy to use for the connection",
+                    "example": "socks5://user:password@host:port",
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -205,6 +211,12 @@
                     "description": "Include media in messages.upsert event payload as base64 string",
                     "default": true,
                     "type": "boolean"
+                  },
+                  "proxyUrl": {
+                    "format": "uri",
+                    "description": "URL of the proxy to use for the connection",
+                    "example": "socks5://user:password@host:port",
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -238,6 +250,12 @@
                     "description": "Include media in messages.upsert event payload as base64 string",
                     "default": true,
                     "type": "boolean"
+                  },
+                  "proxyUrl": {
+                    "format": "uri",
+                    "description": "URL of the proxy to use for the connection",
+                    "example": "socks5://user:password@host:port",
+                    "type": "string"
                   }
                 },
                 "required": [

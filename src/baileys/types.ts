@@ -6,6 +6,7 @@ export interface BaileysConnectionOptions {
   webhookVerifyToken: string;
   isReconnect?: boolean;
   includeMedia?: boolean;
+  proxyUrl?: string;
   onConnectionClose?: () => void;
 }
 

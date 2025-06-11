@@ -24,6 +24,7 @@ import makeWASocket, {
   DisconnectReason,
   makeCacheableSignalKeyStore,
 } from "@whiskeysockets/baileys";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import { toDataURL } from "qrcode";
 
 export class BaileysNotConnectedError extends Error {
@@ -60,6 +61,7 @@ export class BaileysConnection {
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: NodeJS.Timer | null = null;
+  private proxyUrl: string | null = null;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -72,6 +74,7 @@ export class BaileysConnection {
     this.isReconnect = !!options.isReconnect;
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
+    this.proxyUrl = options.proxyUrl || null;
   }
 
   async connect() {
@@ -84,8 +87,13 @@ export class BaileysConnection {
       webhookUrl: this.webhookUrl,
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
+      proxyUrl: this.proxyUrl,
     });
     this.clearAuthState = state.keys.clear;
+
+    const agent = this.proxyUrl
+      ? new HttpsProxyAgent(this.proxyUrl)
+      : undefined;
 
     this.socket = makeWASocket({
       auth: {
@@ -97,6 +105,8 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       // TODO: Remove this and drop qrcode-terminal dependency.
       printQRInTerminal: config.baileys.printQr,
+      agent,
+      fetchAgent: agent,
     });
 
     this.socket.ev.on("creds.update", saveCreds);
