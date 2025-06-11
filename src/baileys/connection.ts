@@ -348,7 +348,7 @@ export class BaileysConnection {
     while (attempt <= maxRetries) {
       if (!this.socket) {
         logger.warn(
-          "[%s] [sendToWebhook] [WARN] Socket closed, skipping webhook with payload=%o",
+          "[%s] [sendToWebhook] Socket closed, skipping webhook with payload=%o",
           this.phoneNumber,
           sanitizedPayload,
         );
