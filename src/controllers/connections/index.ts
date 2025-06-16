@@ -229,6 +229,31 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/send-receipts",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      await baileys.sendReceipts(phoneNumber, body);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        keys: t.Array(iMessageKey),
+        type: t.Undefined({
+          description:
+            "Type of receipt to send. Send undefined for receipt received messages",
+          example: "",
+        }),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Receipts sent successfully",
+          },
+        },
+      },
+    },
+  )
   .delete(
     "/:phoneNumber",
     async ({ params }) => {
