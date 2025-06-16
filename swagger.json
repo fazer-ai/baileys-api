@@ -1464,6 +1464,152 @@
         }
       }
     },
+    "/connections/{phoneNumber}/send-receipts": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberSend-receipts",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Receipts sent successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "remoteJid": {
+                          "type": "string"
+                        },
+                        "fromMe": {
+                          "type": "boolean"
+                        },
+                        "participant": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "type": {
+                    "description": "Type of receipt to send. Send undefined for receipt received messages",
+                    "example": "",
+                    "type": "undefined"
+                  }
+                },
+                "required": [
+                  "keys",
+                  "type"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "remoteJid": {
+                          "type": "string"
+                        },
+                        "fromMe": {
+                          "type": "boolean"
+                        },
+                        "participant": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "type": {
+                    "description": "Type of receipt to send. Send undefined for receipt received messages",
+                    "example": "",
+                    "type": "undefined"
+                  }
+                },
+                "required": [
+                  "keys",
+                  "type"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keys": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "remoteJid": {
+                          "type": "string"
+                        },
+                        "fromMe": {
+                          "type": "boolean"
+                        },
+                        "participant": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "type": {
+                    "description": "Type of receipt to send. Send undefined for receipt received messages",
+                    "example": "",
+                    "type": "undefined"
+                  }
+                },
+                "required": [
+                  "keys",
+                  "type"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/media/{messageId}": {
       "get": {
         "parameters": [

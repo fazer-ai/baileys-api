@@ -22,6 +22,7 @@ import makeWASocket, {
   type proto,
   Browsers,
   DisconnectReason,
+  type MessageReceiptType,
   makeCacheableSignalKeyStore,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
@@ -223,6 +224,10 @@ export class BaileysConnection {
       oldestMsgKey,
       oldestMsgTimestamp,
     );
+  }
+
+  sendReceipts(keys: proto.IMessageKey[], type: MessageReceiptType) {
+    return this.safeSocket().sendReceipts(keys, type);
   }
 
   private safeSocket() {

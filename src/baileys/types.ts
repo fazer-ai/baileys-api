@@ -1,4 +1,8 @@
-import type { BaileysEventMap, proto } from "@whiskeysockets/baileys";
+import type {
+  BaileysEventMap,
+  MessageReceiptType,
+  proto,
+} from "@whiskeysockets/baileys";
 
 export interface BaileysConnectionOptions {
   clientName?: string;
@@ -20,4 +24,9 @@ export interface FetchMessageHistoryOptions {
   count: number;
   oldestMsgKey: proto.IMessageKey;
   oldestMsgTimestamp: number;
+}
+
+export interface SendReceiptsOptions {
+  keys: proto.IMessageKey[];
+  type: MessageReceiptType;
 }

@@ -6,6 +6,7 @@ import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   FetchMessageHistoryOptions,
+  SendReceiptsOptions,
 } from "@/baileys/types";
 import logger from "@/lib/logger";
 import type {
@@ -109,6 +110,10 @@ export class BaileysConnectionsHandler {
       oldestMsgKey,
       oldestMsgTimestamp,
     );
+  }
+
+  sendReceipts(phoneNumber: string, { keys, type }: SendReceiptsOptions) {
+    return this.getConnection(phoneNumber).sendReceipts(keys, type);
   }
 
   async logout(phoneNumber: string) {
