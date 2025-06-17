@@ -233,8 +233,7 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-receipts",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { keys } = body;
-      await baileys.sendReceipts(phoneNumber, { keys, type: undefined });
+      await baileys.sendReceipts(phoneNumber, body);
     },
     {
       params: phoneNumberParams,
