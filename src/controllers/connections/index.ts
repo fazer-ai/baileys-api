@@ -233,19 +233,17 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-receipts",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      await baileys.sendReceipts(phoneNumber, body);
+      const { keys } = body;
+      await baileys.sendReceipts(phoneNumber, { keys, type: undefined });
     },
     {
       params: phoneNumberParams,
       body: t.Object({
         keys: t.Array(iMessageKey),
-        type: t.Undefined({
-          description:
-            "Type of receipt to send. Send undefined for receipt received messages",
-          example: "",
-        }),
       }),
       detail: {
+        description:
+          "Sends read receipts for the provided message keys. Currently only supports sending `received` event. For `read` receipts, use `read-messages` endpoint.",
         responses: {
           200: {
             description: "Receipts sent successfully",

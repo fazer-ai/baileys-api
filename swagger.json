@@ -1490,6 +1490,7 @@
             "xApiKey": []
           }
         ],
+        "description": "Sends read receipts for the provided message keys. Currently only supports sending `received` event. For `read` receipts, use `read-messages` endpoint.",
         "responses": {
           "200": {
             "description": "Receipts sent successfully"
@@ -1521,16 +1522,10 @@
                         }
                       }
                     }
-                  },
-                  "type": {
-                    "description": "Type of receipt to send. Send undefined for receipt received messages",
-                    "example": "",
-                    "type": "undefined"
                   }
                 },
                 "required": [
-                  "keys",
-                  "type"
+                  "keys"
                 ]
               }
             },
@@ -1557,16 +1552,10 @@
                         }
                       }
                     }
-                  },
-                  "type": {
-                    "description": "Type of receipt to send. Send undefined for receipt received messages",
-                    "example": "",
-                    "type": "undefined"
                   }
                 },
                 "required": [
-                  "keys",
-                  "type"
+                  "keys"
                 ]
               }
             },
@@ -1593,16 +1582,10 @@
                         }
                       }
                     }
-                  },
-                  "type": {
-                    "description": "Type of receipt to send. Send undefined for receipt received messages",
-                    "example": "",
-                    "type": "undefined"
                   }
                 },
                 "required": [
-                  "keys",
-                  "type"
+                  "keys"
                 ]
               }
             }
