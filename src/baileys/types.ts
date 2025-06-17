@@ -28,5 +28,5 @@ export interface FetchMessageHistoryOptions {
 
 export interface SendReceiptsOptions {
   keys: proto.IMessageKey[];
-  type: MessageReceiptType;
+  type?: MessageReceiptType;
 }
