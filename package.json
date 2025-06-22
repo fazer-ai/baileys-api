@@ -11,7 +11,8 @@
   "module": "src/index.ts",
   "scripts": {
     "dev": "bun --watch src/index.ts",
-    "test": "bun test --watch",
+    "test": "bun test --coverage",
+    "test-watch": "bun test --watch",
     "start": "bun src/index.ts",
     "lint": "bun biome check",
     "format": "bun biome check --write",
