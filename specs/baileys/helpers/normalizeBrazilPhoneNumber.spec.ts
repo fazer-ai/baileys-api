@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it } from "bun:test";
 
 describe("normalizeBrazilPhoneNumber", () => {
   describe("#normalizeBrazilPhoneNumber", () => {
