@@ -1,34 +1,6 @@
-import { beforeEach, describe, it, mock } from "bun:test";
-import { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
-
-mock.module("@/baileys/connection", () => ({
-  BaileysConnection: mock(() => ({
-    connect: () => Promise.resolve(),
-  })),
-}));
-
-mock.module("@/baileys/redisAuthState", () => ({
-  getRedisSavedAuthStateIds: () => [
-    {
-      id: "+551101234567",
-      metadata: {
-        clientName: "Test Client",
-        webhookUrl: "http://example.com",
-        webhookVerifyToken: "test-token",
-        includeMedia: false,
-        syncFullHistory: false,
-      },
-    },
-  ],
-}));
+import { describe, it } from "bun:test";
 
 describe("BaileysConnectionsHandler", () => {
-  let _handler: BaileysConnectionsHandler;
-
-  beforeEach(() => {
-    _handler = new BaileysConnectionsHandler();
-  });
-
   describe("#reconnectFromAuthStore", () => {
     describe("when no saved connections exist", () => {
       it.todo("logs no saved connections and returns");
