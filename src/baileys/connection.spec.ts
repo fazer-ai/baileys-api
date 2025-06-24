@@ -81,5 +81,8 @@ describe("BaileysConnection", () => {
     it.todo("send payload to the configured webhook URL");
     it.todo("retry sending the webhook on failure");
     it.todo("stop retrying after reaching the max number of retries");
+    it.todo("handle webhook timeouts appropriately");
+    it.todo("handle malformed webhook URLs");
+    it.todo("handle webhook responses with error status codes");
   });
 });
