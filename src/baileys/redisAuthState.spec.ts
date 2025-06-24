@@ -1,28 +1,6 @@
-import { describe, it, mock } from "bun:test";
-
-mock.module("@/lib/redis", () => ({
-  redis: mock(() => ({
-    keys: () => new Promise((resolve) => resolve([])),
-    hSet: (..._args: [string, string, string]) =>
-      new Promise((resolve) => resolve(true)),
-    hGet: (..._args: [string, string]) =>
-      new Promise((resolve) => resolve(null)),
-    del: (..._args: [string]) => new Promise((resolve) => resolve(true)),
-    multi: mock(() => ({
-      hSet: (..._args: [string, string, string]) =>
-        new Promise((resolve) => resolve(true)),
-      hDel: (..._args: [string, string]) =>
-        new Promise((resolve) => resolve(true)),
-      execAsPipeline: () => new Promise((resolve) => resolve([])),
-    })),
-  })),
-}));
+import { describe, it } from "bun:test";
 
 describe("redisAuthState", () => {
-  const testId = "test-session";
-  const redisKeyPrefix = "@baileys-api:connections";
-  const _authStateKey = `${redisKeyPrefix}:${testId}:authState`;
-
   describe("#useRedisAuthState", () => {
     it.todo("initialize credentials when none exist in Redis");
     it.todo("save provided metadata when creating a new state");
