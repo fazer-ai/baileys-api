@@ -388,8 +388,7 @@ export class BaileysConnection {
 
     const { maxRetries, retryInterval, backoffFactor } =
       config.webhook.retryPolicy;
-    let attempt = 0;
-    let delay = retryInterval;
+    let attempt = 0; let delay = retryInterval;
 
     while (attempt <= maxRetries) {
       const { response, error } = await this.sendPayloadToWebhook(
