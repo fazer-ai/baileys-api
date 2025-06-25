@@ -1,4 +1,5 @@
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
+import { LRUCacheWrapper } from "@/baileys/helpers/lruCacheWrapper";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { useRedisAuthState } from "@/baileys/redisAuthState";
@@ -91,10 +92,15 @@ export class BaileysConnection {
     });
     this.clearAuthState = state.keys.clear;
 
+    const cache = new LRUCacheWrapper({
+      max: 1000,
+      ttl: 1000 * 60 * 10,
+    });
+
     this.socket = makeWASocket({
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(state.keys, logger, cache),
       },
       markOnlineOnConnect: false,
       logger: baileysLogger,
