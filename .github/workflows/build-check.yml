@@ -20,4 +20,4 @@ jobs:
         run: bun install
 
       - name: Run TypeScript type check
-        run: bunx tsc --noEmit
+        run: bun run build-check

@@ -17,7 +17,8 @@
     "lint": "bun biome check",
     "format": "bun biome check --write",
     "manage-api-keys": "LOG_LEVEL=warn bun scripts/manage-api-keys.ts",
-    "build-swagger": "LOG_LEVEL=warn bun scripts/build-swagger.ts"
+    "build-swagger": "LOG_LEVEL=warn bun scripts/build-swagger.ts",
+    "build-check": "bunx tsc --noEmit"
   },
   "dependencies": {
     "@elysiajs/cors": "^1.3.3",
