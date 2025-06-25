@@ -100,8 +100,10 @@ export async function getRedisSavedAuthStateIds<T>(): Promise<
     multi.hGet(`${redisKeyPrefix}:${id}:authState`, "metadata");
   }
   const metadata = await multi.execAsPipeline();
-  return ids.map((id, i) => ({
-    id,
-    metadata: JSON.parse(metadata[i].toString()),
-  }));
+  return ids
+    .map((id, i) => ({
+      id,
+      metadata: metadata[i] ? JSON.parse(metadata[i].toString()) : null,
+    }))
+    .filter((item) => item.metadata);
 }
