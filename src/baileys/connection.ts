@@ -341,11 +341,12 @@ export class BaileysConnection {
     });
   }
 
-  private async handleMessagingHistorySet(
+  private handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
     // NOTE: messaging-history.set event has a payload size is typically extensive so it does not include base64 media content, regardless of the `includeMedia` option.
-    await downloadMediaFromMessages(data.messages);
+    // FIXME: Downloads are failing heavily right now. Under investigation.
+    // await downloadMediaFromMessages(data.messages);
 
     this.sendToWebhook(
       {
