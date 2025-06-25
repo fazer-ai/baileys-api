@@ -31,7 +31,7 @@ jobs:
             ${{ runner.os }}-bun-deps-
 
       - name: Install Dependencies
-          run: bun install
+        run: bun install
 
       - name: Run TypeScript type check
-          run: bun run build-check
+        run: bun run build-check
