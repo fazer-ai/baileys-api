@@ -80,3 +80,20 @@ index 13fb17ded091029f7b1130da33ea971538bc88fd..2b5b3f809eab92d43af98685ae1347db
                      logger === null || logger === void 0 ? void 0 : logger.debug('processed waveform');
                  }
                  if (requiresAudioBackground) {
+diff --git a/node_modules/@whiskeysockets/baileys/lib/Utils/messages-media-copy.js b/node_modules/@whiskeysockets/baileys/lib/Utils/messages-media.js
+index cf0e0ae..7707384 100644
+--- a/node_modules/@whiskeysockets/baileys/lib/Utils/messages-media-copy.js
++++ b/node_modules/@whiskeysockets/baileys/lib/Utils/messages-media.js
+@@ -423,7 +423,11 @@ const toSmallestChunkSize = (num) => {
+ const getUrlFromDirectPath = (directPath) => `https://${DEF_HOST}${directPath}`;
+ exports.getUrlFromDirectPath = getUrlFromDirectPath;
+ const downloadContentFromMessage = async ({ mediaKey, directPath, url }, type, opts = {}) => {
+-    const downloadUrl = url || (0, exports.getUrlFromDirectPath)(directPath);
++    const isValidMediaUrl = url?.startsWith('https://mmg.whatsapp.net/')
++    const downloadUrl = isValidMediaUrl ? url : (0, exports.getUrlFromDirectPath)(directPath);
++	if (!downloadUrl) {
++		throw new Boom('No valid media URL or directPath present in message', { statusCode: 400 })
++	}
+     const keys = await getMediaKeys(mediaKey, type);
+     return (0, exports.downloadEncryptedContent)(downloadUrl, keys, opts);
+ };
