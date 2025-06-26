@@ -1,3 +1,6 @@
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-49d1a13e510fde87 b/.bun-tag-49d1a13e510fde87
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
 index 977c048b64a6894165e58bca12c80cb13cce5658..692093cd3b6d8a274ccfafd2e6aaa3aad8d02ffe 100644
 --- a/lib/Socket/Client/websocket.js
@@ -67,6 +70,23 @@ index 7a6127e952e87a794e516b977c9a74bd0cf5526d..9d04e9141e2ff467d9b7b740d7b15cb3
          isInTransaction,
          async transaction(work) {
              let result;
+diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
+index d611437970c912e81494f54aac108e563b956d41..508d3725744d578fc763c39b3b04b5423d29663c 100644
+--- a/lib/Utils/messages-media.js
++++ b/lib/Utils/messages-media.js
+@@ -423,7 +423,11 @@ const toSmallestChunkSize = (num) => {
+ const getUrlFromDirectPath = (directPath) => `https://${DEF_HOST}${directPath}`;
+ exports.getUrlFromDirectPath = getUrlFromDirectPath;
+ const downloadContentFromMessage = async ({ mediaKey, directPath, url }, type, opts = {}) => {
+-    const downloadUrl = url || (0, exports.getUrlFromDirectPath)(directPath);
++    const isValidMediaUrl = url === null || url === void 0 ? void 0 : url.startsWith('https://mmg.whatsapp.net/');
++    const downloadUrl = isValidMediaUrl ? url : (0, exports.getUrlFromDirectPath)(directPath);
++    if (!downloadUrl) {
++        throw new boom_1.Boom('No valid media URL or directPath present in message', { statusCode: 400 });
++    }
+     const keys = await getMediaKeys(mediaKey, type);
+     return (0, exports.downloadEncryptedContent)(downloadUrl, keys, opts);
+ };
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
 index 13fb17ded091029f7b1130da33ea971538bc88fd..2b5b3f809eab92d43af98685ae1347db02bfc85b 100644
 --- a/lib/Utils/messages.js
