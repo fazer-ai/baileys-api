@@ -89,10 +89,10 @@ index cf0e0ae..7707384 100644
  exports.getUrlFromDirectPath = getUrlFromDirectPath;
  const downloadContentFromMessage = async ({ mediaKey, directPath, url }, type, opts = {}) => {
 -    const downloadUrl = url || (0, exports.getUrlFromDirectPath)(directPath);
-+    const isValidMediaUrl = url?.startsWith('https://mmg.whatsapp.net/')
++    const isValidMediaUrl = url?.startsWith('https://mmg.whatsapp.net/');
 +    const downloadUrl = isValidMediaUrl ? url : (0, exports.getUrlFromDirectPath)(directPath);
 +	 if (!downloadUrl) {
-+		 throw new Boom('No valid media URL or directPath present in message', { statusCode: 400 })
++		 throw new Boom('No valid media URL or directPath present in message', { statusCode: 400 });
 +	 }
      const keys = await getMediaKeys(mediaKey, type);
      return (0, exports.downloadEncryptedContent)(downloadUrl, keys, opts);
