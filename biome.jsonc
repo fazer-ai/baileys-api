@@ -5,16 +5,11 @@
     "indentStyle": "space",
     "indentWidth": 2,
     "lineEnding": "lf",
-    "include": [
-      "src/**/*.ts",
-      "scripts/**/*.ts",
-      "git-hooks.config.ts",
-      "specs/**/*.ts"
-    ]
+    "include": ["src/**/*.ts", "scripts/**/*.ts", "git-hooks.config.ts"]
   },
   "organizeImports": {
     "enabled": true,
-    "include": ["src/**/*.ts", "scripts/**/*.ts", "specs/**/*.ts"]
+    "include": ["src/**/*.ts", "scripts/**/*.ts"]
   },
   "linter": {
     "enabled": true,
@@ -39,6 +34,6 @@
         "noConsoleLog": "off"
       }
     },
-    "include": ["src/**/*.ts", "specs/**/*.ts"]
+    "include": ["src/**/*.ts"]
   }
 }
