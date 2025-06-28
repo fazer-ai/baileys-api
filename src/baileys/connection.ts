@@ -348,13 +348,7 @@ export class BaileysConnection {
     // FIXME: Downloads are failing heavily right now. Under investigation.
     // await downloadMediaFromMessages(data.messages);
 
-    this.sendToWebhook(
-      {
-        event: "messaging-history.set",
-        data,
-      },
-      { awaitResponse: true },
-    );
+    this.sendToWebhook({ event: "messaging-history.set", data });
   }
 
   private handleWrongPhoneNumber() {
