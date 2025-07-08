@@ -93,8 +93,8 @@ export class BaileysConnection {
     this.clearAuthState = state.keys.clear;
 
     const cache = new LRUCacheWrapper({
-      max: 1000,
-      ttl: 1000 * 60 * 10,
+      max: config.keyStore.lruCacheMax,
+      ttl: config.keyStore.lruCacheTtl,
     });
 
     this.socket = makeWASocket({
