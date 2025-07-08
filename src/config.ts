@@ -51,10 +51,10 @@ const config = {
   corsOrigin: CORS_ORIGIN || "localhost",
   keyStore: {
     lruCacheMax: KEY_STORE_LRU_CACHE_MAX
-      ? Number(KEY_STORE_LRU_CACHE_MAX)
+      ? Number(KEY_STORE_LRU_CACHE_MAX) || 100
       : 100,
     lruCacheTtl: KEY_STORE_LRU_CACHE_TTL
-      ? Number(KEY_STORE_LRU_CACHE_TTL)
+      ? Number(KEY_STORE_LRU_CACHE_TTL) || 1000 * 60 * 10
       : 1000 * 60 * 10, // 10 minutes
   },
 };
