@@ -278,7 +278,7 @@ export class BaileysConnection {
           "[%s] [handleConnectionUpdate] Connection timed out",
           this.phoneNumber,
         );
-        this.logout();
+        await this.logout();
         this.sendToWebhook({
           event: "connection.update",
           data: { connection: "close" },
