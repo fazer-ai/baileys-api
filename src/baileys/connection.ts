@@ -309,7 +309,7 @@ export class BaileysConnection {
           "[%s] [handleConnectionUpdate] QR code timeout",
           this.phoneNumber,
         );
-        this.close();
+        this.logout();
         return;
       }
       Object.assign(data, {
