@@ -1,13 +1,13 @@
 import path from "node:path";
-import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
-import logger from "@/lib/logger";
 import {
   type BaileysEventMap,
-  type MediaType,
   downloadContentFromMessage,
+  type MediaType,
   type proto,
 } from "@whiskeysockets/baileys";
 import { file } from "bun";
+import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
+import logger from "@/lib/logger";
 
 type MediaMessage =
   | proto.Message.IImageMessage
@@ -25,13 +25,11 @@ export async function downloadMediaFromMessages(
   const mediaDir = path.resolve(process.cwd(), "media");
 
   for (const { key, message } of messages) {
-    // biome-ignore lint/complexity/useSimplifiedLogicExpression: <explanation>
     if (!key.id || !message) {
       continue;
     }
 
     const { mediaMessage, mediaType } = extractMediaMessage(message);
-    // biome-ignore lint/complexity/useSimplifiedLogicExpression: <explanation>
     if (!mediaMessage || !mediaType) {
       continue;
     }

@@ -1,12 +1,12 @@
-import redis from "@/lib/redis";
 import {
   type AuthenticationCreds,
   type AuthenticationState,
   BufferJSON,
-  type SignalDataTypeMap,
   initAuthCreds,
   proto,
+  type SignalDataTypeMap,
 } from "@whiskeysockets/baileys";
+import redis from "@/lib/redis";
 
 const redisKeyPrefix = "@baileys-api:connections";
 

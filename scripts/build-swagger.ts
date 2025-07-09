@@ -1,7 +1,7 @@
+import { file, spawnSync } from "bun";
 import app from "@/app";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
-import { file, spawnSync } from "bun";
 
 async function getGitIndexContent(filePath: string): Promise<string | null> {
   const proc = spawnSync(["git", "show", `:${filePath}`]);

@@ -1,3 +1,6 @@
+import cors from "@elysiajs/cors";
+import swagger from "@elysiajs/swagger";
+import Elysia from "elysia";
 import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
@@ -5,9 +8,6 @@ import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
-import cors from "@elysiajs/cors";
-import swagger from "@elysiajs/swagger";
-import Elysia from "elysia";
 
 const app = new Elysia()
   .onAfterResponse(({ request, response, set }) => {
@@ -103,5 +103,4 @@ if (config.env === "development") {
   app.use(cors({ origin: config.corsOrigin }));
 }
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default app;

@@ -1,6 +1,6 @@
+import Elysia from "elysia";
 import baileys from "@/baileys";
 import { adminGuard } from "@/middlewares/auth";
-import Elysia from "elysia";
 
 const adminController = new Elysia({
   prefix: "/admin",
@@ -20,5 +20,4 @@ const adminController = new Elysia({
     },
   });
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default adminController;

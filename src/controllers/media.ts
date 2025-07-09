@@ -1,7 +1,7 @@
 import path from "node:path";
-import { authMiddleware } from "@/middlewares/auth";
 import { file } from "bun";
 import Elysia, { t } from "elysia";
+import { authMiddleware } from "@/middlewares/auth";
 
 const mediaController = new Elysia({
   prefix: "/media",
@@ -47,5 +47,4 @@ const mediaController = new Elysia({
     },
   );
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default mediaController;

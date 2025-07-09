@@ -1,8 +1,8 @@
+import type { Elysia } from "elysia";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import redis from "@/lib/redis";
-import type { Elysia } from "elysia";
 
 export interface AuthData {
   role: "user" | "admin";

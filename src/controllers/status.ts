@@ -1,5 +1,5 @@
-import { authMiddleware } from "@/middlewares/auth";
 import Elysia from "elysia";
+import { authMiddleware } from "@/middlewares/auth";
 
 const statusController = new Elysia({
   prefix: "/status",
@@ -28,5 +28,4 @@ const statusController = new Elysia({
     },
   });
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default statusController;

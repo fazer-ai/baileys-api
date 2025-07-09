@@ -1,8 +1,8 @@
+import Elysia, { t } from "elysia";
 import baileys from "@/baileys";
 import { BaileysNotConnectedError } from "@/baileys/connection";
 import { buildMessageContent } from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
-import Elysia, { t } from "elysia";
 import {
   anyMessageContent,
   chatModification,
@@ -280,5 +280,4 @@ const connectionsController = new Elysia({
     },
   );
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default connectionsController;

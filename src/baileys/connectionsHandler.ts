@@ -1,3 +1,9 @@
+import type {
+  AnyMessageContent,
+  ChatModification,
+  proto,
+  WAPresence,
+} from "@whiskeysockets/baileys";
 import {
   BaileysConnection,
   BaileysNotConnectedError,
@@ -9,12 +15,6 @@ import type {
   SendReceiptsOptions,
 } from "@/baileys/types";
 import logger from "@/lib/logger";
-import type {
-  AnyMessageContent,
-  ChatModification,
-  WAPresence,
-  proto,
-} from "@whiskeysockets/baileys";
 
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};

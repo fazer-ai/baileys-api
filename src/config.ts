@@ -1,5 +1,5 @@
-import packageInfo from "@/../package.json";
 import type { LevelWithSilentOrString } from "pino";
+import packageInfo from "@/../package.json";
 
 const {
   NODE_ENV,
@@ -59,5 +59,4 @@ const config = {
   },
 };
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default config;

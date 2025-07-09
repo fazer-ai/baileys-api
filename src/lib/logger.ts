@@ -1,7 +1,7 @@
 import path, { join } from "node:path";
-import config from "@/config";
 import pino from "pino";
 import type { PrettyOptions } from "pino-pretty";
+import config from "@/config";
 
 function omitKeys(obj: Record<string, unknown>, keys: string[]) {
   for (const key in obj) {
@@ -103,5 +103,4 @@ if (config.env === "development") {
   });
 }
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default logger;

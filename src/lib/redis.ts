@@ -1,7 +1,7 @@
+import { createClient } from "redis";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
-import { createClient } from "redis";
 
 const redis = createClient(config.redis);
 
@@ -22,5 +22,4 @@ export async function initializeRedis() {
   return redis;
 }
 
-// biome-ignore lint/style/noDefaultExport: <explanation>
 export default redis;

@@ -1,3 +1,19 @@
+import type { Boom } from "@hapi/boom";
+import makeWASocket, {
+  type AnyMessageContent,
+  type AuthenticationState,
+  type BaileysEventMap,
+  Browsers,
+  type ChatModification,
+  type ConnectionState,
+  DisconnectReason,
+  type MessageReceiptType,
+  makeCacheableSignalKeyStore,
+  type proto,
+  type WAConnectionState,
+  type WAPresence,
+} from "@whiskeysockets/baileys";
+import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { LRUCacheWrapper } from "@/baileys/helpers/lruCacheWrapper";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
@@ -11,22 +27,6 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
-import type { Boom } from "@hapi/boom";
-import makeWASocket, {
-  type AnyMessageContent,
-  type AuthenticationState,
-  type BaileysEventMap,
-  type ChatModification,
-  type ConnectionState,
-  type WAConnectionState,
-  type WAPresence,
-  type proto,
-  Browsers,
-  DisconnectReason,
-  type MessageReceiptType,
-  makeCacheableSignalKeyStore,
-} from "@whiskeysockets/baileys";
-import { toDataURL } from "qrcode";
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
