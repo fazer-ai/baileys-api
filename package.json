@@ -40,7 +40,7 @@
     "sharp": "^0.34.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "1.9.4",
+    "@biomejs/biome": "2.1.1",
     "@types/fluent-ffmpeg": "^2.1.27",
     "@types/qrcode": "^1.5.5",
     "bun-git-hooks": "^0.2.16",
