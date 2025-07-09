@@ -64,6 +64,7 @@ export class BaileysConnection {
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: NodeJS.Timer | null = null;
   private reconnectCount = 0;
+  private qrCodeCount = 0;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -134,6 +135,7 @@ export class BaileysConnection {
     this.clearAuthState = null;
     this.socket = null;
     this.reconnectCount = 0;
+    this.qrCodeCount = 0;
     this.onConnectionClose?.();
   }
 
@@ -303,6 +305,15 @@ export class BaileysConnection {
     }
 
     if (qr) {
+      this.qrCodeCount += 1;
+      if (this.qrCodeCount > 30) {
+        logger.info(
+          "[%s] [handleConnectionUpdate] QR code time out",
+          this.phoneNumber,
+        );
+        this.close();
+        return;
+      }
       Object.assign(data, {
         connection: "connecting",
         qrDataUrl: await toDataURL(qr),
@@ -377,7 +388,7 @@ export class BaileysConnection {
 
   private handleReconnecting() {
     this.reconnectCount += 1;
-    if (this.reconnectCount > 100) {
+    if (this.reconnectCount > 30) {
       this.close();
       return;
     }
