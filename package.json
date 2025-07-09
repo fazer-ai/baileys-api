@@ -36,7 +36,7 @@
     "pino-roll": "^3.1.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "redis": "^5.5.6",
+    "redis": "^5.6.0",
     "sharp": "^0.34.2"
   },
   "devDependencies": {
