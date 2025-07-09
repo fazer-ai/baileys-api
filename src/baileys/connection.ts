@@ -378,7 +378,7 @@ export class BaileysConnection {
   private handleReconnecting() {
     this.reconnectCount += 1;
     if (this.reconnectCount > 100) {
-      this.logout();
+      this.close();
       return;
     }
 
