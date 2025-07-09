@@ -304,9 +304,9 @@ export class BaileysConnection {
 
     if (qr) {
       this.qrCodeCount += 1;
-      if (this.qrCodeCount > 30) {
+      if (this.qrCodeCount > 10) {
         logger.info(
-          "[%s] [handleConnectionUpdate] QR code time out",
+          "[%s] [handleConnectionUpdate] QR code timeout",
           this.phoneNumber,
         );
         this.close();
@@ -386,7 +386,7 @@ export class BaileysConnection {
 
   private handleReconnecting() {
     this.reconnectCount += 1;
-    if (this.reconnectCount > 30) {
+    if (this.reconnectCount > 10) {
       this.close();
       return;
     }
