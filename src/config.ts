@@ -6,7 +6,6 @@ const {
   PORT,
   LOG_LEVEL,
   BAILEYS_LOG_LEVEL,
-  BAILEYS_PRINT_QR,
   REDIS_URL,
   REDIS_PASSWORD,
   WEBHOOK_RETRY_POLICY_MAX_RETRIES,
@@ -29,7 +28,6 @@ const config = {
   logLevel: (LOG_LEVEL || "info") as LevelWithSilentOrString,
   baileys: {
     logLevel: (BAILEYS_LOG_LEVEL || "warn") as LevelWithSilentOrString,
-    printQr: BAILEYS_PRINT_QR === "true",
   },
   redis: {
     url: REDIS_URL || "redis://localhost:6379",

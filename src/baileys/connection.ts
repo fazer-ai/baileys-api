@@ -107,8 +107,6 @@ export class BaileysConnection {
       markOnlineOnConnect: false,
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
-      // TODO: Remove this and drop qrcode-terminal dependency.
-      printQRInTerminal: config.baileys.printQr,
       syncFullHistory: this.syncFullHistory,
     });
 
