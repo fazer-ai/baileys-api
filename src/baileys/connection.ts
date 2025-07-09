@@ -64,7 +64,6 @@ export class BaileysConnection {
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: NodeJS.Timer | null = null;
   private reconnectCount = 0;
-  private qrCodeCount = 0;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -133,7 +132,6 @@ export class BaileysConnection {
     this.clearAuthState = null;
     this.socket = null;
     this.reconnectCount = 0;
-    this.qrCodeCount = 0;
     this.onConnectionClose?.();
   }
 
@@ -275,6 +273,19 @@ export class BaileysConnection {
       // TODO: Drop @hapi/boom dependency.
       const error = lastDisconnect?.error as Boom;
       const statusCode = error?.output?.statusCode;
+      if (statusCode === DisconnectReason.timedOut) {
+        logger.info(
+          "[%s] [handleConnectionUpdate] Connection timed out",
+          this.phoneNumber,
+        );
+        this.logout();
+        this.sendToWebhook({
+          event: "connection.update",
+          data: { connection: "close" },
+        });
+        return;
+      }
+
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
@@ -303,15 +314,6 @@ export class BaileysConnection {
     }
 
     if (qr) {
-      this.qrCodeCount += 1;
-      if (this.qrCodeCount > 10) {
-        logger.info(
-          "[%s] [handleConnectionUpdate] QR code timeout",
-          this.phoneNumber,
-        );
-        this.logout();
-        return;
-      }
       Object.assign(data, {
         connection: "connecting",
         qrDataUrl: await toDataURL(qr),
