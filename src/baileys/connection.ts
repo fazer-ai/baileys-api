@@ -140,7 +140,15 @@ export class BaileysConnection {
       throw new BaileysNotConnectedError();
     }
 
-    await this.socket.logout();
+    try {
+      await this.socket.logout();
+    } catch (error) {
+      logger.error(
+        "[%s] [LOGOUT] error=%s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
     await this.close();
   }
 
