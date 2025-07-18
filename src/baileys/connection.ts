@@ -357,7 +357,6 @@ export class BaileysConnection {
   }
 
   private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
-    // TODO: Use `shouldIgnoreJid` to filter out unhandled messages.
     this.sendToWebhook(
       {
         event: "messages.update",
