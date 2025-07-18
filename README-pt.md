@@ -106,6 +106,12 @@ O `docker-compose.coolify.yml` pode ser adaptado para outros ambientes Docker. V
 | `WEBHOOK_RETRY_POLICY_RETRY_INTERVAL` | Intervalo inicial em milissegundos entre tentativas de webhook.                                                         | `5000`                   |
 | `WEBHOOK_RETRY_POLICY_BACKOFF_FACTOR` | Fator pelo qual o intervalo de repetição aumenta após cada tentativa (backoff exponencial).                             | `3`                      |
 | `CORS_ORIGIN`                         | A origem permitida para solicitações CORS. Deve ser configurado se você planeja executar a API em um servidor dedicado. | `localhost:3025`         |
+| `IGNORE_GROUP_MESSAGES`               | Se `true`, mensagens de grupos serão ignoradas.                                                            | `true`                   |
+| `IGNORE_STATUS_MESSAGES`              | Se `true`, atualizações de status serão ignoradas.                                                         | `true`                   |
+| `IGNORE_BROADCAST_MESSAGES`           | Se `true`, mensagens de listas de transmissão serão ignoradas.                                             | `true`                   |
+| `IGNORE_NEWSLETTER_MESSAGES`          | Se `true`, mensagens de newsletters/canais serão ignoradas.                                                | `true`                   |
+| `IGNORE_BOT_MESSAGES`                 | Se `true`, mensagens de bots (ex: bot oficial do WhatsApp) serão ignoradas.                                | `true`                   |
+| `IGNORE_META_AI_MESSAGES`             | Se `true`, mensagens do Meta AI serão ignoradas.                                                           | `true`                   |
 
 4.  **(Opcional) Crie Chaves de API para Desenvolvimento (se não estiver ignorando a autenticação)**:
     Se desejar testar a autenticação em desenvolvimento, você pode criar chaves de API:
