@@ -14,6 +14,12 @@ const {
   CORS_ORIGIN,
   KEY_STORE_LRU_CACHE_MAX,
   KEY_STORE_LRU_CACHE_TTL,
+  IGNORE_GROUP_MESSAGES,
+  IGNORE_STATUS_MESSAGES,
+  IGNORE_BROADCAST_MESSAGES,
+  IGNORE_NEWSLETTER_MESSAGES,
+  IGNORE_BOT_MESSAGES,
+  IGNORE_META_AI_MESSAGES,
 } = process.env;
 
 const config = {
@@ -28,6 +34,26 @@ const config = {
   logLevel: (LOG_LEVEL || "info") as LevelWithSilentOrString,
   baileys: {
     logLevel: (BAILEYS_LOG_LEVEL || "warn") as LevelWithSilentOrString,
+    // FIXME: We ignore any non-user messages for now. As we implement more features,
+    // we can enable them as needed.
+    ignoreGroupMessages: IGNORE_GROUP_MESSAGES
+      ? IGNORE_GROUP_MESSAGES === "true"
+      : true,
+    ignoreStatusMessages: IGNORE_STATUS_MESSAGES
+      ? IGNORE_STATUS_MESSAGES === "true"
+      : true,
+    ignoreBroadcastMessages: IGNORE_BROADCAST_MESSAGES
+      ? IGNORE_BROADCAST_MESSAGES === "true"
+      : true,
+    ignoreNewsletterMessages: IGNORE_NEWSLETTER_MESSAGES
+      ? IGNORE_NEWSLETTER_MESSAGES === "true"
+      : true,
+    ignoreBotMessages: IGNORE_BOT_MESSAGES
+      ? IGNORE_BOT_MESSAGES === "true"
+      : true,
+    ignoreMetaAiMessages: IGNORE_META_AI_MESSAGES
+      ? IGNORE_META_AI_MESSAGES === "true"
+      : true,
   },
   redis: {
     url: REDIS_URL || "redis://localhost:6379",
