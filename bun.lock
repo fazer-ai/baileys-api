@@ -32,6 +32,7 @@
     },
   },
   "patchedDependencies": {
+    "@whiskeysockets/baileys@6.7.18": "patches/@whiskeysockets%2Fbaileys@6.7.18.patch",
     "pino-pretty@13.0.0": "patches/pino-pretty@13.0.0.patch",
   },
   "packages": {

@@ -1,4 +1,4 @@
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-49d1a13e510fde87 b/.bun-tag-49d1a13e510fde87
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-6bc22c37f6067614 b/.bun-tag-6bc22c37f6067614
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
@@ -29,7 +29,7 @@ index 9b39302799cbd768f46d3a4bd6cd7a50ed495e38..0a82c0810063d117d298acfab08a6803
      };
      /** await the next incoming message */
 diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
-index 897b25857d68f818f719d40dec1816a01479835e..b9d794119a5f30817856a5ab44e76cbd2b60023c 100644
+index e04823e26465bacb2e672c57c7720bef97ac69e5..acc1b3603c01085fc810c7755ae749f7da8732a1 100644
 --- a/lib/Types/Message.d.ts
 +++ b/lib/Types/Message.d.ts
 @@ -107,7 +107,7 @@ export type AnyMediaMessageContent = (({
@@ -71,10 +71,10 @@ index 7a6127e952e87a794e516b977c9a74bd0cf5526d..9d04e9141e2ff467d9b7b740d7b15cb3
          async transaction(work) {
              let result;
 diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
-index d611437970c912e81494f54aac108e563b956d41..508d3725744d578fc763c39b3b04b5423d29663c 100644
+index 2251c0019df0755d3f65c81ea3b48e963c33cdad..a6033b3463e0a9f5d44df96d609758882114d3a6 100644
 --- a/lib/Utils/messages-media.js
 +++ b/lib/Utils/messages-media.js
-@@ -423,7 +423,11 @@ const toSmallestChunkSize = (num) => {
+@@ -422,7 +422,11 @@ const toSmallestChunkSize = (num) => {
  const getUrlFromDirectPath = (directPath) => `https://${DEF_HOST}${directPath}`;
  exports.getUrlFromDirectPath = getUrlFromDirectPath;
  const downloadContentFromMessage = async ({ mediaKey, directPath, url }, type, opts = {}) => {
@@ -88,15 +88,15 @@ index d611437970c912e81494f54aac108e563b956d41..508d3725744d578fc763c39b3b04b542
      return (0, exports.downloadEncryptedContent)(downloadUrl, keys, opts);
  };
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
-index 13fb17ded091029f7b1130da33ea971538bc88fd..2b5b3f809eab92d43af98685ae1347db02bfc85b 100644
+index 34d6e7d3d28dc0c5fc2a6ba7bf779d1df4f055d7..e2a97f54224a0a5c517cbf4336ab9ba16c59c0b9 100644
 --- a/lib/Utils/messages.js
 +++ b/lib/Utils/messages.js
 @@ -141,7 +141,7 @@ const prepareWAMessageMedia = async (message, options) => {
                      logger === null || logger === void 0 ? void 0 : logger.debug('computed audio duration');
                  }
                  if (requiresWaveformProcessing) {
--                    uploadData.waveform = await (0, messages_media_1.getAudioWaveform)(bodyPath, logger);
-+                    uploadData.waveform = await (0, messages_media_1.getAudioWaveform)(options.waveformProxy || bodyPath, logger);
+-                    uploadData.waveform = await (0, messages_media_1.getAudioWaveform)(originalFilePath, logger);
++                    uploadData.waveform = await (0, messages_media_1.getAudioWaveform)(options.waveformProxy || originalFilePath, logger);
                      logger === null || logger === void 0 ? void 0 : logger.debug('processed waveform');
                  }
                  if (requiresAudioBackground) {
