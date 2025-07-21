@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import ffmpeg from "@/bindings/ffmpeg";
-import { promisify } from "@/helpers/promisify";
 import logger from "@/lib/logger";
 
 function bufferToStream(buffer: Buffer) {
@@ -18,8 +17,6 @@ export async function preprocessAudio(
   audio: Buffer,
   format: "mp3-low" | "mp3-high" | "wav",
 ): Promise<Buffer> {
-  const { promise, resolve, reject } = promisify<Buffer>();
-
   const tmpFilename = join(
     tmpdir(),
     `audio-${randomBytes(6).toString("hex")}.${format}`,
@@ -60,9 +57,7 @@ export async function preprocessAudio(
     );
     const processedBuffer = await fs.readFile(tmpFilename);
 
-    resolve(processedBuffer);
-  } catch (error) {
-    reject(error);
+    return processedBuffer;
   } finally {
     try {
       await fs.unlink(tmpFilename);
@@ -70,6 +65,4 @@ export async function preprocessAudio(
       logger.error("Failed to delete temporary audio file:", unlinkError);
     }
   }
-
-  return promise;
 }
