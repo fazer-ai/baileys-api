@@ -58,12 +58,16 @@ export async function preprocessAudio(
         .save(tmpFilename),
     );
     const processedBuffer = await fs.readFile(tmpFilename);
-    await fs.unlink(tmpFilename);
 
     resolve(processedBuffer);
   } catch (error) {
-    fs.unlink(tmpFilename);
     reject(error);
+  } finally {
+    try {
+      await fs.unlink(tmpFilename);
+    } catch (unlinkError) {
+      console.error("Failed to delete temporary audio file:", unlinkError);
+    }
   }
 
   return promise;
