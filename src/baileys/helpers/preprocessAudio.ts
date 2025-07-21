@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import ffmpeg from "@/bindings/ffmpeg";
 import { promisify } from "@/helpers/promisify";
+import logger from "@/lib/logger";
 
 function bufferToStream(buffer: Buffer) {
   const stream = new Readable();
