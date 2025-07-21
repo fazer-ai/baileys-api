@@ -66,7 +66,7 @@ export async function preprocessAudio(
     try {
       await fs.unlink(tmpFilename);
     } catch (unlinkError) {
-      console.error("Failed to delete temporary audio file:", unlinkError);
+      logger.error("Failed to delete temporary audio file:", unlinkError);
     }
   }
 
