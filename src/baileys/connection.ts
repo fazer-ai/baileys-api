@@ -111,10 +111,11 @@ export class BaileysConnection {
         syncFullHistory: this.syncFullHistory,
         shouldIgnoreJid,
       });
-    } catch {
+    } catch (error) {
       logger.error(
-        "[%s] [BaileysConnection.connect] Failed to create socket",
+        "[%s] [BaileysConnection.connect] Failed to create socket: %s",
         this.phoneNumber,
+        errorToString(error),
       );
       return;
     }
