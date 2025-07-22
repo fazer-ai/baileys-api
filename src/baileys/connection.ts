@@ -99,17 +99,25 @@ export class BaileysConnection {
       ttl: config.keyStore.lruCacheTtl,
     });
 
-    this.socket = makeWASocket({
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger, cache),
-      },
-      markOnlineOnConnect: false,
-      logger: baileysLogger,
-      browser: Browsers.windows(this.clientName),
-      syncFullHistory: this.syncFullHistory,
-      shouldIgnoreJid,
-    });
+    try {
+      this.socket = makeWASocket({
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger, cache),
+        },
+        markOnlineOnConnect: false,
+        logger: baileysLogger,
+        browser: Browsers.windows(this.clientName),
+        syncFullHistory: this.syncFullHistory,
+        shouldIgnoreJid,
+      });
+    } catch {
+      logger.error(
+        "[%s] [BaileysConnection.connect] Failed to create socket",
+        this.phoneNumber,
+      );
+      return;
+    }
 
     this.socket.ev.on("creds.update", saveCreds);
     this.socket.ev.on("connection.update", (event) =>
