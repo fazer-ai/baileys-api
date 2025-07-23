@@ -79,6 +79,25 @@ export class BaileysConnection {
     this.syncFullHistory = options.syncFullHistory ?? false;
   }
 
+  // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
+  private withErrorHandling<T extends (...args: any[]) => any>(
+    handlerName: string,
+    handler: T,
+  ): (...args: Parameters<T>) => Promise<void> {
+    return async (...args: Parameters<T>) => {
+      try {
+        await handler.apply(this, args);
+      } catch (error) {
+        logger.error(
+          "[%s] [%s] Error: %s",
+          this.phoneNumber,
+          handlerName,
+          errorToString(error),
+        );
+      }
+    };
+  }
+
   async connect() {
     if (this.socket) {
       return;
@@ -120,20 +139,34 @@ export class BaileysConnection {
     }
 
     this.socket.ev.on("creds.update", saveCreds);
-    this.socket.ev.on("connection.update", (event) =>
-      this.handleConnectionUpdate(event),
+    this.socket.ev.on(
+      "connection.update",
+      this.withErrorHandling(
+        "handleConnectionUpdate",
+        this.handleConnectionUpdate,
+      ),
     );
-    this.socket.ev.on("messages.upsert", (event) =>
-      this.handleMessagesUpsert(event),
+    this.socket.ev.on(
+      "messages.upsert",
+      this.withErrorHandling("handleMessagesUpsert", this.handleMessagesUpsert),
     );
-    this.socket.ev.on("messages.update", (event) =>
-      this.handleMessagesUpdate(event),
+    this.socket.ev.on(
+      "messages.update",
+      this.withErrorHandling("handleMessagesUpdate", this.handleMessagesUpdate),
     );
-    this.socket.ev.on("message-receipt.update", (event) =>
-      this.handleMessageReceiptUpdate(event),
+    this.socket.ev.on(
+      "message-receipt.update",
+      this.withErrorHandling(
+        "handleMessageReceiptUpdate",
+        this.handleMessageReceiptUpdate,
+      ),
     );
-    this.socket.ev.on("messaging-history.set", (event) =>
-      this.handleMessagingHistorySet(event),
+    this.socket.ev.on(
+      "messaging-history.set",
+      this.withErrorHandling(
+        "handleMessagingHistorySet",
+        this.handleMessagingHistorySet,
+      ),
     );
   }
 
