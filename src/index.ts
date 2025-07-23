@@ -5,18 +5,18 @@ import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
 
-process.on('uncaughtException', (error) => {
+process.on("uncaughtException", (error) => {
   logger.error(
-    '[UNCAUGHT EXCEPTION] An uncaught exception occurred: %s',
-    errorToString(error)
+    "[UNCAUGHT EXCEPTION] An uncaught exception occurred: %s",
+    errorToString(error),
   );
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on("unhandledRejection", (reason, promise) => {
   logger.error(
-    '[UNHANDLED_REJECTION] An unhandled promise rejection occurred at: %o, reason: %s',
+    "[UNHANDLED_REJECTION] An unhandled promise rejection occurred at: %o, reason: %s",
     promise,
-    errorToString(reason as Error)
+    errorToString(reason as Error),
   );
 });
 
