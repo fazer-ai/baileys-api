@@ -100,6 +100,7 @@ O `docker-compose.coolify.yml` pode ser adaptado para outros ambientes Docker. V
 | `PORT`                                | A porta em que o servidor da API escutará.                                                                              | `3025`                   |
 | `LOG_LEVEL`                           | O nível geral de log para a aplicação.                                                                                  | `info`                   |
 | `BAILEYS_LOG_LEVEL`                   | Nível de log específico para a biblioteca Baileys.                                                                      | `warn`                   |
+| `BAILEYS_CLIENT_VERSION`              | A versão do cliente Baileys a ser utilizada. Só altere se você souber o que está fazendo!                               | `default`                |
 | `REDIS_URL`                           | A URL de conexão para sua instância Redis.                                                                              | `redis://localhost:6379` |
 | `REDIS_PASSWORD`                      | A senha para sua instância Redis (se houver).                                                                           |                          |
 | `WEBHOOK_RETRY_POLICY_MAX_RETRIES`    | Número máximo de tentativas para enviar eventos de webhook.                                                             | `3`                      |

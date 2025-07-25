@@ -10,8 +10,10 @@ import makeWASocket, {
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type proto,
+  type UserFacingSocketConfig,
   type WAConnectionState,
   type WAPresence,
+  type WAVersion,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
@@ -117,18 +119,34 @@ export class BaileysConnection {
       ttl: config.keyStore.lruCacheTtl,
     });
 
+    const socketOptions: UserFacingSocketConfig = {
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger, cache),
+      },
+      markOnlineOnConnect: false,
+      logger: baileysLogger,
+      browser: Browsers.windows(this.clientName),
+      syncFullHistory: this.syncFullHistory,
+      shouldIgnoreJid,
+    };
+
+    if (
+      config.baileys.clientVersion &&
+      config.baileys.clientVersion !== "default"
+    ) {
+      logger.info(
+        "[%s] [BaileysConnection.connect] Using custom client version: %s",
+        this.phoneNumber,
+        config.baileys.clientVersion,
+      );
+      socketOptions.version = config.baileys.clientVersion
+        .split(".")
+        .map((v) => Number(v)) as WAVersion;
+    }
+
     try {
-      this.socket = makeWASocket({
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, logger, cache),
-        },
-        markOnlineOnConnect: false,
-        logger: baileysLogger,
-        browser: Browsers.windows(this.clientName),
-        syncFullHistory: this.syncFullHistory,
-        shouldIgnoreJid,
-      });
+      this.socket = makeWASocket(socketOptions);
     } catch (error) {
       logger.error(
         "[%s] [BaileysConnection.connect] Failed to create socket: %s",
