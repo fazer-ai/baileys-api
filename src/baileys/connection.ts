@@ -131,10 +131,7 @@ export class BaileysConnection {
       shouldIgnoreJid,
     };
 
-    if (
-      config.baileys.clientVersion &&
-      config.baileys.clientVersion !== "default"
-    ) {
+    if (/^\d+\.\d+\.\d+$/.test(config.baileys.clientVersion)) {
       logger.info(
         "[%s] [BaileysConnection.connect] Using custom client version: %s",
         this.phoneNumber,
@@ -143,6 +140,12 @@ export class BaileysConnection {
       socketOptions.version = config.baileys.clientVersion
         .split(".")
         .map((v) => Number(v)) as WAVersion;
+    } else if (config.baileys.clientVersion !== "default") {
+      logger.warn(
+        "[%s] [BaileysConnection.connect] Invalid client version format: `%s`. Using default version.",
+        this.phoneNumber,
+        config.baileys.clientVersion,
+      );
     }
 
     try {
