@@ -1,6 +1,9 @@
 diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-6bc22c37f6067614 b/.bun-tag-6bc22c37f6067614
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-ba297a3a96c78f79 b/.bun-tag-ba297a3a96c78f79
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
 index 977c048b64a6894165e58bca12c80cb13cce5658..692093cd3b6d8a274ccfafd2e6aaa3aad8d02ffe 100644
 --- a/lib/Socket/Client/websocket.js
@@ -29,10 +32,33 @@ index 9b39302799cbd768f46d3a4bd6cd7a50ed495e38..0a82c0810063d117d298acfab08a6803
      };
      /** await the next incoming message */
 diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
-index e04823e26465bacb2e672c57c7720bef97ac69e5..acc1b3603c01085fc810c7755ae749f7da8732a1 100644
+index e04823e26465bacb2e672c57c7720bef97ac69e5..79036283e1eba939e7b381e055c4f9280f043766 100644
 --- a/lib/Types/Message.d.ts
 +++ b/lib/Types/Message.d.ts
-@@ -107,7 +107,7 @@ export type AnyMediaMessageContent = (({
+@@ -7,11 +7,20 @@ import { BinaryNode } from '../WABinary';
+ import type { GroupMetadata } from './GroupMetadata';
+ import { CacheStore } from './Socket';
+ export { proto as WAProto };
+-export type WAMessage = proto.IWebMessageInfo;
++export type WAMessage = proto.IWebMessageInfo & {
++    key: WAMessageKey;
++};
+ export type WAMessageContent = proto.IMessage;
+ export type WAContactMessage = proto.Message.IContactMessage;
+ export type WAContactsArrayMessage = proto.Message.IContactsArrayMessage;
+-export type WAMessageKey = proto.IMessageKey;
++export type WAMessageKey = proto.IMessageKey & {
++    senderLid?: string;
++    server_id?: string;
++    senderPn?: string;
++    participantLid?: string;
++    participantPn?: string;
++    isViewOnce?: boolean;
++};
+ export type WATextMessage = proto.Message.IExtendedTextMessage;
+ export type WAContextInfo = proto.IContextInfo;
+ export type WALocationMessage = proto.Message.ILocationMessage;
+@@ -107,7 +116,7 @@ export type AnyMediaMessageContent = (({
      isAnimated?: boolean;
  } & WithDimensions) | ({
      document: WAMediaUpload;
@@ -41,7 +67,7 @@ index e04823e26465bacb2e672c57c7720bef97ac69e5..acc1b3603c01085fc810c7755ae749f7
      fileName?: string;
      caption?: string;
  } & Contextable)) & {
-@@ -211,6 +211,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+@@ -211,6 +220,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
      font?: number;
      /** if it is broadcast */
      broadcast?: boolean;
@@ -70,6 +96,32 @@ index 7a6127e952e87a794e516b977c9a74bd0cf5526d..9d04e9141e2ff467d9b7b740d7b15cb3
          isInTransaction,
          async transaction(work) {
              let result;
+diff --git a/lib/Utils/decode-wa-message.js b/lib/Utils/decode-wa-message.js
+index b6b7becd2c1a48c3ebe3ee11da7105f02c248e69..7eede5838fb3b08b05797a17c3e3e2ba2a220cfa 100644
+--- a/lib/Utils/decode-wa-message.js
++++ b/lib/Utils/decode-wa-message.js
+@@ -28,7 +28,7 @@ exports.NACK_REASONS = {
+  * @note this will only parse the message, not decrypt it
+  */
+ function decodeMessageNode(stanza, meId, meLid) {
+-    var _a;
++    var _a, _b, _c, _d, _e;
+     let msgType;
+     let chatId;
+     let author;
+@@ -87,7 +87,11 @@ function decodeMessageNode(stanza, meId, meLid) {
+         remoteJid: chatId,
+         fromMe,
+         id: msgId,
+-        participant
++        senderLid: (_b = stanza === null || stanza === void 0 ? void 0 : stanza.attrs) === null || _b === void 0 ? void 0 : _b.sender_lid,
++        senderPn: (_c = stanza === null || stanza === void 0 ? void 0 : stanza.attrs) === null || _c === void 0 ? void 0 : _c.sender_pn,
++        participant,
++        participantPn: (_d = stanza === null || stanza === void 0 ? void 0 : stanza.attrs) === null || _d === void 0 ? void 0 : _d.participant_pn,
++        participantLid: (_e = stanza === null || stanza === void 0 ? void 0 : stanza.attrs) === null || _e === void 0 ? void 0 : _e.participant_lid
+     };
+     const fullMessage = {
+         key,
 diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
 index 2251c0019df0755d3f65c81ea3b48e963c33cdad..a6033b3463e0a9f5d44df96d609758882114d3a6 100644
 --- a/lib/Utils/messages-media.js
