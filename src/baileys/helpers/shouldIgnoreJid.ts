@@ -5,7 +5,6 @@ import {
   isJidMetaIa,
   isJidNewsletter,
   isJidStatusBroadcast,
-  isLidUser,
 } from "@whiskeysockets/baileys";
 import config from "@/config";
 
@@ -19,7 +18,7 @@ export function shouldIgnoreJid(jid: string): boolean {
     ignoreMetaAiMessages,
   } = config.baileys;
 
-  if ((isJidGroup(jid) || isLidUser(jid)) && ignoreGroupMessages) {
+  if (isJidGroup(jid) && ignoreGroupMessages) {
     return true;
   }
   if (isJidStatusBroadcast(jid) && ignoreStatusMessages) {
