@@ -474,7 +474,6 @@ export class BaileysConnection {
         "[%s] [handleReconnecting] Reconnect count exceeded 10, resetting connection",
         this.phoneNumber,
       );
-      this.reconnectCount = 0;
       this.close();
       return;
     }
