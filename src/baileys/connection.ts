@@ -366,7 +366,7 @@ export class BaileysConnection {
           this.phoneNumber,
           lastDisconnect,
         );
-        this.handleReconnecting();
+        await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
         this.socket = null;
         this.connect();
@@ -467,14 +467,14 @@ export class BaileysConnection {
     this.logout();
   }
 
-  private handleReconnecting() {
+  private async handleReconnecting() {
     this.reconnectCount += 1;
     if (this.reconnectCount > 10) {
       logger.warn(
         "[%s] [handleReconnecting] Reconnect count exceeded 10, resetting connection",
         this.phoneNumber,
       );
-      this.close();
+      await this.close();
       return;
     }
     this.sendToWebhook({
