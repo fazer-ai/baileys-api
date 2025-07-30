@@ -345,19 +345,6 @@ export class BaileysConnection {
       // TODO: Drop @hapi/boom dependency.
       const error = lastDisconnect?.error as Boom;
       const statusCode = error?.output?.statusCode;
-      if (statusCode === DisconnectReason.timedOut) {
-        logger.info(
-          "[%s] [handleConnectionUpdate] Connection timed out",
-          this.phoneNumber,
-        );
-        await this.logout();
-        this.sendToWebhook({
-          event: "connection.update",
-          data: { connection: "close" },
-        });
-        return;
-      }
-
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
