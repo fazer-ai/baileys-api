@@ -345,7 +345,10 @@ export class BaileysConnection {
       // TODO: Drop @hapi/boom dependency.
       const error = lastDisconnect?.error as Boom;
       const statusCode = error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const message = error?.output?.payload?.message || error.message;
+      const shouldReconnect =
+        statusCode !== DisconnectReason.loggedOut &&
+        message !== "QR refs attempts ended";
 
       if (shouldReconnect) {
         logger.debug(
