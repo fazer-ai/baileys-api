@@ -45,6 +45,10 @@
     {
       "name": "Media",
       "description": "Retrieve media content from a message"
+    },
+    {
+      "name": "Monitoring",
+      "description": "Memory and system monitoring"
     }
   ],
   "components": {
@@ -1624,6 +1628,68 @@
           "404": {
             "description": "File not found"
           }
+        }
+      }
+    },
+    "/monitoring/memory": {
+      "get": {
+        "operationId": "getMonitoringMemory",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Get detailed memory usage report",
+        "description": "Returns memory usage, connection status, and resource metrics",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/health": {
+      "get": {
+        "operationId": "getMonitoringHealth",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Get system health status",
+        "description": "Returns system health including memory trends and connection status",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/test-leaks": {
+      "post": {
+        "operationId": "postMonitoringTest-leaks",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Run memory leak tests",
+        "description": "Triggers various memory leak scenarios to test monitoring detection",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/test-leaks/{testType}": {
+      "post": {
+        "operationId": "postMonitoringTest-leaksByTestType",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Run specific memory leak test",
+        "description": "Triggers a specific memory leak scenario",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "testType",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {}
         }
       }
     }

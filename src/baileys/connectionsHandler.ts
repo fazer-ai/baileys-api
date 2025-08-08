@@ -15,6 +15,7 @@ import type {
   SendReceiptsOptions,
 } from "@/baileys/types";
 import logger from "@/lib/logger";
+import { ConnectionTracker } from "@/monitoring";
 
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
@@ -38,11 +39,15 @@ export class BaileysConnectionsHandler {
     // TODO: Handle thundering herd issue.
     for (const { id, metadata } of savedConnections) {
       const connection = new BaileysConnection(id, {
-        onConnectionClose: () => delete this.connections[id],
+        onConnectionClose: () => {
+          ConnectionTracker.getInstance().removeConnection(id);
+          delete this.connections[id];
+        },
         isReconnect: true,
         ...metadata,
       });
       this.connections[id] = connection;
+      ConnectionTracker.getInstance().trackConnection(id);
       await connection.connect();
     }
   }
@@ -50,6 +55,7 @@ export class BaileysConnectionsHandler {
   async connect(phoneNumber: string, options: BaileysConnectionOptions) {
     if (this.connections[phoneNumber]) {
       // NOTE: This triggers a `connection.update` event.
+      ConnectionTracker.getInstance().updateActivity(phoneNumber);
       await this.connections[phoneNumber].sendPresenceUpdate("available");
       return;
     }
@@ -57,12 +63,14 @@ export class BaileysConnectionsHandler {
     const connection = new BaileysConnection(phoneNumber, {
       ...options,
       onConnectionClose: () => {
+        ConnectionTracker.getInstance().removeConnection(phoneNumber);
         delete this.connections[phoneNumber];
         options.onConnectionClose?.();
       },
     });
     await connection.connect();
     this.connections[phoneNumber] = connection;
+    ConnectionTracker.getInstance().trackConnection(phoneNumber);
   }
 
   private getConnection(phoneNumber: string) {
@@ -70,6 +78,7 @@ export class BaileysConnectionsHandler {
     if (!connection) {
       throw new BaileysNotConnectedError();
     }
+    ConnectionTracker.getInstance().updateActivity(phoneNumber);
     return connection;
   }
 
