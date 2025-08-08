@@ -12,8 +12,12 @@ import logger from "@/lib/logger";
 import { trackRequest } from "@/monitoring";
 
 const app = new Elysia()
-  .onAfterResponse(({ request, response, set }) => {
-    trackRequest().end();
+  .state("reqTracker", undefined as ReturnType<typeof trackRequest> | undefined)
+  .onRequest(({ store }) => {
+    store.reqTracker = trackRequest();
+  })
+  .onAfterResponse(({ store, request, response, set }) => {
+    store.reqTracker?.end();
 
     logger.info(
       "%s %s [%s] %o",

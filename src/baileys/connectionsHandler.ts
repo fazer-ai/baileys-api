@@ -47,8 +47,8 @@ export class BaileysConnectionsHandler {
         ...metadata,
       });
       this.connections[id] = connection;
-      ConnectionTracker.getInstance().trackConnection(id);
       await connection.connect();
+      ConnectionTracker.getInstance().trackConnection(id);
     }
   }
 

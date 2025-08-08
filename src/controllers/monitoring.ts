@@ -1,8 +1,10 @@
 import Elysia from "elysia";
+import { adminGuard } from "@/middlewares/auth";
 import { MemoryLeakTester } from "@/monitoring/memoryLeakTester";
 import { getHealthReport, getMemoryReport } from "@/monitoring/routes";
 
 const monitoringController = new Elysia({ prefix: "/monitoring" })
+  .use(adminGuard)
   .get("/memory", () => getMemoryReport(), {
     detail: {
       tags: ["Monitoring"],

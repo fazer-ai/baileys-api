@@ -2,12 +2,14 @@ import logger from "@/lib/logger";
 
 export class MemoryMonitor {
   private static instance: MemoryMonitor;
-  private intervalId: NodeJS.Timer | null = null;
+  private intervalId: ReturnType<typeof setInterval> | null = null;
   private baselineMemory: NodeJS.MemoryUsage | null = null;
   private measurements: Array<{
     timestamp: number;
     memory: NodeJS.MemoryUsage;
   }> = [];
+
+  private constructor() {}
 
   static getInstance(): MemoryMonitor {
     if (!MemoryMonitor.instance) {
@@ -97,6 +99,7 @@ export class MemoryMonitor {
     const olderAvg =
       older.reduce((sum, m) => sum + m.memory.heapUsed, 0) / older.length;
 
+    if (olderAvg === 0) return "insufficient_data";
     const change = ((recentAvg - olderAvg) / olderAvg) * 100;
 
     if (change > 10) return "increasing";

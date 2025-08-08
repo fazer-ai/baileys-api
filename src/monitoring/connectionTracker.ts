@@ -11,6 +11,8 @@ export class ConnectionTracker {
     }
   > = new Map();
 
+  private constructor() {}
+
   static getInstance(): ConnectionTracker {
     if (!ConnectionTracker.instance) {
       ConnectionTracker.instance = new ConnectionTracker();

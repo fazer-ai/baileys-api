@@ -6,6 +6,8 @@ export class FileSystemMonitor {
   private static instance: FileSystemMonitor;
   private intervalId: NodeJS.Timer | null = null;
 
+  private constructor() {}
+
   static getInstance(): FileSystemMonitor {
     if (!FileSystemMonitor.instance) {
       FileSystemMonitor.instance = new FileSystemMonitor();
@@ -49,7 +51,7 @@ export class FileSystemMonitor {
 
       logger.debug(
         "Media directory: %d files, %d MB total, %d files >24h old",
-        files.length - 1,
+        files.filter((f) => f !== ".keep").length,
         totalSizeMB,
         oldFiles,
       );
