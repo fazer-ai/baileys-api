@@ -186,8 +186,7 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "multipart/form-data": {
@@ -225,8 +224,7 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "text/plain": {
@@ -264,8 +262,7 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }

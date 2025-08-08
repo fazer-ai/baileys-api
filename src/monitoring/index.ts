@@ -38,21 +38,28 @@ export function startMonitoring() {
 }
 
 export function stopMonitoring() {
-  MemoryMonitor.getInstance().stop();
-  FileSystemMonitor.getInstance().stop();
-
-  if (connectionReportIntervalId) {
-    clearInterval(connectionReportIntervalId);
-    connectionReportIntervalId = null;
+  if (!isMonitoringStarted) {
+    logger.debug("Monitoring not started; nothing to stop");
+    return;
   }
 
-  if (memoryTrendIntervalId) {
-    clearInterval(memoryTrendIntervalId);
-    memoryTrendIntervalId = null;
+  try {
+    MemoryMonitor.getInstance().stop();
+    FileSystemMonitor.getInstance().stop();
+  } catch (err) {
+    logger.error({ err }, "Error while stopping monitors");
+  } finally {
+    if (connectionReportIntervalId) {
+      clearInterval(connectionReportIntervalId);
+      connectionReportIntervalId = null;
+    }
+    if (memoryTrendIntervalId) {
+      clearInterval(memoryTrendIntervalId);
+      memoryTrendIntervalId = null;
+    }
+    isMonitoringStarted = false;
+    logger.info("Monitoring stopped");
   }
-
-  isMonitoringStarted = false;
-  logger.info("Memory leak monitoring stopped");
 }
 
 export {
