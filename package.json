@@ -32,7 +32,7 @@
     "link-preview-js": "^3.1.0",
     "lru-cache": "^11.1.0",
     "pino": "^9.7.0",
-    "pino-pretty": "^13.0.0",
+    "pino-pretty": "^13.1.1",
     "pino-roll": "^3.1.0",
     "qrcode": "^1.5.4",
     "redis": "^5.8.0",
