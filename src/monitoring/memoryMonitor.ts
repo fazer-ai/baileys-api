@@ -4,6 +4,7 @@ export class MemoryMonitor {
   private static instance: MemoryMonitor;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private baselineMemory: NodeJS.MemoryUsage | null = null;
+  private lastBaselineUpdate = 0;
   private measurements: Array<{
     timestamp: number;
     memory: NodeJS.MemoryUsage;
@@ -22,6 +23,7 @@ export class MemoryMonitor {
     if (this.intervalId) return;
 
     this.baselineMemory = process.memoryUsage();
+    this.lastBaselineUpdate = Date.now();
     logger.info("Memory monitoring started. Baseline: %o", this.baselineMemory);
 
     this.intervalId = setInterval(() => {
@@ -36,6 +38,7 @@ export class MemoryMonitor {
       }
 
       this.analyzeMemoryTrend(currentMemory);
+      this.updateBaselineIfNeeded(currentMemory);
     }, intervalMs);
   }
 
@@ -73,6 +76,35 @@ export class MemoryMonitor {
         recentMeasurements[0].memory.heapUsed,
         recentMeasurements[4].memory.heapUsed,
       );
+    }
+  }
+
+  private updateBaselineIfNeeded(current: NodeJS.MemoryUsage) {
+    if (!this.baselineMemory) return;
+
+    const now = Date.now();
+    const timeSinceBaseline = now - this.lastBaselineUpdate;
+
+    const shouldUpdateTime = timeSinceBaseline > 2 * 60 * 60 * 1000;
+
+    if (shouldUpdateTime && this.measurements.length >= 10) {
+      const trend = this.calculateTrend();
+
+      if (trend === "stable" || trend === "decreasing") {
+        const oldBaseline = this.baselineMemory.heapUsed;
+        this.baselineMemory = { ...current };
+        this.lastBaselineUpdate = now;
+
+        logger.info(
+          "Baseline memory updated after %d hours. Old: %d MB, New: %d MB (trend: %s)",
+          Math.round(timeSinceBaseline / (1000 * 60 * 60)),
+          Math.round(oldBaseline / 1024 / 1024),
+          Math.round(current.heapUsed / 1024 / 1024),
+          trend,
+        );
+      } else {
+        logger.debug("Baseline update skipped due to %s memory trend", trend);
+      }
     }
   }
 
