@@ -66,8 +66,10 @@ export class MemoryMonitor {
         recentMeasurements[4].memory.heapUsed -
         recentMeasurements[0].memory.heapUsed;
       logger.warn(
-        "Continuous memory growth detected: %d MB over last 5 measurements",
+        "Continuous memory growth detected: %d MB over last 5 measurements (%d, %d)",
         Math.round(growthRate / 1024 / 1024),
+        recentMeasurements[0].memory.heapUsed,
+        recentMeasurements[4].memory.heapUsed,
       );
     }
   }
