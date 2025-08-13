@@ -1,6 +1,7 @@
 import logger from "@/lib/logger";
 import { ConnectionTracker } from "./connectionTracker";
 import { FileSystemMonitor } from "./fileSystemMonitor";
+import { HeapAnalyzer } from "./heapAnalyzer";
 import { MemoryMonitor } from "./memoryMonitor";
 import { getResourceMetrics, trackRequest } from "./resourceMiddleware";
 
@@ -66,6 +67,7 @@ export {
   MemoryMonitor,
   ConnectionTracker,
   FileSystemMonitor,
+  HeapAnalyzer,
   trackRequest,
   getResourceMetrics,
 };

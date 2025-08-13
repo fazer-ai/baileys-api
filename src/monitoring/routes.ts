@@ -1,3 +1,4 @@
+import { HeapAnalyzer } from "./heapAnalyzer";
 import { ConnectionTracker, getResourceMetrics, MemoryMonitor } from "./index";
 
 export function getMemoryReport() {
@@ -51,4 +52,22 @@ export function getHealthReport() {
   }
 
   return health;
+}
+
+export async function createHeapSnapshot() {
+  const snapshot = HeapAnalyzer.getInstance().createSnapshot();
+  return snapshot;
+}
+
+export function getHeapStats() {
+  return HeapAnalyzer.getInstance().getHeapStats();
+}
+
+export function setHeapBaseline() {
+  HeapAnalyzer.getInstance().setBaseline();
+  return { message: "Heap baseline set successfully" };
+}
+
+export function compareHeapWithBaseline() {
+  return HeapAnalyzer.getInstance().compareWithBaseline();
 }

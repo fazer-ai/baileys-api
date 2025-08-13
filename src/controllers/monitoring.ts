@@ -1,7 +1,14 @@
 import Elysia from "elysia";
 import { adminGuard } from "@/middlewares/auth";
 import { MemoryLeakTester } from "@/monitoring/memoryLeakTester";
-import { getHealthReport, getMemoryReport } from "@/monitoring/routes";
+import {
+  compareHeapWithBaseline,
+  createHeapSnapshot,
+  getHealthReport,
+  getHeapStats,
+  getMemoryReport,
+  setHeapBaseline,
+} from "@/monitoring/routes";
 
 const monitoringController = new Elysia({ prefix: "/monitoring" })
   .use(adminGuard)
@@ -101,6 +108,56 @@ const monitoringController = new Elysia({ prefix: "/monitoring" })
         description: "Triggers a specific memory leak scenario",
       },
     },
-  );
+  )
+  .get("/heap/stats", () => getHeapStats(), {
+    detail: {
+      tags: ["Monitoring"],
+      summary: "Get current heap statistics",
+      description: "Returns JSC heap statistics including object type counts",
+    },
+  })
+  .post("/heap/baseline", () => setHeapBaseline(), {
+    detail: {
+      tags: ["Monitoring"],
+      summary: "Set heap baseline for comparison",
+      description: "Captures current heap state as baseline for leak detection",
+    },
+  })
+  .get("/heap/compare", () => compareHeapWithBaseline(), {
+    detail: {
+      tags: ["Monitoring"],
+      summary: "Compare current heap with baseline",
+      description:
+        "Shows heap growth and suspicious object accumulation since baseline",
+    },
+  })
+  .post(
+    "/heap/snapshot",
+    async ({ set }) => {
+      const snapshot = await createHeapSnapshot();
+
+      set.headers["Content-Type"] = "application/octet-stream";
+      set.headers["Content-Disposition"] =
+        `attachment; filename="${snapshot.filename}"`;
+
+      return Bun.file(snapshot.filepath);
+    },
+    {
+      detail: {
+        tags: ["Monitoring"],
+        summary: "Create and download V8 heap snapshot",
+        description:
+          "Generates heap snapshot file and returns it for download to analyze in Chrome DevTools",
+      },
+    },
+  )
+  .post("/heap/snapshot/info", async () => createHeapSnapshot(), {
+    detail: {
+      tags: ["Monitoring"],
+      summary: "Create heap snapshot and return file info",
+      description:
+        "Generates heap snapshot file and returns filepath info without downloading",
+    },
+  });
 
 export default monitoringController;
