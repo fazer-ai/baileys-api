@@ -40,6 +40,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.1.2",
+    "@stacksjs/gitlint": "^0.1.5",
     "@types/fluent-ffmpeg": "^2.1.27",
     "@types/qrcode": "^1.5.5",
     "bun-git-hooks": "^0.2.19",
@@ -47,7 +48,7 @@
     "pino-caller": "^4.0.0"
   },
   "patchedDependencies": {
-    "pino-pretty@13.0.0": "patches/pino-pretty@13.0.0.patch",
-    "@whiskeysockets/baileys@6.7.18": "patches/@whiskeysockets%2Fbaileys@6.7.18.patch"
+    "@whiskeysockets/baileys@6.7.18": "patches/@whiskeysockets%2Fbaileys@6.7.18.patch",
+    "pino-pretty@13.1.1": "patches/pino-pretty@13.1.1.patch"
   }
 }
