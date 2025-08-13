@@ -1,6 +1,7 @@
 import { heapStats } from "bun:jsc";
 import { join } from "node:path";
 import { writeHeapSnapshot } from "node:v8";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 export class HeapAnalyzer {
@@ -31,7 +32,7 @@ export class HeapAnalyzer {
       logger.info(`Heap snapshot created: ${filepath}`);
       return { filepath, filename };
     } catch (error) {
-      logger.error("Failed to create heap snapshot:", error);
+      logger.error("Failed to create heap snapshot: %s", errorToString(error));
       throw error;
     }
   }
@@ -48,7 +49,7 @@ export class HeapAnalyzer {
    */
   setBaseline() {
     this.baselineStats = this.getHeapStats();
-    logger.info("Heap baseline set", {
+    logger.info("Heap baseline set %o", {
       heapSize: this.baselineStats.heapSize,
       objectCount: this.baselineStats.objectCount,
     });
