@@ -20,7 +20,7 @@ const app = new Elysia()
     store.reqTracker?.end();
 
     logger.info(
-      "%s %s [%s] %o",
+      "%s %s [%d] %o",
       request.method,
       request.url,
       (response as Response)?.status ?? set.status,

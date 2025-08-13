@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import ffmpeg from "@/bindings/ffmpeg";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 function bufferToStream(buffer: Buffer) {
@@ -62,7 +63,10 @@ export async function preprocessAudio(
     try {
       await fs.unlink(tmpFilename);
     } catch (unlinkError) {
-      logger.error("Failed to delete temporary audio file:", unlinkError);
+      logger.error(
+        "Failed to delete temporary audio file: %s",
+        errorToString(unlinkError),
+      );
     }
   }
 }

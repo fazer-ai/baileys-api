@@ -329,12 +329,12 @@ export class BaileysConnection {
         (("qr" in data && !qr) || this.isReconnect));
     if (isReconnecting) {
       logger.debug(
-        "[%s] [handleConnectionUpdate] Reconnecting (isNewLogin=%s, isReconnect=%s, connection=%s, qr=%s)",
+        "[%s] [handleConnectionUpdate] Reconnecting (isNewLogin=%d, isReconnect=%d, connection=%s, qr=%s)",
         this.phoneNumber,
-        isNewLogin,
-        this.isReconnect,
-        connection,
-        qr,
+        Number(isNewLogin ?? false),
+        Number(this.isReconnect),
+        connection ?? "",
+        qr ?? "",
       );
       this.isReconnect = false;
       this.handleReconnecting();
@@ -354,7 +354,7 @@ export class BaileysConnection {
         logger.debug(
           "[%s] [handleConnectionUpdate] Reconnecting (lastDisconnect=%o)",
           this.phoneNumber,
-          lastDisconnect,
+          lastDisconnect ?? {},
         );
         await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.

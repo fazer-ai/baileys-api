@@ -7,6 +7,7 @@ import {
 } from "@whiskeysockets/baileys";
 import { file } from "bun";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 type MediaMessage =
@@ -49,7 +50,7 @@ export async function downloadMediaFromMessages(
 
       await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
     } catch (error) {
-      logger.error("Failed to download media: %s", error);
+      logger.error("Failed to download media: %s", errorToString(error));
     }
   }
 

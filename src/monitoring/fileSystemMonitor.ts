@@ -1,5 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 export class FileSystemMonitor {
@@ -56,7 +57,10 @@ export class FileSystemMonitor {
         oldFiles,
       );
     } catch (error) {
-      logger.error("Error monitoring media directory: %s", error);
+      logger.error(
+        "Error monitoring media directory: %s",
+        errorToString(error),
+      );
     }
   }
 
