@@ -265,6 +265,7 @@ export class MemoryLeakTester {
     );
 
     // Clear all test intervals
+    // biome-ignore lint/suspicious/useIterableCallbackReturn: false positive
     this.testIntervals.forEach((interval) => clearInterval(interval));
     this.testIntervals = [];
 
