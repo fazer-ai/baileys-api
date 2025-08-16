@@ -13,7 +13,8 @@ COPY . .
 
 FROM base AS release
 
-# NOTE: fix `sharp` memory leak
+# NOTE: The Sharp image processing library can leak memory when used in containers due to issues with glibc's malloc.
+# Using jemalloc as the memory allocator (via LD_PRELOAD) mitigates these leaks and improves stability.
 RUN apk add --no-cache jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
 
