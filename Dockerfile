@@ -12,6 +12,11 @@ COPY --from=install /temp/prod/node_modules node_modules
 COPY . .
 
 FROM base AS release
+
+# NOTE: fix `sharp` memory leak
+RUN apk add --no-cache jemalloc
+ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+
 COPY --from=install /temp/prod/node_modules node_modules
 COPY --from=prerelease /usr/src/app/src/ src
 COPY --from=prerelease /usr/src/app/tsconfig.json tsconfig.json
