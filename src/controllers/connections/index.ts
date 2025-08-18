@@ -255,19 +255,14 @@ const connectionsController = new Elysia({
     "/:phoneNumber/on-whatsapp",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { phoneNumbers } = body;
+      const { jids } = body;
 
-      const jids = phoneNumbers.map(
-        (number) => `${number.replace(/^\+/, "")}@s.whatsapp.net`,
-      );
-
-      const result = await baileys.onWhatsApp(phoneNumber, jids);
-      return { data: result };
+      return baileys.onWhatsApp(phoneNumber, jids);
     },
     {
       params: phoneNumberParams,
       body: t.Object({
-        phoneNumbers: t.Array(
+        jids: t.Array(
           t.String({
             description: "Phone number formatted as jid",
             pattern: "^\\d{5,15}@s.whatsapp.net$",

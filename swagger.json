@@ -186,7 +186,8 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "multipart/form-data": {
@@ -224,7 +225,8 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "text/plain": {
@@ -262,7 +264,8 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ]
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -1662,72 +1665,69 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "phoneNumbers": {
+                  "jids": {
                     "description": "Array of phone numbers to check if they are on WhatsApp",
                     "minItems": 1,
                     "maxItems": 50,
                     "type": "array",
                     "items": {
-                      "minLength": 6,
-                      "maxLength": 16,
-                      "pattern": "^\\+\\d{5,15}$",
-                      "description": "Phone number for connection. Must have + prefix.",
-                      "example": "+551234567890",
+                      "description": "Phone number formatted as jid",
+                      "pattern": "^\\d{5,15}@s.whatsapp.net$",
+                      "example": "551234567890@s.whatsapp.net",
                       "type": "string"
                     }
                   }
                 },
                 "required": [
-                  "phoneNumbers"
-                ]
+                  "jids"
+                ],
+                "additionalProperties": false
               }
             },
             "multipart/form-data": {
               "schema": {
                 "type": "object",
                 "properties": {
-                  "phoneNumbers": {
+                  "jids": {
                     "description": "Array of phone numbers to check if they are on WhatsApp",
                     "minItems": 1,
                     "maxItems": 50,
                     "type": "array",
                     "items": {
-                      "minLength": 6,
-                      "maxLength": 16,
-                      "pattern": "^\\+\\d{5,15}$",
-                      "description": "Phone number for connection. Must have + prefix.",
-                      "example": "+551234567890",
+                      "description": "Phone number formatted as jid",
+                      "pattern": "^\\d{5,15}@s.whatsapp.net$",
+                      "example": "551234567890@s.whatsapp.net",
                       "type": "string"
                     }
                   }
                 },
                 "required": [
-                  "phoneNumbers"
-                ]
+                  "jids"
+                ],
+                "additionalProperties": false
               }
             },
             "text/plain": {
               "schema": {
                 "type": "object",
                 "properties": {
-                  "phoneNumbers": {
+                  "jids": {
                     "description": "Array of phone numbers to check if they are on WhatsApp",
                     "minItems": 1,
                     "maxItems": 50,
                     "type": "array",
                     "items": {
-                      "minLength": 6,
-                      "maxLength": 16,
-                      "pattern": "^\\+\\d{5,15}$",
-                      "description": "Phone number for connection. Must have + prefix.",
-                      "example": "+551234567890",
+                      "description": "Phone number formatted as jid",
+                      "pattern": "^\\d{5,15}@s.whatsapp.net$",
+                      "example": "551234567890@s.whatsapp.net",
                       "type": "string"
                     }
                   }
                 },
                 "required": [
-                  "phoneNumbers"
-                ]
+                  "jids"
+                ],
+                "additionalProperties": false
               }
             }
           }
