@@ -125,6 +125,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).sendReceipts(keys, type);
   }
 
+  onWhatsApp(phoneNumber: string, jids: string[]) {
+    return this.getConnection(phoneNumber).onWhatsApp(jids);
+  }
+
   async logout(phoneNumber: string) {
     await this.getConnection(phoneNumber).logout();
     delete this.connections[phoneNumber];

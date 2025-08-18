@@ -1597,6 +1597,143 @@
         }
       }
     },
+    "/connections/{phoneNumber}/on-whatsapp": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberOn-whatsapp",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Check if phone numbers are registered on WhatsApp",
+        "responses": {
+          "200": {
+            "description": "Phone numbers checked successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "jid": {
+                            "type": "string",
+                            "description": "WhatsApp JID of the phone number",
+                            "example": "551234567890@s.whatsapp.net"
+                          },
+                          "exists": {
+                            "type": "boolean",
+                            "description": "Whether the phone number is registered on WhatsApp"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phoneNumbers": {
+                    "description": "Array of phone numbers to check if they are on WhatsApp",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "minLength": 6,
+                      "maxLength": 16,
+                      "pattern": "^\\+\\d{5,15}$",
+                      "description": "Phone number for connection. Must have + prefix.",
+                      "example": "+551234567890",
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "phoneNumbers"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phoneNumbers": {
+                    "description": "Array of phone numbers to check if they are on WhatsApp",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "minLength": 6,
+                      "maxLength": 16,
+                      "pattern": "^\\+\\d{5,15}$",
+                      "description": "Phone number for connection. Must have + prefix.",
+                      "example": "+551234567890",
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "phoneNumbers"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phoneNumbers": {
+                    "description": "Array of phone numbers to check if they are on WhatsApp",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": {
+                      "minLength": 6,
+                      "maxLength": 16,
+                      "pattern": "^\\+\\d{5,15}$",
+                      "description": "Phone number for connection. Must have + prefix.",
+                      "example": "+551234567890",
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "phoneNumbers"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/media/{messageId}": {
       "get": {
         "parameters": [
@@ -1688,6 +1825,71 @@
             "required": true
           }
         ],
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/heap/stats": {
+      "get": {
+        "operationId": "getMonitoringHeapStats",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Get current heap statistics",
+        "description": "Returns JSC heap statistics including object type counts",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/heap/baseline": {
+      "post": {
+        "operationId": "postMonitoringHeapBaseline",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Set heap baseline for comparison",
+        "description": "Captures current heap state as baseline for leak detection",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/heap/compare": {
+      "get": {
+        "operationId": "getMonitoringHeapCompare",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Compare current heap with baseline",
+        "description": "Shows heap growth and suspicious object accumulation since baseline",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/heap/snapshot": {
+      "post": {
+        "operationId": "postMonitoringHeapSnapshot",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Create and download V8 heap snapshot",
+        "description": "Generates heap snapshot file and returns it for download to analyze in Chrome DevTools",
+        "responses": {
+          "200": {}
+        }
+      }
+    },
+    "/monitoring/heap/snapshot/info": {
+      "post": {
+        "operationId": "postMonitoringHeapSnapshotInfo",
+        "tags": [
+          "Monitoring"
+        ],
+        "summary": "Create heap snapshot and return file info",
+        "description": "Generates heap snapshot file and returns filepath info without downloading",
         "responses": {
           "200": {}
         }

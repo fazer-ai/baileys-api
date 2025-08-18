@@ -308,6 +308,10 @@ export class BaileysConnection {
     return this.safeSocket().sendReceipts(keys, type);
   }
 
+  onWhatsApp(jids: string[]) {
+    return this.safeSocket().onWhatsApp(...jids);
+  }
+
   private safeSocket() {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
