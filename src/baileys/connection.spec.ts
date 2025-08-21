@@ -1,4 +1,29 @@
-import { describe, it } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { BaileysConnection, BaileysNotConnectedError } from "./connection";
+import type { BaileysConnectionOptions } from "./types";
+
+function createMockSocket(overrides = {}) {
+  return {
+    profilePictureUrl: mock(() => Promise.resolve("https://example.com/profile.jpg")),
+    ...overrides
+  };
+}
+
+function createBaileysConnection(phoneNumber = "5511999999999") {
+  const options: BaileysConnectionOptions = {
+    webhookUrl: "http://localhost:3000/webhook",
+    webhookVerifyToken: "test-token",
+  };
+  return new BaileysConnection(phoneNumber, options);
+}
+
+function setupConnectionWithMockSocket(socketOverrides = {}) {
+  const connection = createBaileysConnection();
+  const mockSocket = createMockSocket(socketOverrides);
+  // @ts-ignore - Setting private property for testing
+  connection.socket = mockSocket;
+  return { connection, mockSocket };
+}
 
 describe("BaileysConnection", () => {
   describe("#connect", () => {
@@ -45,6 +70,42 @@ describe("BaileysConnection", () => {
   describe("#fetchMessageHistory", () => {
     it.todo("throw BaileysNotConnectedError if not connected");
     it.todo("call socket fetchMessageHistory method");
+  });
+
+  describe("#getProfilePicture", () => {
+    let connection: BaileysConnection;
+
+    beforeEach(() => {
+      connection = createBaileysConnection();
+    });
+
+    it("should throw BaileysNotConnectedError if not connected", async () => {
+      expect(async () => {
+        await connection.getProfilePicture("5511888888888@s.whatsapp.net");
+      }).toThrow(BaileysNotConnectedError);
+    });
+
+    it("should call socket profilePictureUrl method with correct parameters", async () => {
+      const { connection, mockSocket } = setupConnectionWithMockSocket();
+      const jid = "5511888888888@s.whatsapp.net";
+      const type = "preview";
+      await connection.getProfilePicture(jid, type);
+      expect(mockSocket.profilePictureUrl).toHaveBeenCalledWith(jid, type);
+    });
+
+    it("should return profile picture URL when available", async () => {
+      const { connection } = setupConnectionWithMockSocket();
+      const result = await connection.getProfilePicture("5511888888888@s.whatsapp.net");
+      expect(result).toBe("https://example.com/profile.jpg");
+    });
+
+    it("should handle when profile picture is not available", async () => {
+      const { connection } = setupConnectionWithMockSocket({
+        profilePictureUrl: mock(() => Promise.resolve(null)),
+      });
+      const result = await connection.getProfilePicture("5511888888888@s.whatsapp.net");
+      expect(result).toBeNull();
+    });
   });
 
   describe("Event Handlers", () => {
