@@ -308,6 +308,13 @@ export class BaileysConnection {
     return this.safeSocket().sendReceipts(keys, type);
   }
 
+  async getProfilePicture(jid: string, type?: "preview" | "image") {
+    if (!this.socket) {
+      throw new BaileysNotConnectedError();
+    }
+    return this.socket.profilePictureUrl(jid, type);
+  }
+
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
   }
