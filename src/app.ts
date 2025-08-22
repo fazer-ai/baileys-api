@@ -5,20 +5,12 @@ import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
 import mediaController from "@/controllers/media";
-import monitoringController from "@/controllers/monitoring";
 import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
-import { trackRequest } from "@/monitoring";
 
 const app = new Elysia()
-  .state("reqTracker", undefined as ReturnType<typeof trackRequest> | undefined)
-  .onRequest(({ store }) => {
-    store.reqTracker = trackRequest();
-  })
-  .onAfterResponse(({ store, request, response, set }) => {
-    store.reqTracker?.end();
-
+  .onAfterResponse(({ request, response, set }) => {
     logger.info(
       "%s %s [%d] %o",
       request.method,
@@ -86,10 +78,6 @@ const app = new Elysia()
             name: "Media",
             description: "Retrieve media content from a message",
           },
-          {
-            name: "Monitoring",
-            description: "Memory and system monitoring",
-          },
         ],
         components: {
           securitySchemes: {
@@ -107,8 +95,7 @@ const app = new Elysia()
   .use(statusController)
   .use(adminController)
   .use(connectionsController)
-  .use(mediaController)
-  .use(monitoringController);
+  .use(mediaController);
 
 if (config.env === "development") {
   app.use(cors());

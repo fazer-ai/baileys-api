@@ -4,7 +4,6 @@ import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
-import { startMonitoring } from "@/monitoring";
 
 process.on("uncaughtException", (error) => {
   logger.error(
@@ -33,8 +32,6 @@ app.listen(config.port, () => {
       2,
     ),
   );
-
-  startMonitoring();
 
   initializeRedis().then(() =>
     baileys.reconnectFromAuthStore().catch((error) => {
