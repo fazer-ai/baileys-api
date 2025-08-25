@@ -47,6 +47,13 @@ describe("BaileysConnection", () => {
     it.todo("call socket fetchMessageHistory method");
   });
 
+  describe("#getProfilePicture", () => {
+    it.todo("should throw BaileysNotConnectedError if not connected");
+    it.todo("should call socket profilePictureUrl method with correct parameters");
+    it.todo("should return profile picture URL when available");
+    it.todo("should handle when profile picture is not available");
+  });
+
   describe("Event Handlers", () => {
     describe("connection.update", () => {
       it.todo("handle 'reconnecting' state");

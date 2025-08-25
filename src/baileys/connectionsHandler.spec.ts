@@ -50,6 +50,13 @@ describe("BaileysConnectionsHandler", () => {
     it.todo("call fetchMessageHistory on the correct connection");
   });
 
+  describe("#getProfilePicture", () => {
+    it.todo("should throw BaileysNotConnectedError if no connection exists");
+    it.todo("should call getProfilePicture on the correct connection");
+    it.todo("should return profile picture URL when available");
+    it.todo("should return null when profile picture is not available");
+  });
+
   describe("#logout", () => {
     it.todo("throw BaileysNotConnectedError if no connection exists");
     it.todo("call logout on the correct connection");

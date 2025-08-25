@@ -251,6 +251,48 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .get(
+    "/:phoneNumber/profile-pic",
+    async ({ params, query }) => {
+      const { phoneNumber } = params;
+      const { jid, type } = query;
+
+      const profilePicUrl = await baileys.getProfilePicture(
+        phoneNumber,
+        jid,
+        type,
+      );
+
+      return {
+        data: {
+          jid,
+          profilePictureUrl: profilePicUrl || null,
+        },
+      };
+    },
+    {
+      params: phoneNumberParams,
+      query: t.Object({
+        jid: jid("JID of the contact/group to get profile picture for"),
+        type: t.Optional(
+          t.Union([t.Literal("preview"), t.Literal("image")], {
+            description: "Picture quality type",
+            default: "image",
+          }),
+        ),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Profile picture URL retrieved successfully",
+          },
+          404: {
+            description: "Phone number not connected",
+          },
+        },
+      },
+    },
+  )
   .post(
     "/:phoneNumber/on-whatsapp",
     async ({ params, body }) => {
