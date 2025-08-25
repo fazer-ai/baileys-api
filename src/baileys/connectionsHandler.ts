@@ -31,7 +31,8 @@ export class BaileysConnectionsHandler {
     }
 
     logger.info(
-      "Reconnecting from auth store %o",
+      "Reconnecting %d connections from auth store %o",
+      savedConnections.length,
       savedConnections.map(({ id }) => id),
     );
 
@@ -40,6 +41,10 @@ export class BaileysConnectionsHandler {
       const connection = new BaileysConnection(id, {
         onConnectionClose: () => {
           delete this.connections[id];
+          logger.debug(
+            "Now tracking %d connections",
+            Object.keys(this.connections).length,
+          );
         },
         isReconnect: true,
         ...metadata,
@@ -65,6 +70,10 @@ export class BaileysConnectionsHandler {
     });
     await connection.connect();
     this.connections[phoneNumber] = connection;
+    logger.debug(
+      "Now tracking %d connections",
+      Object.keys(this.connections).length,
+    );
   }
 
   private getConnection(phoneNumber: string) {
@@ -133,6 +142,10 @@ export class BaileysConnectionsHandler {
   async logout(phoneNumber: string) {
     await this.getConnection(phoneNumber).logout();
     delete this.connections[phoneNumber];
+    logger.debug(
+      "Now tracking %d connections",
+      Object.keys(this.connections).length,
+    );
   }
 
   async logoutAll() {
