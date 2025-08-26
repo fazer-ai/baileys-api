@@ -48,10 +48,9 @@ describe("BaileysConnection", () => {
   });
 
   describe("#getProfilePicture", () => {
-    it.todo("should throw BaileysNotConnectedError if not connected");
+    it.todo("should return an error when profile picture is not found");
     it.todo("should call socket profilePictureUrl method with correct parameters");
     it.todo("should return profile picture URL when available");
-    it.todo("should handle when profile picture is not available");
   });
 
   describe("Event Handlers", () => {

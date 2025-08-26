@@ -257,18 +257,25 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, type } = query;
 
-      const profilePicUrl = await baileys.getProfilePicture(
-        phoneNumber,
-        jid,
-        type,
-      );
-
-      return {
-        data: {
+      try {
+        const profilePicUrl = await baileys.getProfilePicture(
+          phoneNumber,
           jid,
-          profilePictureUrl: profilePicUrl || null,
-        },
-      };
+          type,
+        );
+
+        return {
+          data: {
+            jid,
+            profilePictureUrl: profilePicUrl || null,
+          },
+        };
+      } catch (e) {
+        if ((e as Error).message === "item-not-found") {
+          return new Response("Profile picture not found", { status: 404 });
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,

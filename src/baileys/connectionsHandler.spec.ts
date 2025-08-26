@@ -51,10 +51,9 @@ describe("BaileysConnectionsHandler", () => {
   });
 
   describe("#getProfilePicture", () => {
-    it.todo("should throw BaileysNotConnectedError if no connection exists");
+    it.todo("should return an error when profile picture is not found");
     it.todo("should call getProfilePicture on the correct connection");
     it.todo("should return profile picture URL when available");
-    it.todo("should return null when profile picture is not available");
   });
 
   describe("#logout", () => {
