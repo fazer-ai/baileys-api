@@ -280,22 +280,51 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       query: t.Object({
-        jid: jid("JID of the contact/group to get profile picture for"),
+        jid: jid(),
         type: t.Optional(
-          t.Union([t.Literal("preview"), t.Literal("image")], {
-            description: "Picture quality type",
-            default: "image",
-          }),
+          t.Union(
+            [
+              t.Literal("preview", { title: "preview" }),
+              t.Literal("image", { title: "image" }),
+            ],
+            {
+              description: "Picture quality type",
+              default: "preview",
+            },
+          ),
         ),
       }),
       detail: {
         responses: {
           200: {
             description: "Profile picture URL retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        jid: {
+                          type: "string",
+                          description: "WhatsApp JID of the phone number",
+                          example: "551234567890@s.whatsapp.net",
+                        },
+                        profilePictureUrl: {
+                          type: "string",
+                          nullable: true,
+                          example:
+                            "https://pps.whatsapp.net/v/t61.24694-24/...",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
-          404: {
-            description: "Phone number not connected",
-          },
+          404: { description: "Profile picture not found" },
         },
       },
     },
