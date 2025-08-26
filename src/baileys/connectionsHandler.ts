@@ -125,12 +125,12 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).sendReceipts(keys, type);
   }
 
-  getProfilePicture(
+  profilePictureUrl(
     phoneNumber: string,
     jid: string,
     type?: "preview" | "image",
   ) {
-    return this.getConnection(phoneNumber).getProfilePicture(jid, type);
+    return this.getConnection(phoneNumber).profilePictureUrl(jid, type);
   }
 
   onWhatsApp(phoneNumber: string, jids: string[]) {

@@ -308,7 +308,7 @@ export class BaileysConnection {
     return this.safeSocket().sendReceipts(keys, type);
   }
 
-  async getProfilePicture(jid: string, type?: "preview" | "image") {
+  async profilePictureUrl(jid: string, type?: "preview" | "image") {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
     }

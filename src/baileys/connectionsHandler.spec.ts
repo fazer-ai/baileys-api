@@ -50,9 +50,9 @@ describe("BaileysConnectionsHandler", () => {
     it.todo("call fetchMessageHistory on the correct connection");
   });
 
-  describe("#getProfilePicture", () => {
+  describe("#profilePictureUrl", () => {
     it.todo("should return an error when profile picture is not found");
-    it.todo("should call getProfilePicture on the correct connection");
+    it.todo("should call profilePictureUrl on the correct connection");
     it.todo("should return profile picture URL when available");
   });
 

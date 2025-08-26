@@ -252,13 +252,13 @@ const connectionsController = new Elysia({
     },
   )
   .get(
-    "/:phoneNumber/profile-pic",
+    "/:phoneNumber/profile-picture-url",
     async ({ params, query }) => {
       const { phoneNumber } = params;
       const { jid, type } = query;
 
       try {
-        const profilePicUrl = await baileys.getProfilePicture(
+        const profilePictureUrl = await baileys.profilePictureUrl(
           phoneNumber,
           jid,
           type,
@@ -267,7 +267,7 @@ const connectionsController = new Elysia({
         return {
           data: {
             jid,
-            profilePictureUrl: profilePicUrl || null,
+            profilePictureUrl: profilePictureUrl || null,
           },
         };
       } catch (e) {
