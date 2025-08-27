@@ -15,13 +15,23 @@ const mediaController = new Elysia({
   .use(authMiddleware)
   .get(
     ":messageId",
-    async ({ params }) => {
+    async ({ params, set }) => {
       const { messageId } = params;
 
       const mediaPath = path.resolve(process.cwd(), "media", messageId);
       const mediaFile = file(mediaPath);
       if (await mediaFile.exists()) {
-        return mediaFile.stream();
+        set.headers["content-type"] = "application/octet-stream";
+        set.headers["cache-control"] = "public, max-age=31536000";
+
+        // FIXME: `stream()` is not working correctly right now, so we handle the headers manually.
+        const buffer = await mediaFile.arrayBuffer();
+        return new Response(buffer, {
+          headers: {
+            "content-type": "application/octet-stream",
+            "cache-control": "public, max-age=31536000",
+          },
+        });
       }
       return new Response("File not found", { status: 404 });
     },
