@@ -186,8 +186,7 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "multipart/form-data": {
@@ -225,8 +224,7 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "text/plain": {
@@ -264,8 +262,7 @@
                 "required": [
                   "webhookUrl",
                   "webhookVerifyToken"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }
@@ -1600,6 +1597,97 @@
         }
       }
     },
+    "/connections/{phoneNumber}/profile-picture-url": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          },
+          {
+            "description": "Recipient whatsapp jid",
+            "schema": {
+              "type": "string",
+              "example": "551101234567@s.whatsapp.net"
+            },
+            "in": "query",
+            "name": "jid",
+            "required": true
+          },
+          {
+            "description": "Picture quality type",
+            "schema": {
+              "default": "preview",
+              "anyOf": [
+                {
+                  "title": "preview",
+                  "const": "preview",
+                  "type": "string"
+                },
+                {
+                  "title": "image",
+                  "const": "image",
+                  "type": "string"
+                }
+              ]
+            },
+            "in": "query",
+            "name": "type",
+            "required": false
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberProfile-picture-url",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profile picture URL retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "jid": {
+                          "type": "string",
+                          "description": "WhatsApp JID of the phone number",
+                          "example": "551234567890@s.whatsapp.net"
+                        },
+                        "profilePictureUrl": {
+                          "type": "string",
+                          "nullable": true,
+                          "example": "https://pps.whatsapp.net/v/t61.24694-24/..."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Profile picture not found"
+          }
+        }
+      }
+    },
     "/connections/{phoneNumber}/on-whatsapp": {
       "post": {
         "parameters": [
@@ -1680,8 +1768,7 @@
                 },
                 "required": [
                   "jids"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "multipart/form-data": {
@@ -1703,8 +1790,7 @@
                 },
                 "required": [
                   "jids"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "text/plain": {
@@ -1726,8 +1812,7 @@
                 },
                 "required": [
                   "jids"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }
