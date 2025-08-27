@@ -49,7 +49,9 @@ describe("BaileysConnection", () => {
 
   describe("#profilePictureUrl", () => {
     it.todo("should return an error when profile picture is not found");
-    it.todo("should call socket profilePictureUrl method with correct parameters");
+    it.todo(
+      "should call socket profilePictureUrl method with correct parameters",
+    );
     it.todo("should return profile picture URL when available");
   });
 
