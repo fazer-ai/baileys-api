@@ -55,18 +55,22 @@ export class MediaCleanupService {
     }
     this.isCleaning = true;
     try {
-      const files = await fs.readdir(this.mediaDir);
+      const dirents = await fs.readdir(this.mediaDir, { withFileTypes: true });
       const now = Date.now();
       let deletedCount = 0;
       let totalSize = 0;
 
-      for (const filename of files) {
+      for (const dirent of dirents) {
+        if (!dirent.isFile()) {
+          continue;
+        }
+        const filename = dirent.name;
         if (filename.startsWith(".")) {
           continue;
         }
 
-        const filePath = path.join(this.mediaDir, filename);
         try {
+          const filePath = path.join(this.mediaDir, filename);
           const stats = await fs.stat(filePath);
           if (!stats.isFile()) {
             continue;
