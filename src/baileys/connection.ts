@@ -65,7 +65,8 @@ export class BaileysConnection {
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
-  private clearOnlinePresenceTimeout: NodeJS.Timeout | null = null;
+  private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
+    null;
   private reconnectCount = 0;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {

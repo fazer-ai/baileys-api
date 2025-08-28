@@ -4,7 +4,7 @@ import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 export class MediaCleanupService {
-  private cleanupInterval: NodeJS.Timeout | null = null;
+  private cleanupInterval: ReturnType<typeof setTimeout> | null = null;
   private isCleaning = false;
   private readonly mediaDir = path.resolve(process.cwd(), "media");
   private readonly maxAgeMs: number;
