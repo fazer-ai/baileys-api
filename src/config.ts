@@ -21,6 +21,9 @@ const {
   IGNORE_NEWSLETTER_MESSAGES,
   IGNORE_BOT_MESSAGES,
   IGNORE_META_AI_MESSAGES,
+  MEDIA_CLEANUP_ENABLED,
+  MEDIA_CLEANUP_INTERVAL_MS,
+  MEDIA_MAX_AGE_HOURS,
 } = process.env;
 
 const config = {
@@ -82,6 +85,11 @@ const config = {
     lruCacheTtl: KEY_STORE_LRU_CACHE_TTL
       ? Number(KEY_STORE_LRU_CACHE_TTL) || 1000 * 60 * 10
       : 1000 * 60 * 10, // 10 minutes
+  },
+  media: {
+    cleanupEnabled: MEDIA_CLEANUP_ENABLED === "true",
+    cleanupIntervalMs: Number(MEDIA_CLEANUP_INTERVAL_MS) || 60 * 60 * 1000, // 1 hour
+    maxAgeHours: Number(MEDIA_MAX_AGE_HOURS) || 24, // 24 hours
   },
 };
 

@@ -4,6 +4,7 @@ import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
+import { MediaCleanupService } from "@/services/mediaCleanup";
 
 process.on("uncaughtException", (error) => {
   logger.error(
@@ -20,6 +21,11 @@ process.on("unhandledRejection", (reason, promise) => {
   );
 });
 
+const mediaCleanup = new MediaCleanupService({
+  maxAgeHours: config.media.maxAgeHours,
+  intervalMs: config.media.cleanupIntervalMs,
+});
+
 app.listen(config.port, () => {
   logger.info(
     `${config.packageInfo.name}@${config.packageInfo.version} running on ${app.server?.hostname}:${app.server?.port}`,
@@ -33,6 +39,10 @@ app.listen(config.port, () => {
     ),
   );
 
+  if (config.media.cleanupEnabled) {
+    mediaCleanup.start();
+  }
+
   initializeRedis().then(() =>
     baileys.reconnectFromAuthStore().catch((error) => {
       logger.error(
@@ -42,3 +52,12 @@ app.listen(config.port, () => {
     }),
   );
 });
+
+const shutdown = (signal: string) => {
+  logger.info(`Received ${signal}, shutting down gracefully...`);
+  mediaCleanup.stop();
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
