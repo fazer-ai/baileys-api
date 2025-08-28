@@ -5,6 +5,7 @@ import logger from "@/lib/logger";
 
 export class MediaCleanupService {
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private isCleaning = false;
   private readonly mediaDir = path.resolve(process.cwd(), "media");
   private readonly maxAgeMs: number;
   private readonly intervalMs: number;
@@ -49,6 +50,10 @@ export class MediaCleanupService {
   }
 
   async cleanup(): Promise<void> {
+    if (this.isCleaning) {
+      return;
+    }
+    this.isCleaning = true;
     try {
       const files = await fs.readdir(this.mediaDir);
       const now = Date.now();
@@ -102,6 +107,8 @@ export class MediaCleanupService {
         return;
       }
       throw error;
+    } finally {
+      this.isCleaning = false;
     }
   }
 
