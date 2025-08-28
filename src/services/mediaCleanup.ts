@@ -4,7 +4,7 @@ import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 export class MediaCleanupService {
-  private cleanupInterval: NodeJS.Timer | null = null;
+  private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly mediaDir = path.resolve(process.cwd(), "media");
   private readonly maxAgeMs: number;
   private readonly intervalMs: number;
@@ -12,7 +12,7 @@ export class MediaCleanupService {
   constructor({
     maxAgeHours = 24,
     intervalMs = 60 * 60 * 1000,
-  }: { maxAgeHours: number; intervalMs: number }) {
+  }: { maxAgeHours?: number; intervalMs?: number }) {
     this.maxAgeMs = maxAgeHours * 60 * 60 * 1000;
     this.intervalMs = intervalMs;
   }
@@ -106,13 +106,16 @@ export class MediaCleanupService {
   }
 
   private formatBytes(bytes: number): string {
-    if (!bytes) {
+    if (bytes <= 0) {
       return "0 Bytes";
     }
 
     const k = 1024;
     const sizes = ["Bytes", "KB", "MB", "GB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const i = Math.min(
+      Math.floor(Math.log(bytes) / Math.log(k)),
+      sizes.length - 1,
+    );
 
     return `${Number.parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
   }
