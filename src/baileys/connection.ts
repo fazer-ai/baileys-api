@@ -237,7 +237,9 @@ export class BaileysConnection {
           ),
           messageContent.ptt ? preprocessAudio(originalAudio, "wav") : null,
         ]);
-        messageContent.mimetype = "audio/mpeg";
+        messageContent.mimetype = messageContent.ptt
+          ? "audio/ogg; codecs=opus"
+          : "audio/mpeg";
       }
     } catch (error) {
       // NOTE: This usually means ffmpeg is not installed.
