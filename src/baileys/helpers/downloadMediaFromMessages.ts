@@ -41,7 +41,7 @@ export async function downloadMediaFromMessages(
 
       if (message.audioMessage) {
         fileBuffer = await preprocessAudio(fileBuffer, "mp3-high");
-        message.audioMessage.mimetype = "audio/mp3";
+        message.audioMessage.mimetype = "audio/ogg; codecs=opus";
       }
 
       if (options?.includeMedia) {

@@ -227,13 +227,12 @@ export class BaileysConnection {
     try {
       if ("audio" in messageContent && Buffer.isBuffer(messageContent.audio)) {
         const originalAudio = messageContent.audio;
-        // NOTE: Sent audio is always mp3.
-        // Due to limitations in internal Baileys logic used to generate waveform, we use a wav proxy.
+        // NOTE: Due to limitations in internal Baileys logic used to generate waveform, we use a wav proxy.
         [messageContent.audio, waveformProxy] = await Promise.all([
           preprocessAudio(
             originalAudio,
-            // NOTE: Use low quality mp3 for ptt messages for more realistic quality.
-            messageContent.ptt ? "mp3-low" : "mp3-high",
+            // NOTE: Use lower quality for ptt messages for more realistic quality.
+            messageContent.ptt ? "ogg-low" : "mp3-high",
           ),
           messageContent.ptt ? preprocessAudio(originalAudio, "wav") : null,
         ]);

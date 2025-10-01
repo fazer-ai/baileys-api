@@ -6,12 +6,12 @@ describe("preprocessAudio", () => {
       it.todo("returns the processed audio in wav format");
     });
 
-    describe("when the audio is in mp3-low format", () => {
-      it.todo("returns the processed audio in mp3-low format");
+    describe("when the audio is in ogg-low format", () => {
+      it.todo("returns the processed audio in ogg-low format");
     });
 
     describe("when the audio is in mp3-high format", () => {
-      it.todo("returns the processed audio in mp3-high format");
+      it.todo("returns the processed audio in ogg-high format");
     });
 
     describe("when an error occurs during processing", () => {
