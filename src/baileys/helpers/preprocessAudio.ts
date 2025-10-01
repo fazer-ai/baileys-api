@@ -16,7 +16,7 @@ function bufferToStream(buffer: Buffer) {
 
 export async function preprocessAudio(
   audio: Buffer,
-  format: "mp3-low" | "mp3-high" | "wav",
+  format: "ogg-low" | "mp3-high" | "wav",
 ): Promise<Buffer> {
   const tmpFilename = join(
     tmpdir(),
@@ -32,7 +32,7 @@ export async function preprocessAudio(
         .audioFrequency(16000)
         .audioChannels(1);
     }
-    if (format === "mp3-low") {
+    if (format === "ogg-low") {
       command
         .audioCodec("libopus")
         .format("ogg")
