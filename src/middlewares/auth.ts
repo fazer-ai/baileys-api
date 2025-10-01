@@ -16,7 +16,7 @@ function getApiKey(headers: Headers): string | null {
 
 export const authMiddleware = (app: Elysia) =>
   app
-    .derive(async ({ request }): Promise<{ auth: AuthData | null }> => {
+    .derive(async ({ request }) => {
       const apiKey = getApiKey(request.headers);
       if (!apiKey) {
         return { auth: null };
