@@ -16,7 +16,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
-import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysVersion";
+import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
 import { LRUCacheWrapper } from "@/baileys/helpers/lruCacheWrapper";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
