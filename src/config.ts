@@ -7,6 +7,7 @@ const {
   LOG_LEVEL,
   BAILEYS_LOG_LEVEL,
   BAILEYS_CLIENT_VERSION,
+  BAILEYS_OVERRIDE_CLIENT_VERSION,
   REDIS_URL,
   REDIS_PASSWORD,
   WEBHOOK_RETRY_POLICY_MAX_RETRIES,
@@ -39,6 +40,7 @@ const config = {
   baileys: {
     logLevel: (BAILEYS_LOG_LEVEL || "warn") as LevelWithSilentOrString,
     clientVersion: BAILEYS_CLIENT_VERSION || "default",
+    overrideClientVersion: BAILEYS_OVERRIDE_CLIENT_VERSION === "true",
     // FIXME: We ignore any non-user messages for now. As we implement more features,
     // we can enable them as needed.
     ignoreGroupMessages: IGNORE_GROUP_MESSAGES

@@ -13,10 +13,10 @@ import makeWASocket, {
   type UserFacingSocketConfig,
   type WAConnectionState,
   type WAPresence,
-  type WAVersion,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
+import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysVersion";
 import { LRUCacheWrapper } from "@/baileys/helpers/lruCacheWrapper";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
@@ -131,24 +131,15 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
+      version: await fetchBaileysClientVersion().catch((error) => {
+        logger.error(
+          "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+        return undefined;
+      }),
     };
-
-    if (/^\d+\.\d+\.\d+$/.test(config.baileys.clientVersion)) {
-      logger.info(
-        "[%s] [BaileysConnection.connect] Using custom client version: %s",
-        this.phoneNumber,
-        config.baileys.clientVersion,
-      );
-      socketOptions.version = config.baileys.clientVersion
-        .split(".")
-        .map((v) => Number(v)) as WAVersion;
-    } else if (config.baileys.clientVersion !== "default") {
-      logger.warn(
-        "[%s] [BaileysConnection.connect] Invalid client version format: `%s`. Using default version.",
-        this.phoneNumber,
-        config.baileys.clientVersion,
-      );
-    }
 
     try {
       this.socket = makeWASocket(socketOptions);
