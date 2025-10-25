@@ -1,6 +1,9 @@
 diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-6bc22c37f6067614 b/.bun-tag-6bc22c37f6067614
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-b8b37e0803dba02b b/.bun-tag-b8b37e0803dba02b
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-ba297a3a96c78f79 b/.bun-tag-ba297a3a96c78f79
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
@@ -122,6 +125,115 @@ index b6b7becd2c1a48c3ebe3ee11da7105f02c248e69..7eede5838fb3b08b05797a17c3e3e2ba
      };
      const fullMessage = {
          key,
+diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
+index 5a52741fb4ef9425b72a4f37944a34f48b496b46..7d8708d1655f4c4e9f8a8706ba7ca4d94463a884 100644
+--- a/lib/Utils/link-preview.js
++++ b/lib/Utils/link-preview.js
+@@ -37,6 +37,40 @@ exports.getUrlInfo = void 0;
+ const messages_1 = require("./messages");
+ const messages_media_1 = require("./messages-media");
+ const THUMBNAIL_WIDTH_PX = 192;
++const isYouTubeUrl = (url) => {
++    return /(?:youtube\.com\/watch\?v=|youtu\.be\/)/.test(url);
++};
++const getVideoId = (url) => {
++    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/);
++    return match ? match[1] : null;
++};
++const getYouTubeLinkPreview = async (videoUrl) => {
++    const videoId = getVideoId(videoUrl);
++    if (!videoId) {
++        throw new Error('Invalid YouTube URL');
++    }
++    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
++    const response = await fetch(oembedUrl);
++    if (!response.ok) {
++        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
++    }
++    const data = await response.json();
++    return {
++        url: videoUrl,
++        title: data.title,
++        siteName: 'YouTube',
++        description: `${data.author_name}`,
++        mediaType: 'video.other',
++        contentType: 'text/html; charset=utf-8',
++        images: [
++            `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
++            `https://img.youtube.com/vi/${videoId}/sddefault.jpg`,
++            data.thumbnail_url
++        ],
++        videos: [],
++        favicons: ['https://www.youtube.com/favicon.ico']
++    };
++};
+ /** Fetches an image and generates a thumbnail for it */
+ const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
+     const stream = await (0, messages_media_1.getHttpStream)(url, fetchOpts);
+@@ -55,35 +89,39 @@ const getUrlInfo = async (text, opts = {
+ }) => {
+     var _a;
+     try {
+-        // retries
+-        const retries = 0;
+-        const maxRetry = 5;
+         const { getLinkPreview } = await Promise.resolve().then(() => __importStar(require('link-preview-js')));
+         let previewLink = text;
+         if (!text.startsWith('https://') && !text.startsWith('http://')) {
+             previewLink = 'https://' + previewLink;
+         }
+-        const info = await getLinkPreview(previewLink, {
+-            ...opts.fetchOpts,
+-            followRedirects: 'follow',
+-            handleRedirects: (baseURL, forwardedURL) => {
+-                const urlObj = new URL(baseURL);
+-                const forwardedURLObj = new URL(forwardedURL);
+-                if (retries >= maxRetry) {
+-                    return false;
+-                }
+-                if (forwardedURLObj.hostname === urlObj.hostname
+-                    || forwardedURLObj.hostname === 'www.' + urlObj.hostname
+-                    || 'www.' + forwardedURLObj.hostname === urlObj.hostname) {
+-                    retries + 1;
+-                    return true;
+-                }
+-                else {
+-                    return false;
+-                }
+-            },
+-            headers: opts.fetchOpts
+-        });
++        let info;
++        if (isYouTubeUrl(previewLink)) {
++            info = await getYouTubeLinkPreview(previewLink);
++        } else {
++            const retries = 0;
++            const maxRetry = 5;
++            info = await getLinkPreview(previewLink, {
++                ...opts.fetchOpts,
++                followRedirects: 'follow',
++                handleRedirects: (baseURL, forwardedURL) => {
++                    const urlObj = new URL(baseURL);
++                    const forwardedURLObj = new URL(forwardedURL);
++                    if (retries >= maxRetry) {
++                        return false;
++                    }
++                    if (forwardedURLObj.hostname === urlObj.hostname
++                        || forwardedURLObj.hostname === 'www.' + urlObj.hostname
++                        || 'www.' + forwardedURLObj.hostname === urlObj.hostname) {
++                        retries + 1;
++                        return true;
++                    }
++                    else {
++                        return false;
++                    }
++                },
++                headers: opts.fetchOpts
++            });
++        }
+         if (info && 'title' in info && info.title) {
+             const [image] = info.images;
+             const urlInfo = {
 diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
 index 2251c0019df0755d3f65c81ea3b48e963c33cdad..a6033b3463e0a9f5d44df96d609758882114d3a6 100644
 --- a/lib/Utils/messages-media.js
