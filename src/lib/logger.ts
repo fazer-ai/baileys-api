@@ -18,8 +18,8 @@ function sanitizeItem(
   if (typeof item === "string") {
     return `${item.slice(0, 50)}${item.length > 50 ? "..." : ""}`;
   }
-  if (Array.isArray(item)) {
-    return item.map((i) => sanitizeItem(i, options));
+  if (Array.isArray(item) || item instanceof Set) {
+    return Array.from(item).map((i) => sanitizeItem(i, options));
   }
   if (typeof item === "object") {
     return deepSanitizeObject(item as Record<string, unknown>, options);

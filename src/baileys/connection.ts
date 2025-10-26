@@ -54,6 +54,33 @@ export class BaileysConnection {
     "thumbnailEncSha256",
     "appStateSyncKeyShare",
   ];
+  private ALL_BAILEYS_SOCKET_EVENTS: Array<keyof BaileysEventMap> = [
+    "connection.update",
+    "creds.update",
+    "messaging-history.set",
+    "chats.upsert",
+    "chats.update",
+    "chats.phoneNumberShare",
+    "chats.delete",
+    "presence.update",
+    "contacts.upsert",
+    "contacts.update",
+    "messages.delete",
+    "messages.update",
+    "messages.media-update",
+    "messages.upsert",
+    "messages.reaction",
+    "message-receipt.update",
+    "groups.upsert",
+    "groups.update",
+    "group-participants.update",
+    "group.join-request",
+    "blocklist.set",
+    "blocklist.update",
+    "call",
+    "labels.edit",
+    "labels.association",
+  ];
 
   private phoneNumber: string;
   private clientName: string;
@@ -152,36 +179,48 @@ export class BaileysConnection {
       return;
     }
 
-    this.socket.ev.on("creds.update", saveCreds);
-    this.socket.ev.on(
-      "connection.update",
-      this.withErrorHandling(
+    this.addEventListeners({ saveCreds });
+  }
+
+  private addEventListeners({ saveCreds }: { saveCreds: () => Promise<void> }) {
+    const handledEvents = {
+      "creds.update": saveCreds,
+      "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
         this.handleConnectionUpdate,
       ),
-    );
-    this.socket.ev.on(
-      "messages.upsert",
-      this.withErrorHandling("handleMessagesUpsert", this.handleMessagesUpsert),
-    );
-    this.socket.ev.on(
-      "messages.update",
-      this.withErrorHandling("handleMessagesUpdate", this.handleMessagesUpdate),
-    );
-    this.socket.ev.on(
-      "message-receipt.update",
-      this.withErrorHandling(
+      "messages.upsert": this.withErrorHandling(
+        "handleMessagesUpsert",
+        this.handleMessagesUpsert,
+      ),
+      "messages.update": this.withErrorHandling(
+        "handleMessagesUpdate",
+        this.handleMessagesUpdate,
+      ),
+      "message-receipt.update": this.withErrorHandling(
         "handleMessageReceiptUpdate",
         this.handleMessageReceiptUpdate,
       ),
-    );
-    this.socket.ev.on(
-      "messaging-history.set",
-      this.withErrorHandling(
+      "messaging-history.set": this.withErrorHandling(
         "handleMessagingHistorySet",
         this.handleMessagingHistorySet,
       ),
-    );
+    };
+
+    Object.entries(handledEvents).forEach(([event, handler]) => {
+      this.socket?.ev.on(
+        event as keyof BaileysEventMap,
+        handler as (arg: unknown) => void,
+      );
+    });
+
+    this.ALL_BAILEYS_SOCKET_EVENTS.forEach((event) => {
+      if (event in handledEvents || !config.baileys.listenToEvents.has(event)) {
+        return;
+      }
+
+      this.socket?.ev.on(event, (data) => this.sendToWebhook({ event, data }));
+    });
   }
 
   private async close() {
