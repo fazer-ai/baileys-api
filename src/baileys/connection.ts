@@ -38,7 +38,7 @@ export class BaileysNotConnectedError extends Error {
 }
 
 export class BaileysConnection {
-  private LOGGER_OMIT_KEYS = [
+  private LOGGER_OMIT_KEYS: ReadonlyArray<string> = [
     "qr",
     "qrDataUrl",
     "fileSha256",
@@ -54,7 +54,7 @@ export class BaileysConnection {
     "thumbnailEncSha256",
     "appStateSyncKeyShare",
   ];
-  private ALL_BAILEYS_SOCKET_EVENTS: Array<keyof BaileysEventMap> = [
+  private ALL_BAILEYS_SOCKET_EVENTS: ReadonlyArray<keyof BaileysEventMap> = [
     "connection.update",
     "creds.update",
     "messaging-history.set",
@@ -525,7 +525,7 @@ export class BaileysConnection {
     const sanitizedPayload = deepSanitizeObject(
       { ...payload },
       {
-        omitKeys: this.LOGGER_OMIT_KEYS,
+        omitKeys: [...this.LOGGER_OMIT_KEYS],
       },
     );
 
