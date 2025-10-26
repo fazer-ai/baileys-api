@@ -25,6 +25,7 @@ const {
   MEDIA_CLEANUP_ENABLED,
   MEDIA_CLEANUP_INTERVAL_MS,
   MEDIA_MAX_AGE_HOURS,
+  BAILEYS_LISTEN_TO_EVENTS,
 } = process.env;
 
 const config = {
@@ -61,6 +62,11 @@ const config = {
     ignoreMetaAiMessages: IGNORE_META_AI_MESSAGES
       ? IGNORE_META_AI_MESSAGES === "true"
       : true,
+    listenToEvents: new Set(
+      BAILEYS_LISTEN_TO_EVENTS
+        ? BAILEYS_LISTEN_TO_EVENTS.split(",").map((e) => e.trim())
+        : [],
+    ),
   },
   redis: {
     url: REDIS_URL || "redis://localhost:6379",
