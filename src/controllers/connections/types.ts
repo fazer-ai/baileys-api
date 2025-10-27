@@ -27,7 +27,15 @@ export const anyMessageContent = t.Union([
   t.Object(
     {
       text: t.String({ description: "Text message", example: "Hello world!" }),
-      mentions: t.Optional(t.Array(t.String())), // Add this to match Baileys support, only for group message
+      mentions: t.Optional(
+        t.Array(
+          t.String({
+            description:
+              "WhatsApp JIDs to mention in the message (group messages only)",
+            example: "551101234567@s.whatsapp.net",
+          }),
+        ),
+      ),
     },
     {
       title: "Text message",
