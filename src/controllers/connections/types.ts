@@ -27,6 +27,7 @@ export const anyMessageContent = t.Union([
   t.Object(
     {
       text: t.String({ description: "Text message", example: "Hello world!" }),
+      mentions: t.Optional(t.Array(t.String())), // Add this to match Baileys support, only for group message
     },
     {
       title: "Text message",
