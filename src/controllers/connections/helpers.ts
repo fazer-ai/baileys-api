@@ -6,7 +6,7 @@ export function buildMessageContent(
   content: Static<typeof anyMessageContent>,
 ): AnyMessageContent {
   if ("text" in content) {
-    return { text: content.text };
+    return content;
   }
   if ("image" in content) {
     return {
