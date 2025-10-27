@@ -27,15 +27,7 @@ export const anyMessageContent = t.Union([
   t.Object(
     {
       text: t.String({ description: "Text message", example: "Hello world!" }),
-      mentions: t.Optional(
-        t.Array(
-          t.String({
-            description:
-              "WhatsApp JIDs to mention in the message (group messages only)",
-            example: "551101234567@s.whatsapp.net",
-          }),
-        ),
-      ),
+      mentions: t.Optional(t.Array(jid("user to mention in group message"))),
     },
     {
       title: "Text message",
