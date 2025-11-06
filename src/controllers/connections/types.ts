@@ -27,6 +27,7 @@ export const anyMessageContent = t.Union([
   t.Object(
     {
       text: t.String({ description: "Text message", example: "Hello world!" }),
+      mentions: t.Optional(t.Array(jid("user to mention in group message"))),
     },
     {
       title: "Text message",
