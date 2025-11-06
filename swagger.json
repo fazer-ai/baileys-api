@@ -659,6 +659,14 @@
                             "description": "Text message",
                             "example": "Hello world!",
                             "type": "string"
+                          },
+                          "mentions": {
+                            "type": "array",
+                            "items": {
+                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "example": "551101234567@s.whatsapp.net",
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
@@ -812,6 +820,14 @@
                             "description": "Text message",
                             "example": "Hello world!",
                             "type": "string"
+                          },
+                          "mentions": {
+                            "type": "array",
+                            "items": {
+                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "example": "551101234567@s.whatsapp.net",
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
@@ -965,6 +981,14 @@
                             "description": "Text message",
                             "example": "Hello world!",
                             "type": "string"
+                          },
+                          "mentions": {
+                            "type": "array",
+                            "items": {
+                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "example": "551101234567@s.whatsapp.net",
+                              "type": "string"
+                            }
                           }
                         },
                         "required": [
