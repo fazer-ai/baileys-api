@@ -1,0 +1,191 @@
+diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
+index 975b9f96124a8518bb75ff27989a85b08daa2f96..fc6bfd56d640baefe0d873f0f7d841d4d26a9d5d 100644
+--- a/lib/Socket/Client/websocket.js
++++ b/lib/Socket/Client/websocket.js
+@@ -30,7 +30,7 @@ export class WebSocketClient extends AbstractSocketClient {
+             agent: this.config.agent
+         });
+         this.socket.setMaxListeners(0);
+-        const events = ['close', 'error', 'upgrade', 'message', 'open', 'ping', 'pong', 'unexpected-response'];
++        const events = ['close', 'error', 'message', 'open', 'ping', 'pong'];
+         for (const event of events) {
+             this.socket?.on(event, (...args) => this.emit(event, ...args));
+         }
+diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
+index c81974592cffcb203a3e6470589a6ac99d4baed0..670515e8da36d609a9624a61eda5c0e2ddbee97e 100644
+--- a/lib/Socket/socket.js
++++ b/lib/Socket/socket.js
+@@ -76,6 +76,9 @@ export const makeSocket = (config) => {
+     };
+     /** log & process any unexpected errors */
+     const onUnexpectedError = (err, msg) => {
++        if (!ws.isOpen) {
++            return;
++        }
+         logger.error({ err }, `unexpected error in '${msg}'`);
+     };
+     /** await the next incoming message */
+diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
+index defff8e4d22e537cb3a5a919b0725455ba18ff28..edcbabb173b788da4d9a04c8ff48699fbbe2daee 100644
+--- a/lib/Types/Message.d.ts
++++ b/lib/Types/Message.d.ts
+@@ -117,7 +117,7 @@ export type AnyMediaMessageContent = (({
+     isAnimated?: boolean;
+ } & WithDimensions) | ({
+     document: WAMediaUpload;
+-    mimetype: string;
++    mimetype?: string;
+     fileName?: string;
+     caption?: string;
+ } & Contextable)) & {
+@@ -221,6 +221,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+     font?: number;
+     /** if it is broadcast */
+     broadcast?: boolean;
++    waveformProxy?: Buffer | null;
+ };
+ export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
+     userJid: string;
+diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
+index a98f43afb48bd9ed30f2e5808b02113d0b76ae17..c4372616f14833887cba86aa89c8e34308fe232f 100644
+--- a/lib/Utils/auth-utils.js
++++ b/lib/Utils/auth-utils.js
+@@ -115,6 +115,16 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+                 return state.set(data);
+             }
+         },
++        clear: () => {
++            if (isInTransaction()) {
++                logger.trace('clearing cache in transaction');
++                transactionCache = {};
++                mutations = {};
++            }
++            else {
++                return state.clear();
++            }
++        },
+         isInTransaction,
+         async transaction(work) {
+             let result;
+diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
+index 6dfd9f13d5d16f88b79181e9beb3a79c47256bc8..833459cb9a14426fee414c4f343acbacbdf109ea 100644
+--- a/lib/Utils/link-preview.js
++++ b/lib/Utils/link-preview.js
+@@ -1,6 +1,40 @@
+ import { prepareWAMessageMedia } from './messages.js';
+ import { extractImageThumb, getHttpStream } from './messages-media.js';
+ const THUMBNAIL_WIDTH_PX = 192;
++const isYouTubeUrl = (url) => {
++    return /(?:youtube\.com\/watch\?v=|youtu\.be\/)/.test(url);
++};
++const getVideoId = (url) => {
++    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/);
++    return match ? match[1] : null;
++};
++const getYouTubeLinkPreview = async (videoUrl) => {
++    const videoId = getVideoId(videoUrl);
++    if (!videoId) {
++        throw new Error('Invalid YouTube URL');
++    }
++    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
++    const response = await fetch(oembedUrl);
++    if (!response.ok) {
++        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
++    }
++    const data = await response.json();
++    return {
++        url: videoUrl,
++        title: data.title,
++        siteName: 'YouTube',
++        description: `${data.author_name}`,
++        mediaType: 'video.other',
++        contentType: 'text/html; charset=utf-8',
++        images: [
++            `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
++            `https://img.youtube.com/vi/${videoId}/sddefault.jpg`,
++            data.thumbnail_url
++        ],
++        videos: [],
++        favicons: ['https://www.youtube.com/favicon.ico']
++    };
++};
+ /** Fetches an image and generates a thumbnail for it */
+ const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
+     const stream = await getHttpStream(url, fetchOpts);
+@@ -18,35 +52,39 @@ export const getUrlInfo = async (text, opts = {
+     fetchOpts: { timeout: 3000 }
+ }) => {
+     try {
+-        // retries
+-        const retries = 0;
+-        const maxRetry = 5;
+         const { getLinkPreview } = await import('link-preview-js');
+         let previewLink = text;
+         if (!text.startsWith('https://') && !text.startsWith('http://')) {
+             previewLink = 'https://' + previewLink;
+         }
+-        const info = await getLinkPreview(previewLink, {
+-            ...opts.fetchOpts,
+-            followRedirects: 'follow',
+-            handleRedirects: (baseURL, forwardedURL) => {
+-                const urlObj = new URL(baseURL);
+-                const forwardedURLObj = new URL(forwardedURL);
+-                if (retries >= maxRetry) {
+-                    return false;
+-                }
+-                if (forwardedURLObj.hostname === urlObj.hostname ||
+-                    forwardedURLObj.hostname === 'www.' + urlObj.hostname ||
+-                    'www.' + forwardedURLObj.hostname === urlObj.hostname) {
+-                    retries + 1;
+-                    return true;
+-                }
+-                else {
+-                    return false;
+-                }
+-            },
+-            headers: opts.fetchOpts
+-        });
++        let info;
++        if (isYouTubeUrl(previewLink)) {
++            info = await getYouTubeLinkPreview(previewLink);
++        } else {
++            const retries = 0;
++            const maxRetry = 5;
++            info = await getLinkPreview(previewLink, {
++                ...opts.fetchOpts,
++                followRedirects: 'follow',
++                handleRedirects: (baseURL, forwardedURL) => {
++                    const urlObj = new URL(baseURL);
++                    const forwardedURLObj = new URL(forwardedURL);
++                    if (retries >= maxRetry) {
++                        return false;
++                    }
++                    if (forwardedURLObj.hostname === urlObj.hostname
++                        || forwardedURLObj.hostname === 'www.' + urlObj.hostname
++                        || 'www.' + forwardedURLObj.hostname === urlObj.hostname) {
++                        retries + 1;
++                        return true;
++                    }
++                    else {
++                        return false;
++                    }
++                },
++                headers: opts.fetchOpts
++            });
++        }
+         if (info && 'title' in info && info.title) {
+             const [image] = info.images;
+             const urlInfo = {
+diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
+index c6cc439d5c84a9542f885be1f50217520c60e5eb..f565a82d6e2a1610eb37012b72ef7c77a723137c 100644
+--- a/lib/Utils/messages.js
++++ b/lib/Utils/messages.js
+@@ -166,7 +166,7 @@ export const prepareWAMessageMedia = async (message, options) => {
+                     logger?.debug('computed audio duration');
+                 }
+                 if (requiresWaveformProcessing) {
+-                    uploadData.waveform = await getAudioWaveform(originalFilePath, logger);
++                    uploadData.waveform = await getAudioWaveform(options.waveformProxy || originalFilePath, logger);
+                     logger?.debug('processed waveform');
+                 }
+                 if (requiresAudioBackground) {
