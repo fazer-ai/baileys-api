@@ -42,7 +42,7 @@
     "@biomejs/biome": "2.2.7",
     "@stacksjs/gitlint": "^0.1.5",
     "@types/fluent-ffmpeg": "^2.1.28",
-    "@types/qrcode": "^1.5.5",
+    "@types/qrcode": "^1.5.6",
     "bun-git-hooks": "^0.3.1",
     "bun-types": "latest",
     "pino-caller": "^4.0.0"
