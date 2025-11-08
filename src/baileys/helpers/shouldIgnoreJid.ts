@@ -2,7 +2,7 @@ import {
   isJidBot,
   isJidBroadcast,
   isJidGroup,
-  isJidMetaIa,
+  isJidMetaAI,
   isJidNewsletter,
   isJidStatusBroadcast,
 } from "@whiskeysockets/baileys";
@@ -37,7 +37,7 @@ export function shouldIgnoreJid(jid: string): boolean {
   if (isJidBot(jid) && ignoreBotMessages) {
     return true;
   }
-  if (isJidMetaIa(jid) && ignoreMetaAiMessages) {
+  if (isJidMetaAI(jid) && ignoreMetaAiMessages) {
     return true;
   }
   return false;
