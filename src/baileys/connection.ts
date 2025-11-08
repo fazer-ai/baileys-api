@@ -132,6 +132,14 @@ export class BaileysConnection {
     };
   }
 
+  updateOptions(options: BaileysConnectionOptions) {
+    this.clientName = options.clientName || "Chrome";
+    this.webhookUrl = options.webhookUrl;
+    this.webhookVerifyToken = options.webhookVerifyToken;
+    this.includeMedia = options.includeMedia ?? true;
+    this.syncFullHistory = options.syncFullHistory ?? false;
+  }
+
   async connect() {
     if (this.socket) {
       return;
