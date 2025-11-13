@@ -17,7 +17,6 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
-import { LRUCacheWrapper } from "@/baileys/helpers/lruCacheWrapper";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
@@ -60,7 +59,7 @@ export class BaileysConnection {
     "messaging-history.set",
     "chats.upsert",
     "chats.update",
-    "chats.phoneNumberShare",
+    "lid-mapping.update",
     "chats.delete",
     "presence.update",
     "contacts.upsert",
@@ -80,6 +79,10 @@ export class BaileysConnection {
     "call",
     "labels.edit",
     "labels.association",
+    "newsletter.reaction",
+    "newsletter.view",
+    "newsletter-participants.update",
+    "newsletter-settings.update",
   ];
 
   private phoneNumber: string;
@@ -129,6 +132,14 @@ export class BaileysConnection {
     };
   }
 
+  updateOptions(options: BaileysConnectionOptions) {
+    this.clientName = options.clientName || "Chrome";
+    this.webhookUrl = options.webhookUrl;
+    this.webhookVerifyToken = options.webhookVerifyToken;
+    this.includeMedia = options.includeMedia ?? true;
+    this.syncFullHistory = options.syncFullHistory ?? false;
+  }
+
   async connect() {
     if (this.socket) {
       return;
@@ -143,15 +154,10 @@ export class BaileysConnection {
     });
     this.clearAuthState = state.keys.clear;
 
-    const cache = new LRUCacheWrapper({
-      max: config.keyStore.lruCacheMax,
-      ttl: config.keyStore.lruCacheTtl,
-    });
-
     const socketOptions: UserFacingSocketConfig = {
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger, cache),
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       markOnlineOnConnect: false,
       logger: baileysLogger,
@@ -232,12 +238,8 @@ export class BaileysConnection {
   }
 
   async logout() {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
     try {
-      await this.socket.logout();
+      await this.safeSocket().logout();
     } catch (error) {
       logger.error(
         "[%s] [LOGOUT] error=%s",
@@ -249,9 +251,7 @@ export class BaileysConnection {
   }
 
   async sendMessage(jid: string, messageContent: AnyMessageContent) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
+    this.safeSocket();
 
     let waveformProxy: Buffer | null = null;
     try {
@@ -279,49 +279,40 @@ export class BaileysConnection {
       );
     }
 
-    return this.socket.sendMessage(jid, messageContent, {
+    return this.safeSocket().sendMessage(jid, messageContent, {
       waveformProxy,
     });
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-    if (!this.socket.authState.creds.me) {
+    if (!this.safeSocket().authState.creds.me) {
       return;
     }
 
-    return this.socket.sendPresenceUpdate(type, toJid).then(() => {
-      if (
-        this.clearOnlinePresenceTimeout &&
-        ["unavailable", "available"].includes(type)
-      ) {
-        clearTimeout(this.clearOnlinePresenceTimeout);
-        this.clearOnlinePresenceTimeout = null;
-      }
-      if (type === "available") {
-        this.clearOnlinePresenceTimeout = setTimeout(() => {
-          this.socket?.sendPresenceUpdate("unavailable", toJid);
-        }, 60000);
-      }
-    });
+    return this.safeSocket()
+      .sendPresenceUpdate(type, toJid)
+      .then(() => {
+        if (
+          this.clearOnlinePresenceTimeout &&
+          ["unavailable", "available"].includes(type)
+        ) {
+          clearTimeout(this.clearOnlinePresenceTimeout);
+          this.clearOnlinePresenceTimeout = null;
+        }
+        if (type === "available") {
+          this.clearOnlinePresenceTimeout = setTimeout(() => {
+            this.socket?.sendPresenceUpdate("unavailable", toJid);
+          }, 60000);
+        }
+      });
   }
 
   readMessages(keys: proto.IMessageKey[]) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return this.socket.readMessages(keys);
+    return this.safeSocket().readMessages(keys);
   }
 
   chatModify(mod: ChatModification, jid: string) {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-
-    return this.socket.chatModify(mod, jid);
+    return this.safeSocket().chatModify(mod, jid);
   }
 
   fetchMessageHistory(
@@ -341,10 +332,7 @@ export class BaileysConnection {
   }
 
   async profilePictureUrl(jid: string, type?: "preview" | "image") {
-    if (!this.socket) {
-      throw new BaileysNotConnectedError();
-    }
-    return this.socket.profilePictureUrl(jid, type);
+    return this.safeSocket().profilePictureUrl(jid, type);
   }
 
   onWhatsApp(jids: string[]) {

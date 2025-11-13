@@ -14,8 +14,6 @@ const {
   WEBHOOK_RETRY_POLICY_RETRY_INTERVAL,
   WEBHOOK_RETRY_POLICY_BACKOFF_FACTOR,
   CORS_ORIGIN,
-  KEY_STORE_LRU_CACHE_MAX,
-  KEY_STORE_LRU_CACHE_TTL,
   IGNORE_GROUP_MESSAGES,
   IGNORE_STATUS_MESSAGES,
   IGNORE_BROADCAST_MESSAGES,
@@ -86,14 +84,6 @@ const config = {
     },
   },
   corsOrigin: CORS_ORIGIN || "localhost",
-  keyStore: {
-    lruCacheMax: KEY_STORE_LRU_CACHE_MAX
-      ? Number(KEY_STORE_LRU_CACHE_MAX) || 100
-      : 100,
-    lruCacheTtl: KEY_STORE_LRU_CACHE_TTL
-      ? Number(KEY_STORE_LRU_CACHE_TTL) || 1000 * 60 * 10
-      : 1000 * 60 * 10, // 10 minutes
-  },
   media: {
     cleanupEnabled: MEDIA_CLEANUP_ENABLED === "true",
     cleanupIntervalMs: Number(MEDIA_CLEANUP_INTERVAL_MS) || 60 * 60 * 1000, // 1 hour

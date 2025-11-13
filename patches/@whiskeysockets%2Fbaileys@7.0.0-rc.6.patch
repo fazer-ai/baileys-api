@@ -12,11 +12,11 @@ index 975b9f96124a8518bb75ff27989a85b08daa2f96..fc6bfd56d640baefe0d873f0f7d841d4
              this.socket?.on(event, (...args) => this.emit(event, ...args));
          }
 diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
-index c81974592cffcb203a3e6470589a6ac99d4baed0..670515e8da36d609a9624a61eda5c0e2ddbee97e 100644
+index 62276fc35574114b3707d5de417252eb86967d1a..126a0ae6a7c52dd7bce44cc08ca9fa81d3a66d0b 100644
 --- a/lib/Socket/socket.js
 +++ b/lib/Socket/socket.js
-@@ -76,6 +76,9 @@ export const makeSocket = (config) => {
-     };
+@@ -235,6 +235,9 @@ export const makeSocket = (config) => {
+     let closed = false;
      /** log & process any unexpected errors */
      const onUnexpectedError = (err, msg) => {
 +        if (!ws.isOpen) {
@@ -26,10 +26,10 @@ index c81974592cffcb203a3e6470589a6ac99d4baed0..670515e8da36d609a9624a61eda5c0e2
      };
      /** await the next incoming message */
 diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
-index defff8e4d22e537cb3a5a919b0725455ba18ff28..edcbabb173b788da4d9a04c8ff48699fbbe2daee 100644
+index df860a7fa07ba1677dcc26bd0397bbbaa8b20edf..643c0229a7352733b83d4843ade7cf32f9003577 100644
 --- a/lib/Types/Message.d.ts
 +++ b/lib/Types/Message.d.ts
-@@ -117,7 +117,7 @@ export type AnyMediaMessageContent = (({
+@@ -131,7 +131,7 @@ export type AnyMediaMessageContent = (({
      isAnimated?: boolean;
  } & WithDimensions) | ({
      document: WAMediaUpload;
@@ -38,7 +38,7 @@ index defff8e4d22e537cb3a5a919b0725455ba18ff28..edcbabb173b788da4d9a04c8ff48699f
      fileName?: string;
      caption?: string;
  } & Contextable)) & {
-@@ -221,6 +221,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+@@ -239,6 +239,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
      font?: number;
      /** if it is broadcast */
      broadcast?: boolean;
@@ -47,11 +47,11 @@ index defff8e4d22e537cb3a5a919b0725455ba18ff28..edcbabb173b788da4d9a04c8ff48699f
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
 diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
-index a98f43afb48bd9ed30f2e5808b02113d0b76ae17..c4372616f14833887cba86aa89c8e34308fe232f 100644
+index ca168e0eef19f9f9bc65a758a39d35c81e1f7497..740b50288a08e5febad561101bd4a9b5ce4e85b3 100644
 --- a/lib/Utils/auth-utils.js
 +++ b/lib/Utils/auth-utils.js
-@@ -115,6 +115,16 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
-                 return state.set(data);
+@@ -200,6 +200,16 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+                 }
              }
          },
 +        clear: () => {
@@ -65,10 +65,10 @@ index a98f43afb48bd9ed30f2e5808b02113d0b76ae17..c4372616f14833887cba86aa89c8e343
 +            }
 +        },
          isInTransaction,
-         async transaction(work) {
-             let result;
+         transaction: async (work, key) => {
+             const existing = txStorage.getStore();
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 6dfd9f13d5d16f88b79181e9beb3a79c47256bc8..833459cb9a14426fee414c4f343acbacbdf109ea 100644
+index e850e6b544017cb9856718ad16531039db0d61a2..833459cb9a14426fee414c4f343acbacbdf109ea 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
 @@ -1,6 +1,40 @@
@@ -143,7 +143,7 @@ index 6dfd9f13d5d16f88b79181e9beb3a79c47256bc8..833459cb9a14426fee414c4f343acbac
 -                    return false;
 -                }
 -            },
--            headers: opts.fetchOpts
+-            headers: opts.fetchOpts?.headers
 -        });
 +        let info;
 +        if (isYouTubeUrl(previewLink)) {
@@ -177,10 +177,10 @@ index 6dfd9f13d5d16f88b79181e9beb3a79c47256bc8..833459cb9a14426fee414c4f343acbac
              const [image] = info.images;
              const urlInfo = {
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
-index c6cc439d5c84a9542f885be1f50217520c60e5eb..f565a82d6e2a1610eb37012b72ef7c77a723137c 100644
+index 17b05b84f70196c908396b7f74f9a815a1b65daf..ec3f0b05a0f5b0f94cae49ed2a555dfff9dcbe28 100644
 --- a/lib/Utils/messages.js
 +++ b/lib/Utils/messages.js
-@@ -166,7 +166,7 @@ export const prepareWAMessageMedia = async (message, options) => {
+@@ -168,7 +168,7 @@ export const prepareWAMessageMedia = async (message, options) => {
                      logger?.debug('computed audio duration');
                  }
                  if (requiresWaveformProcessing) {
