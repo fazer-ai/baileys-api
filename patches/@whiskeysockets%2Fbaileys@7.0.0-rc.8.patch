@@ -1,5 +1,8 @@
+diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-ee2c9cf33daad43f b/.bun-tag-ee2c9cf33daad43f
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
-index 975b9f96124a8518bb75ff27989a85b08daa2f96..fc6bfd56d640baefe0d873f0f7d841d4d26a9d5d 100644
+index b36ab0ce3afc4ae990772eaa10bcfa43e044e001..ca358387166387379d077a9f0c674a9b581f5e65 100644
 --- a/lib/Socket/Client/websocket.js
 +++ b/lib/Socket/Client/websocket.js
 @@ -30,7 +30,7 @@ export class WebSocketClient extends AbstractSocketClient {
@@ -12,10 +15,10 @@ index 975b9f96124a8518bb75ff27989a85b08daa2f96..fc6bfd56d640baefe0d873f0f7d841d4
              this.socket?.on(event, (...args) => this.emit(event, ...args));
          }
 diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
-index 62276fc35574114b3707d5de417252eb86967d1a..126a0ae6a7c52dd7bce44cc08ca9fa81d3a66d0b 100644
+index fe1aa7f2f38c89d0e8dc6489f175a7f702d64e32..7e7dff41443e16e9be15d8dafb825941eee614db 100644
 --- a/lib/Socket/socket.js
 +++ b/lib/Socket/socket.js
-@@ -235,6 +235,9 @@ export const makeSocket = (config) => {
+@@ -266,6 +266,9 @@ export const makeSocket = (config) => {
      let closed = false;
      /** log & process any unexpected errors */
      const onUnexpectedError = (err, msg) => {
@@ -26,10 +29,10 @@ index 62276fc35574114b3707d5de417252eb86967d1a..126a0ae6a7c52dd7bce44cc08ca9fa81
      };
      /** await the next incoming message */
 diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
-index df860a7fa07ba1677dcc26bd0397bbbaa8b20edf..643c0229a7352733b83d4843ade7cf32f9003577 100644
+index 2b170db6a2a056e5219a30382de054a618d56e6e..01963ea7cdbdd2f338eb20e313e9211fd8f1f169 100644
 --- a/lib/Types/Message.d.ts
 +++ b/lib/Types/Message.d.ts
-@@ -131,7 +131,7 @@ export type AnyMediaMessageContent = (({
+@@ -133,7 +133,7 @@ export type AnyMediaMessageContent = (({
      isAnimated?: boolean;
  } & WithDimensions) | ({
      document: WAMediaUpload;
@@ -38,7 +41,7 @@ index df860a7fa07ba1677dcc26bd0397bbbaa8b20edf..643c0229a7352733b83d4843ade7cf32
      fileName?: string;
      caption?: string;
  } & Contextable)) & {
-@@ -239,6 +239,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
+@@ -241,6 +241,7 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
      font?: number;
      /** if it is broadcast */
      broadcast?: boolean;
@@ -47,7 +50,7 @@ index df860a7fa07ba1677dcc26bd0397bbbaa8b20edf..643c0229a7352733b83d4843ade7cf32
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
 diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
-index ca168e0eef19f9f9bc65a758a39d35c81e1f7497..740b50288a08e5febad561101bd4a9b5ce4e85b3 100644
+index e02ea025a18899ab591bcbbe84fbbf9f2f7c40ae..7465bc69f6879c9a2a05d50cffd88d227da6c0a4 100644
 --- a/lib/Utils/auth-utils.js
 +++ b/lib/Utils/auth-utils.js
 @@ -200,6 +200,16 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
@@ -68,7 +71,7 @@ index ca168e0eef19f9f9bc65a758a39d35c81e1f7497..740b50288a08e5febad561101bd4a9b5
          transaction: async (work, key) => {
              const existing = txStorage.getStore();
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index e850e6b544017cb9856718ad16531039db0d61a2..833459cb9a14426fee414c4f343acbacbdf109ea 100644
+index e850e6b544017cb9856718ad16531039db0d61a2..649ff0a3bd0475f0430ceffea565d08990fc1ba0 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
 @@ -1,6 +1,40 @@
@@ -177,7 +180,7 @@ index e850e6b544017cb9856718ad16531039db0d61a2..833459cb9a14426fee414c4f343acbac
              const [image] = info.images;
              const urlInfo = {
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
-index 17b05b84f70196c908396b7f74f9a815a1b65daf..ec3f0b05a0f5b0f94cae49ed2a555dfff9dcbe28 100644
+index eff7a53f0b5958edf5a0ce0eeca1e21c1ff008fb..b13525785cde0a721643b173c987ff2276ac4510 100644
 --- a/lib/Utils/messages.js
 +++ b/lib/Utils/messages.js
 @@ -168,7 +168,7 @@ export const prepareWAMessageMedia = async (message, options) => {
