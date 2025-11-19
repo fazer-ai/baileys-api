@@ -29,10 +29,7 @@ describe("redisAuthState", () => {
 
     describe("error handling", () => {
       it.todo("throw an error if Redis connection fails during read", () => {});
-      it.todo(
-        "throw an error if data in Redis is corrupted (invalid JSON)",
-        () => {},
-      );
+      it.todo("throw an error if data in Redis is corrupted (invalid JSON)", () => {});
     });
   });
 
@@ -40,9 +37,6 @@ describe("redisAuthState", () => {
     it.todo("return a list of IDs and metadata for all saved states", () => {});
     it.todo("return an empty array if no states are saved", () => {});
     it.todo("return metadata as an empty object if not set in Redis", () => {});
-    it.todo(
-      "handle corrupted metadata (invalid JSON) in one of the records",
-      () => {},
-    );
+    it.todo("handle corrupted metadata (invalid JSON) in one of the records", () => {});
   });
 });

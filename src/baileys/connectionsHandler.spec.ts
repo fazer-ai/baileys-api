@@ -7,26 +7,14 @@ describe("BaileysConnectionsHandler", () => {
     });
     describe("when saved connections exist", () => {
       it.todo("logs the number of saved connections", () => {});
-      it.todo(
-        "creates and connects a BaileysConnection for each saved auth state",
-        () => {},
-      );
-      it.todo(
-        "sets up the onConnectionClose callback to remove the connection",
-        () => {},
-      );
+      it.todo("creates and connects a BaileysConnection for each saved auth state", () => {});
+      it.todo("sets up the onConnectionClose callback to remove the connection", () => {});
     });
   });
 
   describe("#connect", () => {
-    it.todo(
-      "create a new BaileysConnection, connect and store it in the handler",
-      () => {},
-    );
-    it.todo(
-      "send a presence update if a connection for the number already exists",
-      () => {},
-    );
+    it.todo("create a new BaileysConnection, connect and store it in the handler", () => {});
+    it.todo("send a presence update if a connection for the number already exists", () => {});
   });
 
   describe("#sendPresenceUpdate", () => {
@@ -55,14 +43,8 @@ describe("BaileysConnectionsHandler", () => {
   });
 
   describe("#profilePictureUrl", () => {
-    it.todo(
-      "should return an error when profile picture is not found",
-      () => {},
-    );
-    it.todo(
-      "should call profilePictureUrl on the correct connection",
-      () => {},
-    );
+    it.todo("should return an error when profile picture is not found", () => {});
+    it.todo("should call profilePictureUrl on the correct connection", () => {});
     it.todo("should return profile picture URL when available", () => {});
   });
 
