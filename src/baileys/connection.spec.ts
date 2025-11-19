@@ -48,14 +48,8 @@ describe("BaileysConnection", () => {
   });
 
   describe("#profilePictureUrl", () => {
-    it.todo(
-      "should return an error when profile picture is not found",
-      () => {},
-    );
-    it.todo(
-      "should call socket profilePictureUrl method with correct parameters",
-      () => {},
-    );
+    it.todo("should return an error when profile picture is not found", () => {});
+    it.todo("should call socket profilePictureUrl method with correct parameters", () => {});
     it.todo("should return profile picture URL when available", () => {});
   });
 
@@ -63,10 +57,7 @@ describe("BaileysConnection", () => {
     describe("connection.update", () => {
       it.todo("handle 'reconnecting' state", () => {});
       it.todo("handle 'close' state and attempt to reconnect", () => {});
-      it.todo(
-        "handle 'close' with 'loggedOut' reason and not reconnect",
-        () => {},
-      );
+      it.todo("handle 'close' with 'loggedOut' reason and not reconnect", () => {});
       it.todo("handle 'open' state with invalid phone number", () => {});
       it.todo("generate QR code data URL", () => {});
       it.todo("send connection updates to the webhook", () => {});
@@ -79,17 +70,11 @@ describe("BaileysConnection", () => {
     });
 
     describe("messages.update", () => {
-      it.todo(
-        "send the updated message payload with media to the webhook",
-        () => {},
-      );
+      it.todo("send the updated message payload with media to the webhook", () => {});
     });
 
     describe("message-receipt.update", () => {
-      it.todo(
-        "send the message receipt update payload to the webhook",
-        () => {},
-      );
+      it.todo("send the message receipt update payload to the webhook", () => {});
     });
 
     describe("messaging-history.set", () => {
