@@ -92,6 +92,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).sendPresenceUpdate(type, toJid);
   }
 
+  presenceSubscribe(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).presenceSubscribe(jid);
+  }
+
   sendMessage(
     phoneNumber: string,
     {

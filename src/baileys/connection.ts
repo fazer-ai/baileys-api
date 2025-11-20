@@ -92,6 +92,7 @@ export class BaileysConnection {
   private isReconnect: boolean;
   private includeMedia: boolean;
   private syncFullHistory: boolean;
+  private autoSubscribePresenceUpdates: boolean;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -111,6 +112,8 @@ export class BaileysConnection {
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.autoSubscribePresenceUpdates =
+      options.autoSubscribePresenceUpdates ?? true;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -189,7 +192,7 @@ export class BaileysConnection {
   }
 
   private addEventListeners({ saveCreds }: { saveCreds: () => Promise<void> }) {
-    const handledEvents = {
+    const handledEvents: Partial<Record<keyof BaileysEventMap, unknown>> = {
       "creds.update": saveCreds,
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
@@ -210,6 +213,10 @@ export class BaileysConnection {
       "messaging-history.set": this.withErrorHandling(
         "handleMessagingHistorySet",
         this.handleMessagingHistorySet,
+      ),
+      "presence.update": this.withErrorHandling(
+        "handlePresenceUpdate",
+        this.handlePresenceUpdate,
       ),
     };
 
@@ -279,9 +286,15 @@ export class BaileysConnection {
       );
     }
 
-    return this.safeSocket().sendMessage(jid, messageContent, {
+    const result = await this.safeSocket().sendMessage(jid, messageContent, {
       waveformProxy,
     });
+
+    if (this.autoSubscribePresenceUpdates) {
+      this.safeSocket().presenceSubscribe(jid);
+    }
+
+    return result;
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
@@ -303,6 +316,10 @@ export class BaileysConnection {
           this.clearOnlinePresenceTimeout = setTimeout(() => {
             this.socket?.sendPresenceUpdate("unavailable", toJid);
           }, 60000);
+        }
+
+        if (this.autoSubscribePresenceUpdates && toJid) {
+          this.safeSocket().presenceSubscribe(toJid);
         }
       });
   }
@@ -337,6 +354,10 @@ export class BaileysConnection {
 
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
+  }
+
+  presenceSubscribe(jid: string) {
+    return this.safeSocket().presenceSubscribe(jid);
   }
 
   private safeSocket() {
@@ -429,6 +450,15 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    if (this.autoSubscribePresenceUpdates) {
+      for (const message of data.messages) {
+        const jid = message.key.remoteJid;
+        if (jid) {
+          this.safeSocket().presenceSubscribe(jid);
+        }
+      }
+    }
+
     const payload: BaileysConnectionWebhookPayload = {
       event: "messages.upsert",
       data,
@@ -477,6 +507,13 @@ export class BaileysConnection {
     // await downloadMediaFromMessages(data.messages);
 
     this.sendToWebhook({ event: "messaging-history.set", data });
+  }
+
+  private handlePresenceUpdate(data: BaileysEventMap["presence.update"]) {
+    this.sendToWebhook({
+      event: "presence.update",
+      data,
+    });
   }
 
   private handleWrongPhoneNumber() {

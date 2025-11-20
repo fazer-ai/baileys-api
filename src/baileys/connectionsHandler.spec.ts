@@ -22,6 +22,11 @@ describe("BaileysConnectionsHandler", () => {
     it.todo("call sendPresenceUpdate on the correct connection", () => {});
   });
 
+  describe("#presenceSubscribe", () => {
+    it.todo("throw BaileysNotConnectedError if no connection exists", () => {});
+    it.todo("call presenceSubscribe on the correct connection", () => {});
+  });
+
   describe("#sendMessage", () => {
     it.todo("throw BaileysNotConnectedError if no connection exists", () => {});
     it.todo("call sendMessage on the correct connection", () => {});

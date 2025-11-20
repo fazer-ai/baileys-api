@@ -108,6 +108,28 @@ const connectionsController = new Elysia({
     },
   )
   .post(
+    "/:phoneNumber/presence/subscribe",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid } = body;
+
+      await baileys.presenceSubscribe(phoneNumber, jid);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("JID to subscribe presence updates for"),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Presence subscription sent successfully",
+          },
+        },
+      },
+    },
+  )
+  .post(
     "/:phoneNumber/send-message",
     async ({ params, body }) => {
       const { phoneNumber } = params;
