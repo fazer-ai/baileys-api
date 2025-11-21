@@ -1,8 +1,5 @@
-diff --git a/node_modules/@whiskeysockets/baileys/.bun-tag-ee2c9cf33daad43f b/.bun-tag-ee2c9cf33daad43f
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
-index b36ab0ce3afc4ae990772eaa10bcfa43e044e001..ca358387166387379d077a9f0c674a9b581f5e65 100644
+index b36ab0ce3afc4ae990772eaa10bcfa43e044e001..35cdc14023c146a03985962697dad6c0eb0ac0b5 100644
 --- a/lib/Socket/Client/websocket.js
 +++ b/lib/Socket/Client/websocket.js
 @@ -30,7 +30,7 @@ export class WebSocketClient extends AbstractSocketClient {
@@ -15,7 +12,7 @@ index b36ab0ce3afc4ae990772eaa10bcfa43e044e001..ca358387166387379d077a9f0c674a9b
              this.socket?.on(event, (...args) => this.emit(event, ...args));
          }
 diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
-index fe1aa7f2f38c89d0e8dc6489f175a7f702d64e32..7e7dff41443e16e9be15d8dafb825941eee614db 100644
+index fe1aa7f2f38c89d0e8dc6489f175a7f702d64e32..c645609bae01eca69cc44d9ca833c7d8e54ce590 100644
 --- a/lib/Socket/socket.js
 +++ b/lib/Socket/socket.js
 @@ -266,6 +266,9 @@ export const makeSocket = (config) => {
@@ -50,7 +47,7 @@ index 2b170db6a2a056e5219a30382de054a618d56e6e..01963ea7cdbdd2f338eb20e313e9211f
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
 diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
-index e02ea025a18899ab591bcbbe84fbbf9f2f7c40ae..7465bc69f6879c9a2a05d50cffd88d227da6c0a4 100644
+index e02ea025a18899ab591bcbbe84fbbf9f2f7c40ae..68972ef768d9148a26122c59bfbdf9292f0a736f 100644
 --- a/lib/Utils/auth-utils.js
 +++ b/lib/Utils/auth-utils.js
 @@ -200,6 +200,16 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
@@ -71,7 +68,7 @@ index e02ea025a18899ab591bcbbe84fbbf9f2f7c40ae..7465bc69f6879c9a2a05d50cffd88d22
          transaction: async (work, key) => {
              const existing = txStorage.getStore();
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index e850e6b544017cb9856718ad16531039db0d61a2..649ff0a3bd0475f0430ceffea565d08990fc1ba0 100644
+index e850e6b544017cb9856718ad16531039db0d61a2..833459cb9a14426fee414c4f343acbacbdf109ea 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
 @@ -1,6 +1,40 @@
@@ -180,7 +177,7 @@ index e850e6b544017cb9856718ad16531039db0d61a2..649ff0a3bd0475f0430ceffea565d089
              const [image] = info.images;
              const urlInfo = {
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
-index eff7a53f0b5958edf5a0ce0eeca1e21c1ff008fb..b13525785cde0a721643b173c987ff2276ac4510 100644
+index eff7a53f0b5958edf5a0ce0eeca1e21c1ff008fb..5f4092144d5d08505bc41d454e7d195570bf460b 100644
 --- a/lib/Utils/messages.js
 +++ b/lib/Utils/messages.js
 @@ -168,7 +168,7 @@ export const prepareWAMessageMedia = async (message, options) => {
