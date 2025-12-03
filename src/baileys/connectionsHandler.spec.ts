@@ -15,6 +15,7 @@ describe("BaileysConnectionsHandler", () => {
   describe("#connect", () => {
     it.todo("create a new BaileysConnection, connect and store it in the handler", () => {});
     it.todo("send a presence update if a connection for the number already exists", () => {});
+    it.todo("should handle inconsistent connection state when sendPresenceUpdate fails", () => {});
   });
 
   describe("#sendPresenceUpdate", () => {

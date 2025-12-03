@@ -60,6 +60,7 @@ export class BaileysConnectionsHandler {
       try {
         // NOTE: This triggers a `connection.update` event.
         await this.connections[phoneNumber].sendPresenceUpdate("available");
+        return;
       } catch (error) {
         if (!(error instanceof BaileysNotConnectedError)) {
           throw error;
@@ -70,7 +71,6 @@ export class BaileysConnectionsHandler {
           phoneNumber,
         );
       }
-      return;
     }
 
     const connection = new BaileysConnection(phoneNumber, {
