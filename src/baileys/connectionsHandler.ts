@@ -57,9 +57,20 @@ export class BaileysConnectionsHandler {
   async connect(phoneNumber: string, options: BaileysConnectionOptions) {
     if (this.connections[phoneNumber]) {
       this.connections[phoneNumber].updateOptions(options);
-      // NOTE: This triggers a `connection.update` event.
-      await this.connections[phoneNumber].sendPresenceUpdate("available");
-      return;
+      try {
+        // NOTE: This triggers a `connection.update` event.
+        await this.connections[phoneNumber].sendPresenceUpdate("available");
+        return;
+      } catch (error) {
+        if (!(error instanceof BaileysNotConnectedError)) {
+          throw error;
+        }
+        delete this.connections[phoneNumber];
+        logger.debug(
+          "Handled inconsistent connection state for %s",
+          phoneNumber,
+        );
+      }
     }
 
     const connection = new BaileysConnection(phoneNumber, {
