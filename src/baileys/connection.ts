@@ -12,6 +12,7 @@ import makeWASocket, {
   type proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
+  type WAMessage,
   type WAPresence,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
@@ -338,6 +339,37 @@ export class BaileysConnection {
 
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
+  }
+
+  async forwardMessage(message: WAMessage, destinationJids: string[]) {
+    const socket = this.safeSocket();
+
+    // Forward to all destination JIDs
+    const results = await Promise.allSettled(
+      destinationJids.map(async (jid) => {
+        try {
+          const response = await socket.sendMessage(jid, {
+            forward: message,
+          });
+          return {
+            jid,
+            success: true,
+            key: response?.key,
+            messageTimestamp: response?.messageTimestamp,
+          };
+        } catch (error) {
+          return {
+            jid,
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
+    );
+
+    return results.map((result) =>
+      result.status === "fulfilled" ? result.value : result.reason,
+    );
   }
 
   private safeSocket() {
