@@ -391,6 +391,83 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/forward-message",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { message, destinationJids } = body;
+
+      const results = await baileys.forwardMessage(phoneNumber, {
+        message,
+        destinationJids,
+      });
+
+      return {
+        data: {
+          results,
+        },
+      };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        message: t.Any({
+          description:
+            "The complete WAMessage object to forward (must include key and message fields)",
+        }),
+        destinationJids: t.Array(jid("Recipient jid to forward message to"), {
+          minItems: 1,
+          maxItems: 50,
+        }),
+      }),
+      detail: {
+        description: "Forward a message to multiple recipients",
+        responses: {
+          200: {
+            description: "Message forwarded successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        results: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              jid: {
+                                type: "string",
+                                description: "Destination JID",
+                              },
+                              success: {
+                                type: "boolean",
+                                description: "Whether the forward was successful",
+                              },
+                              key: {
+                                type: "object",
+                                description: "Message key if successful",
+                              },
+                              error: {
+                                type: "string",
+                                description: "Error message if failed",
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  )
   .delete(
     "/:phoneNumber",
     async ({ params }) => {

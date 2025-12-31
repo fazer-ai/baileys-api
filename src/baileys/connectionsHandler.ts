@@ -151,6 +151,22 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
   }
 
+  forwardMessage(
+    phoneNumber: string,
+    {
+      message,
+      destinationJids,
+    }: {
+      message: any; // WAMessage type from Baileys
+      destinationJids: string[];
+    },
+  ) {
+    return this.getConnection(phoneNumber).forwardMessage(
+      message,
+      destinationJids,
+    );
+  }
+
   async logout(phoneNumber: string) {
     await this.getConnection(phoneNumber).logout();
     delete this.connections[phoneNumber];
