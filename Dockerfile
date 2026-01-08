@@ -5,7 +5,7 @@ FROM base AS install
 RUN mkdir -p /temp/prod
 COPY package.json bun.lock /temp/prod/
 COPY patches /temp/prod/patches
-RUN cd /temp/prod && bun install --production
+RUN cd /temp/prod && bun install --no-frozen-lockfile --production
 
 FROM base AS prerelease
 COPY --from=install /temp/prod/node_modules node_modules
