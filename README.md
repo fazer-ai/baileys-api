@@ -1,7 +1,5 @@
 # Baileys API
 
-<a href="https://fazer.ai?utm_source=github&utm_medium=en&utm_campaign=baileys-api"><img alt="fazer.ai logo" src="https://framerusercontent.com/images/HqY9djLTzyutSKnuLLqBr92KbM.png?scale-down-to=256" height="75"/></a>
-
 <a href="https://github.com/WhiskeySockets/Baileys"><img alt="Baileys logo" src="https://raw.githubusercontent.com/WhiskeySockets/Baileys/refs/heads/master/Media/logo.png" height="75"/></a>
 
 This project provides an API interface for interacting with WhatsApp using the [Baileys library](https://github.com/WhiskeySockets/Baileys).
@@ -20,8 +18,6 @@ This project provides an API interface for interacting with WhatsApp using the [
 > This project is not meant to be a full-fledged WhatsApp server. It is a wrapper around the Baileys library, providing an HTTP interface for easier integration with other applications.
 >
 > Thus, we do not store WhatsApp messages or any other data (aside from credentials for auto-reconnecting).
->
-> If you need a chat application with a database, consider using our fork of [Chatwoot](https://github.com/fazer-ai/chatwoot/), which integrates with this API.
 
 ## Functionality
 

@@ -1,3 +1,4 @@
+// @ts-ignore
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
   type AnyMessageContent,
@@ -8,6 +9,7 @@ import makeWASocket, {
   type ConnectionState,
   DisconnectReason,
   type MessageReceiptType,
+  isJidGroup,
   makeCacheableSignalKeyStore,
   type proto,
   type UserFacingSocketConfig,
@@ -92,6 +94,7 @@ export class BaileysConnection {
   private isReconnect: boolean;
   private includeMedia: boolean;
   private syncFullHistory: boolean;
+  private ignoreGroups: boolean;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -111,6 +114,7 @@ export class BaileysConnection {
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.ignoreGroups = options.ignoreGroups ?? config.baileys.ignoreGroupMessages;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -138,6 +142,7 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.ignoreGroups = options.ignoreGroups ?? config.baileys.ignoreGroupMessages;
   }
 
   async connect() {
@@ -151,6 +156,7 @@ export class BaileysConnection {
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
       syncFullHistory: this.syncFullHistory,
+      ignoreGroups: this.ignoreGroups,
     });
     this.clearAuthState = state.keys.clear;
 
@@ -163,7 +169,13 @@ export class BaileysConnection {
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
-      shouldIgnoreJid,
+      // @ts-ignore
+      shouldIgnoreJid: (jid: string) => {
+        if (isJidGroup(jid)) {
+          return this.ignoreGroups;
+        }
+        return shouldIgnoreJid(jid);
+      },
       version: await fetchBaileysClientVersion().catch((error) => {
         logger.error(
           "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
@@ -226,7 +238,7 @@ export class BaileysConnection {
         return;
       }
 
-      this.socket?.ev.on(event, (data) => this.sendToWebhook({ event, data }));
+      this.socket?.ev.on(event, (data: any) => this.sendToWebhook({ event, data }));
     });
   }
 
@@ -281,8 +293,8 @@ export class BaileysConnection {
     }
 
     return this.safeSocket().sendMessage(jid, messageContent, {
-      waveformProxy,
-    });
+      ...(waveformProxy ? { waveformProxy } : {}),
+    } as any);
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
@@ -338,6 +350,55 @@ export class BaileysConnection {
 
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
+  }
+
+  // Groups
+  groupCreate(subject: string, participants: string[]) {
+    return this.safeSocket().groupCreate(subject, participants);
+  }
+
+  groupLeave(id: string) {
+    return this.safeSocket().groupLeave(id);
+  }
+
+  groupUpdateSubject(id: string, subject: string) {
+    return this.safeSocket().groupUpdateSubject(id, subject);
+  }
+
+  groupUpdateDescription(id: string, description: string) {
+    return this.safeSocket().groupUpdateDescription(id, description);
+  }
+
+  groupParticipantsUpdate(
+    id: string,
+    participants: string[],
+    action: "add" | "remove" | "promote" | "demote",
+  ) {
+    return this.safeSocket().groupParticipantsUpdate(
+      id,
+      participants,
+      action,
+    );
+  }
+
+  groupInviteCode(id: string) {
+    return this.safeSocket().groupInviteCode(id);
+  }
+
+  groupRevokeInvite(id: string) {
+    return this.safeSocket().groupRevokeInvite(id);
+  }
+
+  groupAcceptInvite(code: string) {
+    return this.safeSocket().groupAcceptInvite(code);
+  }
+
+  groupGetInviteInfo(code: string) {
+    return this.safeSocket().groupGetInviteInfo(code);
+  }
+
+  groupFetchAllParticipating() {
+    return this.safeSocket().groupFetchAllParticipating();
   }
 
   private safeSocket() {

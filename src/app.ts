@@ -1,16 +1,19 @@
+// @ts-ignore
 import cors from "@elysiajs/cors";
+// @ts-ignore
 import swagger from "@elysiajs/swagger";
 import Elysia from "elysia";
 import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
+import groupsController from "@/controllers/groups";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 const app = new Elysia()
-  .onAfterResponse(({ request, response, set }) => {
+  .onAfterResponse(({ request, response, set }: { request: any; response: any; set: any }) => {
     logger.info(
       "%s %s [%d] %o",
       request.method,
@@ -19,7 +22,7 @@ const app = new Elysia()
       response ?? {},
     );
   })
-  .onError(({ path, error, code }) => {
+  .onError(({ path, error, code }: { path: any; error: any; code: any }) => {
     logger.error("%s\n%s", path, errorToString(error));
     switch (code) {
       case "INTERNAL_SERVER_ERROR": {
@@ -75,6 +78,10 @@ const app = new Elysia()
             description: "Admin operations",
           },
           {
+            name: "Groups",
+            description: "Group management operations",
+          },
+          {
             name: "Media",
             description: "Retrieve media content from a message",
           },
@@ -95,6 +102,7 @@ const app = new Elysia()
   .use(statusController)
   .use(adminController)
   .use(connectionsController)
+  .use(groupsController)
   .use(mediaController);
 
 if (config.env === "development") {
