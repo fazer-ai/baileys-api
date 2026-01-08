@@ -5,7 +5,7 @@
   "author": "gabrieljablonski",
   "repository": {
     "type": "git",
-    "url": "https://github.com/claude/greeting-EjrYu.git"
+    "url": "https://github.com/dbechelli/baileys-api.git"
   },
   "license": "MIT",
   "module": "src/index.ts",
