@@ -3,34 +3,24 @@ import cors from "@elysiajs/cors";
 // @ts-ignore
 import swagger from "@elysiajs/swagger";
 import Elysia from "elysia";
+import { BaileysNotConnectedError } from "@/baileys/connection"; // Importar o erro
 import config from "@/config";
 import adminController from "@/controllers/admin";
-import connectionsController from "@/controllers/connections";
-import groupsController from "@/controllers/groups";
-import mediaController from "@/controllers/media";
-import statusController from "@/controllers/status";
-import { errorToString } from "@/helpers/errorToString";
-import logger from "@/lib/logger";
+// ... imports ...
 
 const app = new Elysia()
-  .onAfterResponse(({ request, response, set }: { request: any; response: any; set: any }) => {
-    logger.info(
-      "%s %s [%d] %o",
-      request.method,
-      request.url,
-      (response as Response)?.status ?? set.status,
-      response ?? {},
-    );
-  })
+// ...
   .onError(({ path, error, code }: { path: any; error: any; code: any }) => {
     logger.error("%s\n%s", path, errorToString(error));
+    
+    if (error instanceof BaileysNotConnectedError) {
+      return new Response("Phone number not connected", { status: 404 });
+    }
+
     switch (code) {
       case "INTERNAL_SERVER_ERROR": {
-        const message =
-          config.env === "development"
-            ? errorToString(error)
-            : "Something went wrong";
-        return new Response(message, { status: 500 });
+        // Expose error in production for debugging
+        return new Response(errorToString(error), { status: 500 });
       }
       default:
     }
