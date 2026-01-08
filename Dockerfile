@@ -3,9 +3,9 @@ WORKDIR /usr/src/app
 
 FROM base AS install
 RUN mkdir -p /temp/prod
-COPY package.json bun.lock /temp/prod/
+COPY package.json /temp/prod/
 COPY patches /temp/prod/patches
-RUN cd /temp/prod && bun install --no-frozen-lockfile --production
+RUN cd /temp/prod && bun install --production
 
 FROM base AS prerelease
 COPY --from=install /temp/prod/node_modules node_modules
