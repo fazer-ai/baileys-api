@@ -376,7 +376,6 @@ const groupsController = new Elysia({
                 }) as any,
               },
             },
-            },
           },
         },
       },
