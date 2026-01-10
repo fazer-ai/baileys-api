@@ -20,8 +20,7 @@ Este projeto fornece uma interface API para interagir com o WhatsApp usando a bi
 > Este projeto não se destina a ser um servidor WhatsApp completo. É um wrapper em torno da biblioteca Baileys, fornecendo uma interface HTTP para facilitar a integração com outras aplicações.
 >
 > Assim, não armazenamos mensagens do WhatsApp ou quaisquer outros dados (além das credenciais para reconexão automática).
->
-> Se você precisa de uma aplicação de chat com banco de dados, considere usar nosso fork do [Chatwoot](https://github.com/fazer-ai/chatwoot/), que se integra com esta API.
+
 
 ## Funcionalidades
 

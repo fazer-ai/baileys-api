@@ -1,33 +1,31 @@
+// @ts-expect-error
 import cors from "@elysiajs/cors";
+// @ts-expect-error
 import swagger from "@elysiajs/swagger";
 import Elysia from "elysia";
+import { BaileysNotConnectedError } from "@/baileys/connection"; // Importar o erro
 import config from "@/config";
 import adminController from "@/controllers/admin";
 import connectionsController from "@/controllers/connections";
+import groupsController from "@/controllers/groups";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 const app = new Elysia()
-  .onAfterResponse(({ request, response, set }) => {
-    logger.info(
-      "%s %s [%d] %o",
-      request.method,
-      request.url,
-      (response as Response)?.status ?? set.status,
-      response ?? {},
-    );
-  })
-  .onError(({ path, error, code }) => {
+  // ...
+  .onError(({ path, error, code }: { path: string; error: unknown; code: string }) => {
     logger.error("%s\n%s", path, errorToString(error));
+
+    if (error instanceof BaileysNotConnectedError) {
+      return new Response("Phone number not connected", { status: 404 });
+    }
+
     switch (code) {
       case "INTERNAL_SERVER_ERROR": {
-        const message =
-          config.env === "development"
-            ? errorToString(error)
-            : "Something went wrong";
-        return new Response(message, { status: 500 });
+        // Expose error in production for debugging
+        return new Response(errorToString(error), { status: 500 });
       }
       default:
     }
@@ -75,6 +73,10 @@ const app = new Elysia()
             description: "Admin operations",
           },
           {
+            name: "Groups",
+            description: "Group management operations",
+          },
+          {
             name: "Media",
             description: "Retrieve media content from a message",
           },
@@ -95,6 +97,7 @@ const app = new Elysia()
   .use(statusController)
   .use(adminController)
   .use(connectionsController)
+  .use(groupsController)
   .use(mediaController);
 
 if (config.env === "development") {

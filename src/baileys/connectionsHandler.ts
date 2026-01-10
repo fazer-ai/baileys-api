@@ -151,6 +151,59 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
   }
 
+  // Groups
+  groupCreate(phoneNumber: string, subject: string, participants: string[]) {
+    return this.getConnection(phoneNumber).groupCreate(subject, participants);
+  }
+
+  groupLeave(phoneNumber: string, id: string) {
+    return this.getConnection(phoneNumber).groupLeave(id);
+  }
+
+  groupUpdateSubject(phoneNumber: string, id: string, subject: string) {
+    return this.getConnection(phoneNumber).groupUpdateSubject(id, subject);
+  }
+
+  groupUpdateDescription(phoneNumber: string, id: string, description: string) {
+    return this.getConnection(phoneNumber).groupUpdateDescription(
+      id,
+      description,
+    );
+  }
+
+  groupParticipantsUpdate(
+    phoneNumber: string,
+    id: string,
+    participants: string[],
+    action: "add" | "remove" | "promote" | "demote",
+  ) {
+    return this.getConnection(phoneNumber).groupParticipantsUpdate(
+      id,
+      participants,
+      action,
+    );
+  }
+
+  groupInviteCode(phoneNumber: string, id: string) {
+    return this.getConnection(phoneNumber).groupInviteCode(id);
+  }
+
+  groupRevokeInvite(phoneNumber: string, id: string) {
+    return this.getConnection(phoneNumber).groupRevokeInvite(id);
+  }
+
+  groupAcceptInvite(phoneNumber: string, code: string) {
+    return this.getConnection(phoneNumber).groupAcceptInvite(code);
+  }
+
+  groupGetInviteInfo(phoneNumber: string, code: string) {
+    return this.getConnection(phoneNumber).groupGetInviteInfo(code);
+  }
+
+  groupFetchAllParticipating(phoneNumber: string) {
+    return this.getConnection(phoneNumber).groupFetchAllParticipating();
+  }
+
   async logout(phoneNumber: string) {
     await this.getConnection(phoneNumber).logout();
     delete this.connections[phoneNumber];

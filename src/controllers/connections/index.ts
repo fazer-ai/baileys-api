@@ -60,6 +60,11 @@ const connectionsController = new Elysia({
             default: false,
           }),
         ),
+        ignoreGroups: t.Optional(
+          t.Boolean({
+            description: "Ignore messages from groups.",
+          }),
+        ),
       }),
       detail: {
         responses: {

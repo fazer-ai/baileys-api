@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, beta]
   push:
-    branches: [main, beta]
+    branches: [main, beta, "claude/greeting-EjrYu"]
   workflow_dispatch:
 
 jobs:
