@@ -2,7 +2,7 @@ version: "3"
 
 services:
   baileys-api:
-    image: "ghcr.io/claude/greeting-EjrYu:latest"
+    image: "ghcr.io/dbechelli/baileys-api:claude-greeting-EjrYu"
     pull_policy: always
     volumes:
       - "storage:/app/storage"

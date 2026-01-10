@@ -6,7 +6,13 @@ import Elysia from "elysia";
 import { BaileysNotConnectedError } from "@/baileys/connection"; // Importar o erro
 import config from "@/config";
 import adminController from "@/controllers/admin";
-// ... imports ...
+import { errorToString } from "@/helpers/errorToString";
+import logger from "@/lib/logger";
+
+import connectionsController from "@/controllers/connections";
+import groupsController from "@/controllers/groups";
+import mediaController from "@/controllers/media";
+import statusController from "@/controllers/status";
 
 const app = new Elysia()
 // ...

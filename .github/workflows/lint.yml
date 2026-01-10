@@ -32,7 +32,7 @@ jobs:
             ${{ runner.os }}-bun-deps-
 
       - name: Install Dependencies
-        run: bun install
+        run: bun install --no-frozen-lockfile
 
       - name: Run Biome Linter
         run: bun run lint
