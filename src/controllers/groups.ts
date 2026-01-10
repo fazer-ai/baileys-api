@@ -40,7 +40,7 @@ const groupsController = new Elysia({
       detail: {
         responses: {
           200: {
-            description: "Group created",
+            description: "Group created successfully",
             content: {
               "application/json": {
                 schema: t.Object({
