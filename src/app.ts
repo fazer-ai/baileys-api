@@ -1,24 +1,23 @@
-// @ts-ignore
+// @ts-expect-error
 import cors from "@elysiajs/cors";
-// @ts-ignore
+// @ts-expect-error
 import swagger from "@elysiajs/swagger";
 import Elysia from "elysia";
 import { BaileysNotConnectedError } from "@/baileys/connection"; // Importar o erro
 import config from "@/config";
 import adminController from "@/controllers/admin";
-import { errorToString } from "@/helpers/errorToString";
-import logger from "@/lib/logger";
-
 import connectionsController from "@/controllers/connections";
 import groupsController from "@/controllers/groups";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
+import { errorToString } from "@/helpers/errorToString";
+import logger from "@/lib/logger";
 
 const app = new Elysia()
-// ...
-  .onError(({ path, error, code }: { path: any; error: any; code: any }) => {
+  // ...
+  .onError(({ path, error, code }: { path: string; error: unknown; code: string }) => {
     logger.error("%s\n%s", path, errorToString(error));
-    
+
     if (error instanceof BaileysNotConnectedError) {
       return new Response("Phone number not connected", { status: 404 });
     }

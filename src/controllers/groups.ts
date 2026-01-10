@@ -13,7 +13,13 @@ const groupsController = new Elysia({
   .use(authMiddleware)
   .post(
     "/:phoneNumber/create",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: {
+      params: { phoneNumber: string };
+      body: { subject: string; participants: string[] };
+    }) => {
       const { phoneNumber } = params;
       const { subject, participants } = body;
 
@@ -27,6 +33,7 @@ const groupsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
         subject: t.String({ description: "Group subject", minLength: 1 } as any),
         participants: t.Array(jid("participant jid")),
       }),
@@ -62,6 +69,7 @@ const groupsController = new Elysia({
                     ephemeralDuration: t.Optional(t.Number()),
                     inviteCode: t.Optional(t.String()),
                   }),
+                  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
                 }) as any,
               },
             },
@@ -72,7 +80,10 @@ const groupsController = new Elysia({
   )
   .post(
     "/:phoneNumber/leave",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: { params: { phoneNumber: string }; body: { id: string } }) => {
       const { phoneNumber } = params;
       const { id } = body;
 
@@ -93,7 +104,13 @@ const groupsController = new Elysia({
   )
   .post(
     "/:phoneNumber/update-subject",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: {
+      params: { phoneNumber: string };
+      body: { id: string; subject: string };
+    }) => {
       const { phoneNumber } = params;
       const { id, subject } = body;
 
@@ -104,6 +121,7 @@ const groupsController = new Elysia({
       params: phoneNumberParams,
       body: t.Object({
         id: jid("group jid"),
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
         subject: t.String({ minLength: 1 } as any),
       }),
       detail: {
@@ -115,7 +133,13 @@ const groupsController = new Elysia({
   )
   .post(
     "/:phoneNumber/update-description",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: {
+      params: { phoneNumber: string };
+      body: { id: string; description: string };
+    }) => {
       const { phoneNumber } = params;
       const { id, description } = body;
 
@@ -137,7 +161,17 @@ const groupsController = new Elysia({
   )
   .post(
     "/:phoneNumber/participants-update",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: {
+      params: { phoneNumber: string };
+      body: {
+        id: string;
+        participants: string[];
+        action: "add" | "remove" | "promote" | "demote";
+      };
+    }) => {
       const { phoneNumber } = params;
       const { id, participants, action } = body;
 
@@ -185,7 +219,10 @@ const groupsController = new Elysia({
   )
   .get(
     "/:phoneNumber/invite-code",
-    async ({ params, query }: { params: any; query: any }) => {
+    async ({
+      params,
+      query,
+    }: { params: { phoneNumber: string }; query: { id: string } }) => {
       const { phoneNumber } = params;
       const { id } = query;
 
@@ -217,7 +254,10 @@ const groupsController = new Elysia({
   )
   .post(
     "/:phoneNumber/revoke-invite",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: { params: { phoneNumber: string }; body: { id: string } }) => {
       const { phoneNumber } = params;
       const { id } = body;
 
@@ -249,7 +289,10 @@ const groupsController = new Elysia({
   )
   .post(
     "/:phoneNumber/accept-invite",
-    async ({ params, body }: { params: any; body: any }) => {
+    async ({
+      params,
+      body,
+    }: { params: { phoneNumber: string }; body: { code: string } }) => {
       const { phoneNumber } = params;
       const { code } = body;
 
@@ -259,6 +302,7 @@ const groupsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
+        // biome-ignore lint/suspicious/noExplicitAny: <explanation>
         code: t.String({ description: "Invite code" } as any),
       }),
       detail: {
@@ -281,7 +325,10 @@ const groupsController = new Elysia({
   )
   .get(
     "/:phoneNumber/invite-info",
-    async ({ params, query }: { params: any; query: any }) => {
+    async ({
+      params,
+      query,
+    }: { params: { phoneNumber: string }; query: { code: string } }) => {
       const { phoneNumber } = params;
       const { code } = query;
 
@@ -325,8 +372,10 @@ const groupsController = new Elysia({
                       ),
                     ),
                   }),
+                  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
                 }) as any,
               },
+            },
             },
           },
         },
@@ -335,7 +384,7 @@ const groupsController = new Elysia({
   )
   .get(
     "/:phoneNumber/participating",
-    async ({ params }: { params: any }) => {
+    async ({ params }: { params: { phoneNumber: string } }) => {
       const { phoneNumber } = params;
       const groups = await baileys.groupFetchAllParticipating(phoneNumber);
       return { data: groups };
@@ -375,6 +424,7 @@ const groupsController = new Elysia({
                       ),
                     }),
                   ),
+                  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
                 }) as any,
               },
             },

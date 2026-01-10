@@ -1,4 +1,4 @@
-// @ts-ignore
+// @ts-expect-error
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
   type AnyMessageContent,
@@ -9,12 +9,12 @@ import makeWASocket, {
   type ConnectionState,
   DisconnectReason,
   type MessageReceiptType,
-  isJidGroup,
-  makeCacheableSignalKeyStore,
-  type proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
   type WAPresence,
+  isJidGroup,
+  makeCacheableSignalKeyStore,
+  type proto,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
@@ -169,7 +169,7 @@ export class BaileysConnection {
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
-      // @ts-ignore
+      // @ts-expect-error
       shouldIgnoreJid: (jid: string) => {
         if (isJidGroup(jid)) {
           return this.ignoreGroups;
@@ -238,7 +238,9 @@ export class BaileysConnection {
         return;
       }
 
-      this.socket?.ev.on(event, (data: any) => this.sendToWebhook({ event, data }));
+      this.socket?.ev.on(event, (data: unknown) =>
+        this.sendToWebhook({ event, data: data as any }),
+      );
     });
   }
 
@@ -294,7 +296,7 @@ export class BaileysConnection {
 
     return this.safeSocket().sendMessage(jid, messageContent, {
       ...(waveformProxy ? { waveformProxy } : {}),
-    } as any);
+    } as unknown as any);
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
