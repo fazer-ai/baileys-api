@@ -163,6 +163,71 @@ const connectionsController = new Elysia({
     },
   )
   .post(
+    "/:phoneNumber/forward-message",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { message, destinationJids } = body;
+
+      const results = [];
+
+      for (const destinationJid of destinationJids) {
+        try {
+          const response = await baileys.sendMessage(phoneNumber, {
+            jid: destinationJid,
+            // @ts-expect-error
+            messageContent: { forward: message },
+          });
+
+          results.push({
+            jid: destinationJid,
+            success: true,
+            id: response?.key?.id,
+          });
+        } catch (error) {
+          results.push({
+            jid: destinationJid,
+            success: false,
+            error: String(error),
+          });
+        }
+      }
+
+      return {
+        data: results,
+      };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        destinationJids: t.Array(jid()),
+        message: t.Any({ description: "The message object to forward" }),
+        key: t.Optional(iMessageKey),
+      }),
+      detail: {
+        summary: "Forward a message to multiple recipients",
+        responses: {
+          200: {
+            description: "Message forwarding processed",
+            content: {
+              "application/json": {
+                schema: t.Object({
+                  data: t.Array(
+                    t.Object({
+                      jid: t.String(),
+                      success: t.Boolean(),
+                      id: t.Optional(t.String()),
+                      error: t.Optional(t.String()),
+                    }),
+                  ),
+                }),
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+  .post(
     "/:phoneNumber/read-messages",
     async ({ params, body }) => {
       const { phoneNumber } = params;
