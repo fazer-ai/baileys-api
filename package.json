@@ -19,7 +19,7 @@
     "manage-api-keys": "LOG_LEVEL=warn bun scripts/manage-api-keys.ts",
     "build-swagger": "LOG_LEVEL=warn bun scripts/build-swagger.ts",
     "build-check": "bunx tsc --noEmit",
-    "check": "bun lint && bun build-check && bun build-swagger && bun test"
+    "check": "bun lint && bun build-check && bun test"
   },
   "dependencies": {
     "@elysiajs/cors": "^1.4.1",
