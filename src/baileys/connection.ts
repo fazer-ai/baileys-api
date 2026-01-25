@@ -24,6 +24,7 @@ import { useRedisAuthState } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
+  MessageKeyWithId,
 } from "@/baileys/types";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
@@ -330,6 +331,10 @@ export class BaileysConnection {
 
   sendReceipts(keys: proto.IMessageKey[], type: MessageReceiptType) {
     return this.safeSocket().sendReceipts(keys, type);
+  }
+
+  deleteMessage(jid: string, key: MessageKeyWithId) {
+    return this.safeSocket().sendMessage(jid, { delete: key });
   }
 
   async profilePictureUrl(jid: string, type?: "preview" | "image") {

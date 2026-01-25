@@ -12,6 +12,7 @@ import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   FetchMessageHistoryOptions,
+  MessageKeyWithId,
   SendReceiptsOptions,
 } from "@/baileys/types";
 import logger from "@/lib/logger";
@@ -137,6 +138,13 @@ export class BaileysConnectionsHandler {
 
   sendReceipts(phoneNumber: string, { keys, type }: SendReceiptsOptions) {
     return this.getConnection(phoneNumber).sendReceipts(keys, type);
+  }
+
+  deleteMessage(
+    phoneNumber: string,
+    { jid, key }: { jid: string; key: MessageKeyWithId },
+  ) {
+    return this.getConnection(phoneNumber).deleteMessage(jid, key);
   }
 
   profilePictureUrl(

@@ -23,6 +23,13 @@ export const iMessageKey = t.Object({
   participant: t.Optional(t.String()),
 });
 
+export const iMessageKeyWithId = t.Object({
+  id: t.String({ description: "Message ID" }),
+  remoteJid: t.Optional(t.String()),
+  fromMe: t.Optional(t.Boolean()),
+  participant: t.Optional(t.String()),
+});
+
 export const anyMessageContent = t.Union([
   t.Object(
     {

@@ -7,6 +7,7 @@ import {
   anyMessageContent,
   chatModification,
   iMessageKey,
+  iMessageKeyWithId,
   jid,
   phoneNumberParams,
 } from "./types";
@@ -246,6 +247,30 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Receipts sent successfully",
+          },
+        },
+      },
+    },
+  )
+  .delete(
+    "/:phoneNumber/messages",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+
+      await baileys.deleteMessage(phoneNumber, body);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("Chat JID where the message exists"),
+        key: iMessageKeyWithId,
+      }),
+      detail: {
+        description:
+          "Deletes a message for everyone in the chat. For group messages not sent by you, this requires admin privileges.",
+        responses: {
+          200: {
+            description: "Message deleted successfully",
           },
         },
       },
