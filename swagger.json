@@ -2001,6 +2001,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
+                        "description": "Message ID",
                         "type": "string"
                       },
                       "remoteJid": {
@@ -2012,7 +2013,10 @@
                       "participant": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "id"
+                    ]
                   },
                   "messageContent": {
                     "title": "Editable text message",
@@ -2058,6 +2062,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
+                        "description": "Message ID",
                         "type": "string"
                       },
                       "remoteJid": {
@@ -2069,7 +2074,10 @@
                       "participant": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "id"
+                    ]
                   },
                   "messageContent": {
                     "title": "Editable text message",
@@ -2115,6 +2123,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
+                        "description": "Message ID",
                         "type": "string"
                       },
                       "remoteJid": {
@@ -2126,7 +2135,10 @@
                       "participant": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "id"
+                    ]
                   },
                   "messageContent": {
                     "title": "Editable text message",

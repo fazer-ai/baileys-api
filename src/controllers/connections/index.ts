@@ -304,7 +304,7 @@ const connectionsController = new Elysia({
       params: phoneNumberParams,
       body: t.Object({
         jid: jid("Chat JID where the message exists"),
-        key: iMessageKey,
+        key: iMessageKeyWithId,
         messageContent: editableMessageContent,
       }),
       detail: {
