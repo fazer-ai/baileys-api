@@ -669,7 +669,7 @@
                             }
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -692,6 +692,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -718,7 +728,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -741,6 +751,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -767,7 +787,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -790,6 +810,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -819,7 +849,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -842,6 +872,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -868,7 +908,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -891,6 +931,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -980,7 +1030,7 @@
                             }
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1003,6 +1053,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1029,7 +1089,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1052,6 +1112,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1078,7 +1148,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1101,6 +1171,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1130,7 +1210,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1153,6 +1233,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1179,7 +1269,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1202,6 +1292,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1291,7 +1391,7 @@
                             }
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1314,6 +1414,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1340,7 +1450,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1363,6 +1473,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1389,7 +1509,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1412,6 +1532,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1441,7 +1571,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1464,6 +1594,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [
@@ -1490,7 +1630,7 @@
                             "type": "string"
                           },
                           "quotedMessage": {
-                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
                             "type": "object",
                             "properties": {
                               "key": {
@@ -1513,6 +1653,16 @@
                                 "required": [
                                   "id"
                                 ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
                               }
                             },
                             "required": [

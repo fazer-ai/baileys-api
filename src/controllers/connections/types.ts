@@ -33,10 +33,17 @@ export const iMessageKeyWithId = t.Object({
 export const quotedMessage = t.Object(
   {
     key: iMessageKeyWithId,
+    message: t.Optional(
+      t.Record(t.String(), t.Unknown(), {
+        description:
+          "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+        example: { conversation: "Hello!" },
+      }),
+    ),
   },
   {
     description:
-      "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+      "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
   },
 );
 

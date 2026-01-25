@@ -21,6 +21,7 @@ function extractQuoted(content: {
   }
   return {
     key: content.quotedMessage.key,
+    message: content.quotedMessage.message,
   };
 }
 
