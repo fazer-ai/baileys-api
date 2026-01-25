@@ -2,6 +2,7 @@ import type {
   AnyMessageContent,
   ChatModification,
   proto,
+  WAMessage,
   WAPresence,
 } from "@whiskeysockets/baileys";
 import {
@@ -109,12 +110,16 @@ export class BaileysConnectionsHandler {
     {
       jid,
       messageContent,
+      quoted,
     }: {
       jid: string;
       messageContent: AnyMessageContent;
+      quoted?: WAMessage;
     },
   ) {
-    return this.getConnection(phoneNumber).sendMessage(jid, messageContent);
+    return this.getConnection(phoneNumber).sendMessage(jid, messageContent, {
+      quoted,
+    });
   }
 
   readMessages(phoneNumber: string, keys: proto.IMessageKey[]) {

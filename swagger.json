@@ -667,6 +667,36 @@
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -686,6 +716,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -705,6 +765,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -727,6 +817,36 @@
                           },
                           "caption": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -746,6 +866,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -828,6 +978,36 @@
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -847,6 +1027,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -866,6 +1076,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -888,6 +1128,36 @@
                           },
                           "caption": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -907,6 +1177,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -989,6 +1289,36 @@
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1008,6 +1338,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1027,6 +1387,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1049,6 +1439,36 @@
                           },
                           "caption": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1068,6 +1488,36 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [

@@ -30,11 +30,22 @@ export const iMessageKeyWithId = t.Object({
   participant: t.Optional(t.String()),
 });
 
+export const quotedMessage = t.Object(
+  {
+    key: iMessageKeyWithId,
+  },
+  {
+    description:
+      "Message to reply to. Only the message key is required - the original message content will be shown in the reply bubble.",
+  },
+);
+
 export const anyMessageContent = t.Union([
   t.Object(
     {
       text: t.String({ description: "Text message", example: "Hello world!" }),
       mentions: t.Optional(t.Array(jid("user to mention in group message"))),
+      quotedMessage: t.Optional(quotedMessage),
     },
     {
       title: "Text message",
@@ -45,6 +56,7 @@ export const anyMessageContent = t.Union([
       image: t.String({ description: "Base64 encoded image data" }),
       caption: t.Optional(t.String()),
       mimetype: t.Optional(t.String()),
+      quotedMessage: t.Optional(quotedMessage),
     },
     {
       title: "Image message",
@@ -55,6 +67,7 @@ export const anyMessageContent = t.Union([
       video: t.String({ description: "Base64 encoded video data" }),
       caption: t.Optional(t.String()),
       mimetype: t.Optional(t.String()),
+      quotedMessage: t.Optional(quotedMessage),
     },
     {
       title: "Video message",
@@ -66,6 +79,7 @@ export const anyMessageContent = t.Union([
       fileName: t.Optional(t.String()),
       mimetype: t.Optional(t.String()),
       caption: t.Optional(t.String()),
+      quotedMessage: t.Optional(quotedMessage),
     },
     {
       title: "Document message",
@@ -76,6 +90,7 @@ export const anyMessageContent = t.Union([
       audio: t.String({ description: "Base64 encoded audio data" }),
       ptt: t.Optional(t.Boolean()),
       mimetype: t.Optional(t.String()),
+      quotedMessage: t.Optional(quotedMessage),
     },
     {
       title: "Audio message",

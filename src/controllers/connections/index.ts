@@ -1,7 +1,10 @@
 import Elysia, { t } from "elysia";
 import baileys from "@/baileys";
 import { BaileysNotConnectedError } from "@/baileys/connection";
-import { buildMessageContent } from "@/controllers/connections/helpers";
+import {
+  buildEditableMessageContent,
+  buildMessageContent,
+} from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
 import {
   anyMessageContent,
@@ -115,9 +118,13 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, messageContent } = body;
 
+      const { messageContent: builtContent, quoted } =
+        buildMessageContent(messageContent);
+
       const response = await baileys.sendMessage(phoneNumber, {
         jid,
-        messageContent: buildMessageContent(messageContent),
+        messageContent: builtContent,
+        quoted,
       });
 
       if (!response) {
@@ -286,7 +293,7 @@ const connectionsController = new Elysia({
       const response = await baileys.editMessage(phoneNumber, {
         jid,
         key,
-        messageContent: buildMessageContent(messageContent),
+        messageContent: buildEditableMessageContent(messageContent),
       });
 
       if (!response) {
