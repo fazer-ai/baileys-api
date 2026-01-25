@@ -1787,7 +1787,7 @@
             "xApiKey": []
           }
         ],
-        "description": "Deletes a message for everyone in the chat. The key must include at least the message id. For group messages not sent by you, this requires admin privileges.",
+        "description": "Deletes a message for everyone in the chat. For group messages not sent by you, this requires admin privileges.",
         "responses": {
           "200": {
             "description": "Message deleted successfully"
@@ -1809,6 +1809,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
+                        "description": "Message ID",
                         "type": "string"
                       },
                       "remoteJid": {
@@ -1820,7 +1821,10 @@
                       "participant": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "id"
+                    ]
                   }
                 },
                 "required": [
@@ -1842,6 +1846,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
+                        "description": "Message ID",
                         "type": "string"
                       },
                       "remoteJid": {
@@ -1853,7 +1858,10 @@
                       "participant": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "id"
+                    ]
                   }
                 },
                 "required": [
@@ -1875,6 +1883,7 @@
                     "type": "object",
                     "properties": {
                       "id": {
+                        "description": "Message ID",
                         "type": "string"
                       },
                       "remoteJid": {
@@ -1886,7 +1895,10 @@
                       "participant": {
                         "type": "string"
                       }
-                    }
+                    },
+                    "required": [
+                      "id"
+                    ]
                   }
                 },
                 "required": [

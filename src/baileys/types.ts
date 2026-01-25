@@ -30,3 +30,5 @@ export interface SendReceiptsOptions {
   keys: proto.IMessageKey[];
   type?: MessageReceiptType;
 }
+
+export type MessageKeyWithId = proto.IMessageKey & { id: string };
