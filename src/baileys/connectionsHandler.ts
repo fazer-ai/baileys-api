@@ -147,6 +147,25 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).deleteMessage(jid, key);
   }
 
+  editMessage(
+    phoneNumber: string,
+    {
+      jid,
+      key,
+      messageContent,
+    }: {
+      jid: string;
+      key: proto.IMessageKey;
+      messageContent: AnyMessageContent;
+    },
+  ) {
+    return this.getConnection(phoneNumber).editMessage(
+      jid,
+      key,
+      messageContent,
+    );
+  }
+
   profilePictureUrl(
     phoneNumber: string,
     jid: string,

@@ -1909,6 +1909,270 @@
             }
           }
         }
+      },
+      "patch": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "patchConnectionsByPhoneNumberMessages",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Edits a previously sent message. Only text messages (including captions) can be edited. The message must have been sent by you and must be within the editable time window (approximately 15 minutes).",
+        "responses": {
+          "200": {
+            "description": "Message edited successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "remoteJid": {
+                              "type": "string"
+                            },
+                            "fromMe": {
+                              "type": "boolean"
+                            },
+                            "participant": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "messageTimestamp": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "messageTimestamp"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Message not edited"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "description": "Message ID",
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "messageContent": {
+                    "title": "Editable text message",
+                    "description": "Message content that can be edited. Only text messages can be edited on WhatsApp.",
+                    "type": "object",
+                    "properties": {
+                      "text": {
+                        "description": "New text content for the message",
+                        "example": "Updated message text",
+                        "type": "string"
+                      },
+                      "mentions": {
+                        "type": "array",
+                        "items": {
+                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "example": "551101234567@s.whatsapp.net",
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "text"
+                    ]
+                  }
+                },
+                "required": [
+                  "jid",
+                  "key",
+                  "messageContent"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "description": "Message ID",
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "messageContent": {
+                    "title": "Editable text message",
+                    "description": "Message content that can be edited. Only text messages can be edited on WhatsApp.",
+                    "type": "object",
+                    "properties": {
+                      "text": {
+                        "description": "New text content for the message",
+                        "example": "Updated message text",
+                        "type": "string"
+                      },
+                      "mentions": {
+                        "type": "array",
+                        "items": {
+                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "example": "551101234567@s.whatsapp.net",
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "text"
+                    ]
+                  }
+                },
+                "required": [
+                  "jid",
+                  "key",
+                  "messageContent"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "description": "Message ID",
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id"
+                    ]
+                  },
+                  "messageContent": {
+                    "title": "Editable text message",
+                    "description": "Message content that can be edited. Only text messages can be edited on WhatsApp.",
+                    "type": "object",
+                    "properties": {
+                      "text": {
+                        "description": "New text content for the message",
+                        "example": "Updated message text",
+                        "type": "string"
+                      },
+                      "mentions": {
+                        "type": "array",
+                        "items": {
+                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "example": "551101234567@s.whatsapp.net",
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "text"
+                    ]
+                  }
+                },
+                "required": [
+                  "jid",
+                  "key",
+                  "messageContent"
+                ]
+              }
+            }
+          }
+        }
       }
     },
     "/connections/{phoneNumber}/profile-picture-url": {

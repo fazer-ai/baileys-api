@@ -97,6 +97,21 @@ export const anyMessageContent = t.Union([
   ),
 ]);
 
+export const editableMessageContent = t.Object(
+  {
+    text: t.String({
+      description: "New text content for the message",
+      example: "Updated message text",
+    }),
+    mentions: t.Optional(t.Array(jid("user to mention in group message"))),
+  },
+  {
+    title: "Editable text message",
+    description:
+      "Message content that can be edited. Only text messages can be edited on WhatsApp.",
+  },
+);
+
 const lastMessageList = t.Array(
   t.Object({
     key: iMessageKey,

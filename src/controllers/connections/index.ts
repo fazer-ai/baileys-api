@@ -6,6 +6,7 @@ import { authMiddleware } from "@/middlewares/auth";
 import {
   anyMessageContent,
   chatModification,
+  editableMessageContent,
   iMessageKey,
   iMessageKeyWithId,
   jid,
@@ -271,6 +272,60 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Message deleted successfully",
+          },
+        },
+      },
+    },
+  )
+  .patch(
+    "/:phoneNumber/messages",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, key, messageContent } = body;
+
+      const response = await baileys.editMessage(phoneNumber, {
+        jid,
+        key,
+        messageContent: buildMessageContent(messageContent),
+      });
+
+      if (!response) {
+        return new Response("Message not edited", { status: 500 });
+      }
+
+      return {
+        data: {
+          key: response.key,
+          messageTimestamp: response.messageTimestamp,
+        },
+      };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("Chat JID where the message exists"),
+        key: iMessageKeyWithId,
+        messageContent: editableMessageContent,
+      }),
+      detail: {
+        description:
+          "Edits a previously sent message. Only text messages (including captions) can be edited. The message must have been sent by you and must be within the editable time window (approximately 15 minutes).",
+        responses: {
+          200: {
+            description: "Message edited successfully",
+            content: {
+              "application/json": {
+                schema: t.Object({
+                  data: t.Object({
+                    key: iMessageKey,
+                    messageTimestamp: t.String(),
+                  }),
+                }),
+              },
+            },
+          },
+          500: {
+            description: "Message not edited",
           },
         },
       },
