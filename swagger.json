@@ -1761,6 +1761,144 @@
         }
       }
     },
+    "/connections/{phoneNumber}/messages": {
+      "delete": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "deleteConnectionsByPhoneNumberMessages",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Deletes a message for everyone in the chat. The key must include at least the message id. For group messages not sent by you, this requires admin privileges.",
+        "responses": {
+          "200": {
+            "description": "Message deleted successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "jid",
+                  "key"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "jid",
+                  "key"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "key": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "remoteJid": {
+                        "type": "string"
+                      },
+                      "fromMe": {
+                        "type": "boolean"
+                      },
+                      "participant": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "jid",
+                  "key"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/connections/{phoneNumber}/profile-picture-url": {
       "get": {
         "parameters": [

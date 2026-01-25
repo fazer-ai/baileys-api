@@ -139,6 +139,13 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).sendReceipts(keys, type);
   }
 
+  deleteMessage(
+    phoneNumber: string,
+    { jid, key }: { jid: string; key: proto.IMessageKey },
+  ) {
+    return this.getConnection(phoneNumber).deleteMessage(jid, key);
+  }
+
   profilePictureUrl(
     phoneNumber: string,
     jid: string,

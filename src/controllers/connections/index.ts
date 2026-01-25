@@ -251,6 +251,30 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .delete(
+    "/:phoneNumber/messages",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+
+      await baileys.deleteMessage(phoneNumber, body);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("Chat JID where the message exists"),
+        key: iMessageKey,
+      }),
+      detail: {
+        description:
+          "Deletes a message for everyone in the chat. The key must include at least the message id. For group messages not sent by you, this requires admin privileges.",
+        responses: {
+          200: {
+            description: "Message deleted successfully",
+          },
+        },
+      },
+    },
+  )
   .get(
     "/:phoneNumber/profile-picture-url",
     async ({ params, query }) => {

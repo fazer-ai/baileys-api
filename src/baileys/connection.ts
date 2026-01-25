@@ -332,6 +332,10 @@ export class BaileysConnection {
     return this.safeSocket().sendReceipts(keys, type);
   }
 
+  deleteMessage(jid: string, key: proto.IMessageKey) {
+    return this.safeSocket().sendMessage(jid, { delete: key });
+  }
+
   async profilePictureUrl(jid: string, type?: "preview" | "image") {
     return this.safeSocket().profilePictureUrl(jid, type);
   }
