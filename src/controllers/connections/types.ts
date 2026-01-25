@@ -33,17 +33,15 @@ export const iMessageKeyWithId = t.Object({
 export const quotedMessage = t.Object(
   {
     key: iMessageKeyWithId,
-    message: t.Optional(
-      t.Record(t.String(), t.Unknown(), {
-        description:
-          "Original message content. If not provided, the reply will be sent without the quoted message preview.",
-        example: { conversation: "Hello!" },
-      }),
-    ),
+    message: t.Record(t.String(), t.Unknown(), {
+      description:
+        "Original message content. This is required for the quoted message preview to appear correctly. Use the message object from the original messages.upsert webhook payload.",
+      example: { conversation: "Hello!" },
+    }),
   },
   {
     description:
-      "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+      "Message to reply to. Both key and message are required for the quoted message preview to appear correctly.",
   },
 );
 
