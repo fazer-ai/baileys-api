@@ -667,6 +667,46 @@
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -686,6 +726,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -705,6 +785,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -727,6 +847,46 @@
                           },
                           "caption": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -746,6 +906,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -828,6 +1028,46 @@
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -847,6 +1087,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -866,6 +1146,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -888,6 +1208,46 @@
                           },
                           "caption": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -907,6 +1267,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -989,6 +1389,46 @@
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1008,6 +1448,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1027,6 +1507,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1049,6 +1569,46 @@
                           },
                           "caption": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [
@@ -1068,6 +1628,46 @@
                           },
                           "mimetype": {
                             "type": "string"
+                          },
+                          "quotedMessage": {
+                            "description": "Message to reply to. Include both key and message for the quoted message preview to appear correctly.",
+                            "type": "object",
+                            "properties": {
+                              "key": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "description": "Message ID",
+                                    "type": "string"
+                                  },
+                                  "remoteJid": {
+                                    "type": "string"
+                                  },
+                                  "fromMe": {
+                                    "type": "boolean"
+                                  },
+                                  "participant": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id"
+                                ]
+                              },
+                              "message": {
+                                "description": "Original message content. If not provided, the reply will be sent without the quoted message preview.",
+                                "example": {
+                                  "conversation": "Hello!"
+                                },
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              }
+                            },
+                            "required": [
+                              "key"
+                            ]
                           }
                         },
                         "required": [

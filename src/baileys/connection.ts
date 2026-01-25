@@ -12,6 +12,7 @@ import makeWASocket, {
   type proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
+  type WAMessage,
   type WAPresence,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
@@ -252,7 +253,11 @@ export class BaileysConnection {
     await this.close();
   }
 
-  async sendMessage(jid: string, messageContent: AnyMessageContent) {
+  async sendMessage(
+    jid: string,
+    messageContent: AnyMessageContent,
+    options?: { quoted?: WAMessage },
+  ) {
     this.safeSocket();
 
     let waveformProxy: Buffer | null = null;
@@ -283,6 +288,7 @@ export class BaileysConnection {
 
     return this.safeSocket().sendMessage(jid, messageContent, {
       waveformProxy,
+      quoted: options?.quoted,
     });
   }
 
