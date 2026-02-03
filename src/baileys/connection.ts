@@ -568,8 +568,9 @@ export class BaileysConnection {
           return response;
         }
         logger.error(
-          "[%s] [sendToWebhook] [ERROR] payload=%o response=%o",
+          "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o response=%o",
           this.phoneNumber,
+          this.webhookUrl,
           sanitizedPayload,
           { status: response.status, statusText: response.statusText },
         );
@@ -577,8 +578,9 @@ export class BaileysConnection {
 
       if (error) {
         logger.error(
-          "[%s] [sendToWebhook] [ERROR] payload=%o error=%s",
+          "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o error=%s",
           this.phoneNumber,
+          this.webhookUrl,
           sanitizedPayload,
           errorToString(error),
         );
@@ -601,8 +603,9 @@ export class BaileysConnection {
     }
 
     logger.error(
-      "[%s] [sendToWebhook] [FAILED] payload=%o",
+      "[%s] [sendToWebhook] [FAILED] webhookUrl=%s payload=%o",
       this.phoneNumber,
+      this.webhookUrl,
       sanitizedPayload,
     );
   }
