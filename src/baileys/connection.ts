@@ -221,6 +221,14 @@ export class BaileysConnection {
         "handleMessagingHistorySet",
         this.handleMessagingHistorySet,
       ),
+      "groups.update": this.withErrorHandling(
+        "handleGroupsUpdate",
+        this.handleGroupsUpdate,
+      ),
+      "group-participants.update": this.withErrorHandling(
+        "handleGroupParticipantsUpdate",
+        this.handleGroupParticipantsUpdate,
+      ),
     };
 
     Object.entries(handledEvents).forEach(([event, handler]) => {
@@ -527,6 +535,22 @@ export class BaileysConnection {
     // await downloadMediaFromMessages(data.messages);
 
     this.sendToWebhook({ event: "messaging-history.set", data });
+  }
+
+  private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {
+    this.sendToWebhook({
+      event: "groups.update",
+      data,
+    });
+  }
+
+  private handleGroupParticipantsUpdate(
+    data: BaileysEventMap["group-participants.update"],
+  ) {
+    this.sendToWebhook({
+      event: "group-participants.update",
+      data,
+    });
   }
 
   private handleWrongPhoneNumber() {
