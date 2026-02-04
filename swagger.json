@@ -494,7 +494,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
+                    "description": "Whatsapp JID [Required for `composing`, `recording`, and `paused`]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -521,7 +521,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
+                    "description": "Whatsapp JID [Required for `composing`, `recording`, and `paused`]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -548,7 +548,7 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
+                    "description": "Whatsapp JID [Required for `composing`, `recording`, and `paused`]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -645,7 +645,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Whatsapp JID",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -663,7 +663,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "description": "Whatsapp JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1011,7 +1011,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Whatsapp JID",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1029,7 +1029,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "description": "Whatsapp JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1377,7 +1377,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Whatsapp JID",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -1395,7 +1395,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "description": "Whatsapp JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1955,7 +1955,7 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Whatsapp JID",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -2016,7 +2016,7 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Whatsapp JID",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -2077,7 +2077,7 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid",
+                    "description": "Whatsapp JID",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   }
@@ -2416,7 +2416,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "description": "Whatsapp JID [Chat JID where the message exists]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -2453,7 +2453,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "description": "Whatsapp JID [Chat JID where the message exists]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -2490,7 +2490,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "description": "Whatsapp JID [Chat JID where the message exists]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -2608,7 +2608,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "description": "Whatsapp JID [Chat JID where the message exists]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -2646,7 +2646,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "description": "Whatsapp JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2669,7 +2669,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "description": "Whatsapp JID [Chat JID where the message exists]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -2707,7 +2707,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "description": "Whatsapp JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2730,7 +2730,7 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
+                    "description": "Whatsapp JID [Chat JID where the message exists]",
                     "example": "551101234567@s.whatsapp.net",
                     "type": "string"
                   },
@@ -2768,7 +2768,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "description": "Whatsapp JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2807,7 +2807,7 @@
             "required": true
           },
           {
-            "description": "Recipient whatsapp jid",
+            "description": "Whatsapp JID",
             "schema": {
               "type": "string",
               "example": "551101234567@s.whatsapp.net"
@@ -3029,10 +3029,10 @@
             "required": true
           },
           {
-            "description": "Recipient whatsapp jid [JID of the group]",
+            "description": "Whatsapp JID [Group JID]",
             "schema": {
               "type": "string",
-              "example": "551101234567@s.whatsapp.net"
+              "example": "120363425378794738@g.us"
             },
             "in": "query",
             "name": "jid",
@@ -3237,8 +3237,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "participants": {
@@ -3246,7 +3246,7 @@
                     "minItems": 1,
                     "type": "array",
                     "items": {
-                      "description": "Recipient whatsapp jid [Participant JID]",
+                      "description": "Whatsapp JID",
                       "example": "551101234567@s.whatsapp.net",
                       "type": "string"
                     }
@@ -3275,8 +3275,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "participants": {
@@ -3284,7 +3284,7 @@
                     "minItems": 1,
                     "type": "array",
                     "items": {
-                      "description": "Recipient whatsapp jid [Participant JID]",
+                      "description": "Whatsapp JID",
                       "example": "551101234567@s.whatsapp.net",
                       "type": "string"
                     }
@@ -3313,8 +3313,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "participants": {
@@ -3322,7 +3322,7 @@
                     "minItems": 1,
                     "type": "array",
                     "items": {
-                      "description": "Recipient whatsapp jid [Participant JID]",
+                      "description": "Whatsapp JID",
                       "example": "551101234567@s.whatsapp.net",
                       "type": "string"
                     }
@@ -3390,8 +3390,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "subject": {
@@ -3413,8 +3413,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "subject": {
@@ -3436,8 +3436,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "subject": {
@@ -3498,8 +3498,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "description": {
@@ -3520,8 +3520,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "description": {
@@ -3542,8 +3542,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [JID of the group]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "Whatsapp JID [Group JID]",
+                    "example": "120363425378794738@g.us",
                     "type": "string"
                   },
                   "description": {
