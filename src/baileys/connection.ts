@@ -193,7 +193,13 @@ export class BaileysConnection {
   }
 
   private addEventListeners({ saveCreds }: { saveCreds: () => Promise<void> }) {
-    const handledEvents = {
+    type EventHandlers = {
+      [K in keyof BaileysEventMap]?: (
+        data: BaileysEventMap[K],
+      ) => Promise<void>;
+    };
+
+    const handledEvents: EventHandlers = {
       "creds.update": saveCreds,
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
