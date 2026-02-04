@@ -1,9 +1,9 @@
 import { t } from "elysia";
 
-export const jid = (moreInfo?: string) =>
+export const jid = (moreInfo?: string, group?: boolean) =>
   t.String({
-    description: `Recipient whatsapp jid${moreInfo ? ` [${moreInfo}]` : ""}`,
-    example: "551101234567@s.whatsapp.net",
+    description: `Whatsapp JID${moreInfo ? ` [${moreInfo}]` : ""}`,
+    example: group ? "120363425378794738@g.us" : "551101234567@s.whatsapp.net",
   });
 
 export const phoneNumberParams = t.Object({

@@ -489,7 +489,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       query: t.Object({
-        jid: jid("JID of the group"),
+        jid: jid("Group JID", true),
       }),
       detail: {
         responses: {
@@ -658,8 +658,8 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("JID of the group"),
-        participants: t.Array(jid("Participant JID"), {
+        jid: jid("Group JID", true),
+        participants: t.Array(jid(), {
           description: "Array of participant JIDs",
           minItems: 1,
         }),
@@ -698,7 +698,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("JID of the group"),
+        jid: jid("Group JID", true),
         subject: t.String({
           description: "New group subject (name)",
           minLength: 1,
@@ -727,7 +727,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("JID of the group"),
+        jid: jid("Group JID", true),
         description: t.String({
           description: "New group description",
           maxLength: 2048,
