@@ -1,6 +1,7 @@
 import type {
   AnyMessageContent,
   ChatModification,
+  ParticipantAction,
   proto,
   WAMessage,
   WAPresence,
@@ -181,6 +182,38 @@ export class BaileysConnectionsHandler {
 
   onWhatsApp(phoneNumber: string, jids: string[]) {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
+  }
+
+  groupMetadata(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupMetadata(jid);
+  }
+
+  groupParticipants(
+    phoneNumber: string,
+    jid: string,
+    participants: string[],
+    action: ParticipantAction,
+  ) {
+    return this.getConnection(phoneNumber).groupParticipants(
+      jid,
+      participants,
+      action,
+    );
+  }
+
+  groupUpdateSubject(phoneNumber: string, jid: string, subject: string) {
+    return this.getConnection(phoneNumber).groupUpdateSubject(jid, subject);
+  }
+
+  groupUpdateDescription(
+    phoneNumber: string,
+    jid: string,
+    description: string,
+  ) {
+    return this.getConnection(phoneNumber).groupUpdateDescription(
+      jid,
+      description,
+    );
   }
 
   async logout(phoneNumber: string) {

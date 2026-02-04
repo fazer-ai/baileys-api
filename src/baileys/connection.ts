@@ -9,6 +9,7 @@ import makeWASocket, {
   DisconnectReason,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
+  type ParticipantAction,
   type proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
@@ -360,6 +361,26 @@ export class BaileysConnection {
 
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
+  }
+
+  groupMetadata(jid: string) {
+    return this.safeSocket().groupMetadata(jid);
+  }
+
+  groupParticipants(
+    jid: string,
+    participants: string[],
+    action: ParticipantAction,
+  ) {
+    return this.safeSocket().groupParticipantsUpdate(jid, participants, action);
+  }
+
+  groupUpdateSubject(jid: string, subject: string) {
+    return this.safeSocket().groupUpdateSubject(jid, subject);
+  }
+
+  groupUpdateDescription(jid: string, description?: string) {
+    return this.safeSocket().groupUpdateDescription(jid, description);
   }
 
   private safeSocket() {

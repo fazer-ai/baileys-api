@@ -478,6 +478,272 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .get(
+    "/:phoneNumber/group-metadata",
+    async ({ params, query }) => {
+      const { phoneNumber } = params;
+      const { jid } = query;
+
+      return baileys.groupMetadata(phoneNumber, jid);
+    },
+    {
+      params: phoneNumberParams,
+      query: t.Object({
+        jid: jid("JID of the group"),
+      }),
+      detail: {
+        responses: {
+          200: {
+            description: "Group metadata retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    id: {
+                      type: "string",
+                      description: "Group JID",
+                      example: "120363425378794738@g.us",
+                    },
+                    addressingMode: {
+                      type: "string",
+                      description: "Addressing mode of the group",
+                      example: "lid",
+                    },
+                    subject: {
+                      type: "string",
+                      description: "Group name/subject",
+                      example: "My Group",
+                    },
+                    subjectOwner: {
+                      type: "string",
+                      description: "JID of the user who set the subject",
+                      example: "12345678901234@lid",
+                    },
+                    subjectOwnerPn: {
+                      type: "string",
+                      description: "Phone number JID of the subject owner",
+                      example: "551234567890@s.whatsapp.net",
+                    },
+                    subjectTime: {
+                      type: "number",
+                      description: "Timestamp when subject was set",
+                    },
+                    size: {
+                      type: "number",
+                      description: "Number of participants in the group",
+                    },
+                    creation: {
+                      type: "number",
+                      description: "Timestamp when the group was created",
+                    },
+                    owner: {
+                      type: "string",
+                      description: "JID of the group owner",
+                      example: "12345678901234@lid",
+                    },
+                    ownerPn: {
+                      type: "string",
+                      description: "Phone number JID of the group owner",
+                      example: "551234567890@s.whatsapp.net",
+                    },
+                    owner_country_code: {
+                      type: "string",
+                      description: "Country code of the group owner",
+                      example: "BR",
+                    },
+                    desc: {
+                      type: "string",
+                      nullable: true,
+                      description: "Group description",
+                    },
+                    descId: {
+                      type: "string",
+                      nullable: true,
+                      description: "Description ID",
+                    },
+                    descOwner: {
+                      type: "string",
+                      nullable: true,
+                      description: "JID of the user who set the description",
+                    },
+                    descTime: {
+                      type: "number",
+                      nullable: true,
+                      description: "Timestamp when description was set",
+                    },
+                    restrict: {
+                      type: "boolean",
+                      description:
+                        "Whether only admins can change group settings",
+                      example: false,
+                    },
+                    announce: {
+                      type: "boolean",
+                      description: "Whether only admins can send messages",
+                      example: false,
+                    },
+                    isCommunity: {
+                      type: "boolean",
+                      description: "Whether the group is a community",
+                      example: false,
+                    },
+                    isCommunityAnnounce: {
+                      type: "boolean",
+                      description:
+                        "Whether the group is a community announcement group",
+                      example: false,
+                    },
+                    joinApprovalMode: {
+                      type: "boolean",
+                      description:
+                        "Whether join requests require admin approval",
+                      example: false,
+                    },
+                    memberAddMode: {
+                      type: "boolean",
+                      description: "Whether members can add other members",
+                      example: true,
+                    },
+                    participants: {
+                      type: "array",
+                      description: "List of group participants",
+                      items: {
+                        type: "object",
+                        properties: {
+                          id: {
+                            type: "string",
+                            description: "Participant JID",
+                            example: "12345678901234@lid",
+                          },
+                          phoneNumber: {
+                            type: "string",
+                            description: "Participant phone number JID",
+                            example: "551234567890@s.whatsapp.net",
+                          },
+                          admin: {
+                            type: "string",
+                            nullable: true,
+                            description:
+                              "Admin status: 'superadmin', 'admin', or null",
+                            example: "superadmin",
+                          },
+                        },
+                      },
+                    },
+                    ephemeralDuration: {
+                      type: "number",
+                      nullable: true,
+                      description:
+                        "Duration in seconds for disappearing messages",
+                      example: 604800,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/group-participants",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, participants, action } = body;
+
+      return baileys.groupParticipants(phoneNumber, jid, participants, action);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("JID of the group"),
+        participants: t.Array(jid("Participant JID"), {
+          description: "Array of participant JIDs",
+          minItems: 1,
+        }),
+        action: t.Union(
+          [
+            t.Literal("add", { title: "add" }),
+            t.Literal("remove", { title: "remove" }),
+            t.Literal("promote", { title: "promote" }),
+            t.Literal("demote", { title: "demote" }),
+          ],
+          {
+            description:
+              "Action to perform on participants. `add` adds participants, `remove` removes them, `promote` makes them admins, `demote` removes admin privileges.",
+            example: "add",
+          },
+        ),
+      }),
+      detail: {
+        description: "Manage group participants (add, remove, promote, demote)",
+        responses: {
+          200: {
+            description: "Participants updated successfully",
+          },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/group-subject",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, subject } = body;
+
+      await baileys.groupUpdateSubject(phoneNumber, jid, subject);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("JID of the group"),
+        subject: t.String({
+          description: "New group subject (name)",
+          minLength: 1,
+          maxLength: 100,
+          example: "My Group Name",
+        }),
+      }),
+      detail: {
+        description: "Update group subject (name)",
+        responses: {
+          200: {
+            description: "Group subject updated successfully",
+          },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/group-description",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, description } = body;
+
+      await baileys.groupUpdateDescription(phoneNumber, jid, description);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: jid("JID of the group"),
+        description: t.String({
+          description: "New group description",
+          maxLength: 2048,
+          example: "This is my group description",
+        }),
+      }),
+      detail: {
+        description: "Update group description",
+        responses: {
+          200: {
+            description: "Group description updated successfully",
+          },
+        },
+      },
+    },
+  )
   .delete(
     "/:phoneNumber",
     async ({ params }) => {
