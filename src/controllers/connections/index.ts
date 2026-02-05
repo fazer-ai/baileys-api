@@ -728,11 +728,13 @@ const connectionsController = new Elysia({
       params: phoneNumberParams,
       body: t.Object({
         jid: jid("Group JID", true),
-        description: t.String({
-          description: "New group description",
-          maxLength: 2048,
-          example: "This is my group description",
-        }),
+        description: t.Optional(
+          t.String({
+            description: "New group description",
+            maxLength: 2048,
+            example: "This is my group description",
+          }),
+        ),
       }),
       detail: {
         description: "Update group description",

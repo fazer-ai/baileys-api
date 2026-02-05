@@ -208,7 +208,7 @@ export class BaileysConnectionsHandler {
   groupUpdateDescription(
     phoneNumber: string,
     jid: string,
-    description: string,
+    description?: string,
   ) {
     return this.getConnection(phoneNumber).groupUpdateDescription(
       jid,

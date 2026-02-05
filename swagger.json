@@ -3510,8 +3510,7 @@
                   }
                 },
                 "required": [
-                  "jid",
-                  "description"
+                  "jid"
                 ]
               }
             },
@@ -3532,8 +3531,7 @@
                   }
                 },
                 "required": [
-                  "jid",
-                  "description"
+                  "jid"
                 ]
               }
             },
@@ -3554,8 +3552,7 @@
                   }
                 },
                 "required": [
-                  "jid",
-                  "description"
+                  "jid"
                 ]
               }
             }
