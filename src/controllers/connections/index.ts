@@ -662,6 +662,7 @@ const connectionsController = new Elysia({
         participants: t.Array(jid(), {
           description: "Array of participant JIDs",
           minItems: 1,
+          maxItems: 50,
         }),
         action: t.Union(
           [

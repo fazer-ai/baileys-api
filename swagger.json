@@ -3244,6 +3244,7 @@
                   "participants": {
                     "description": "Array of participant JIDs",
                     "minItems": 1,
+                    "maxItems": 50,
                     "type": "array",
                     "items": {
                       "description": "Whatsapp JID",
@@ -3282,6 +3283,7 @@
                   "participants": {
                     "description": "Array of participant JIDs",
                     "minItems": 1,
+                    "maxItems": 50,
                     "type": "array",
                     "items": {
                       "description": "Whatsapp JID",
@@ -3320,6 +3322,7 @@
                   "participants": {
                     "description": "Array of participant JIDs",
                     "minItems": 1,
+                    "maxItems": 50,
                     "type": "array",
                     "items": {
                       "description": "Whatsapp JID",
