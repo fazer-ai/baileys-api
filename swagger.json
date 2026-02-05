@@ -494,8 +494,11 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Whatsapp JID [Required for `composing`, `recording`, and `paused`]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Required for `composing`, `recording`, and `paused`]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -521,8 +524,11 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Whatsapp JID [Required for `composing`, `recording`, and `paused`]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Required for `composing`, `recording`, and `paused`]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -548,8 +554,11 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Whatsapp JID [Required for `composing`, `recording`, and `paused`]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Required for `composing`, `recording`, and `paused`]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -645,8 +654,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "messageContent": {
@@ -663,7 +675,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Whatsapp JID [user to mention in group message]",
+                              "description": "User JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1011,8 +1023,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "messageContent": {
@@ -1029,7 +1044,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Whatsapp JID [user to mention in group message]",
+                              "description": "User JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1377,8 +1392,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "messageContent": {
@@ -1395,7 +1413,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Whatsapp JID [user to mention in group message]",
+                              "description": "User JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1955,8 +1973,11 @@
                     ]
                   },
                   "jid": {
-                    "description": "Whatsapp JID",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2016,8 +2037,11 @@
                     ]
                   },
                   "jid": {
-                    "description": "Whatsapp JID",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2077,8 +2101,11 @@
                     ]
                   },
                   "jid": {
-                    "description": "Whatsapp JID",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2416,8 +2443,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2453,8 +2483,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2490,8 +2523,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2608,8 +2644,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2646,7 +2685,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Whatsapp JID [user to mention in group message]",
+                          "description": "User JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2669,8 +2708,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2707,7 +2749,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Whatsapp JID [user to mention in group message]",
+                          "description": "User JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2730,8 +2772,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2768,7 +2813,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Whatsapp JID [user to mention in group message]",
+                          "description": "User JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2807,10 +2852,13 @@
             "required": true
           },
           {
-            "description": "Whatsapp JID",
+            "description": "WhatsApp JID",
+            "examples": [
+              "551101234567@s.whatsapp.net",
+              "123456789012345678@g.us"
+            ],
             "schema": {
-              "type": "string",
-              "example": "551101234567@s.whatsapp.net"
+              "type": "string"
             },
             "in": "query",
             "name": "jid",
@@ -3029,10 +3077,10 @@
             "required": true
           },
           {
-            "description": "Whatsapp JID [Group JID]",
+            "description": "Group JID",
             "schema": {
               "type": "string",
-              "example": "120363425378794738@g.us"
+              "example": "123456789012345678@g.us"
             },
             "in": "query",
             "name": "jid",
@@ -3237,20 +3285,14 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
-                  "participants": {
-                    "description": "Array of participant JIDs",
-                    "minItems": 1,
-                    "maxItems": 50,
-                    "type": "array",
-                    "items": {
-                      "description": "Whatsapp JID",
-                      "example": "551101234567@s.whatsapp.net",
-                      "type": "string"
-                    }
+                  "participant": {
+                    "description": "User JID",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
                   },
                   "action": {
                     "type": "string",
@@ -3266,7 +3308,7 @@
                 },
                 "required": [
                   "jid",
-                  "participants",
+                  "participant",
                   "action"
                 ]
               }
@@ -3276,20 +3318,14 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
-                  "participants": {
-                    "description": "Array of participant JIDs",
-                    "minItems": 1,
-                    "maxItems": 50,
-                    "type": "array",
-                    "items": {
-                      "description": "Whatsapp JID",
-                      "example": "551101234567@s.whatsapp.net",
-                      "type": "string"
-                    }
+                  "participant": {
+                    "description": "User JID",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
                   },
                   "action": {
                     "type": "string",
@@ -3305,7 +3341,7 @@
                 },
                 "required": [
                   "jid",
-                  "participants",
+                  "participant",
                   "action"
                 ]
               }
@@ -3315,20 +3351,14 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
-                  "participants": {
-                    "description": "Array of participant JIDs",
-                    "minItems": 1,
-                    "maxItems": 50,
-                    "type": "array",
-                    "items": {
-                      "description": "Whatsapp JID",
-                      "example": "551101234567@s.whatsapp.net",
-                      "type": "string"
-                    }
+                  "participant": {
+                    "description": "User JID",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
                   },
                   "action": {
                     "type": "string",
@@ -3344,7 +3374,7 @@
                 },
                 "required": [
                   "jid",
-                  "participants",
+                  "participant",
                   "action"
                 ]
               }
@@ -3393,8 +3423,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
                   "subject": {
@@ -3416,8 +3446,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
                   "subject": {
@@ -3439,8 +3469,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
                   "subject": {
@@ -3501,8 +3531,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
                   "description": {
@@ -3522,8 +3552,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
                   "description": {
@@ -3543,8 +3573,8 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Whatsapp JID [Group JID]",
-                    "example": "120363425378794738@g.us",
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
                     "type": "string"
                   },
                   "description": {
