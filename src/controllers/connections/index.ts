@@ -7,13 +7,15 @@ import {
 } from "@/controllers/connections/helpers";
 import { authMiddleware } from "@/middlewares/auth";
 import {
+  anyJid,
   anyMessageContent,
   chatModification,
   editableMessageContent,
+  groupJid,
   iMessageKey,
   iMessageKeyWithId,
-  jid,
   phoneNumberParams,
+  userJid,
 } from "./types";
 
 const connectionsController = new Elysia({
@@ -100,7 +102,7 @@ const connectionsController = new Elysia({
           },
         ),
         toJid: t.Optional(
-          jid("Required for `composing`, `recording`, and `paused`"),
+          anyJid("Required for `composing`, `recording`, and `paused`"),
         ),
       }),
       detail: {
@@ -141,7 +143,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid(),
+        jid: anyJid(),
         messageContent: anyMessageContent,
       }),
       detail: {
@@ -200,7 +202,7 @@ const connectionsController = new Elysia({
       params: phoneNumberParams,
       body: t.Object({
         mod: chatModification,
-        jid: jid(),
+        jid: anyJid(),
       }),
       detail: {
         description:
@@ -270,7 +272,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("Chat JID where the message exists"),
+        jid: anyJid("Chat JID where the message exists"),
         key: iMessageKeyWithId,
       }),
       detail: {
@@ -310,7 +312,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("Chat JID where the message exists"),
+        jid: anyJid("Chat JID where the message exists"),
         key: iMessageKeyWithId,
         messageContent: editableMessageContent,
       }),
@@ -367,7 +369,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       query: t.Object({
-        jid: jid(),
+        jid: anyJid(),
         type: t.Optional(
           t.Union(
             [
@@ -489,7 +491,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       query: t.Object({
-        jid: jid("Group JID", true),
+        jid: groupJid(),
       }),
       detail: {
         responses: {
@@ -658,8 +660,8 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("Group JID", true),
-        participants: t.Array(jid(), {
+        jid: groupJid(),
+        participants: t.Array(userJid(), {
           description: "Array of participant JIDs",
           minItems: 1,
           maxItems: 50,
@@ -699,7 +701,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("Group JID", true),
+        jid: groupJid(),
         subject: t.String({
           description: "New group subject (name)",
           minLength: 1,
@@ -728,7 +730,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        jid: jid("Group JID", true),
+        jid: groupJid(),
         description: t.Optional(
           t.String({
             description: "New group description",
