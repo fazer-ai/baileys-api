@@ -57,7 +57,7 @@ const statusController = new Elysia({
                     properties: {
                       logLevel: { type: "string", example: "warn" },
                       clientVersion: { type: "string", example: "default" },
-                      ignoreGroupMessages: { type: "boolean", example: true },
+                      ignoreGroupMessages: { type: "boolean", example: false },
                       ignoreStatusMessages: { type: "boolean", example: true },
                       ignoreBroadcastMessages: {
                         type: "boolean",

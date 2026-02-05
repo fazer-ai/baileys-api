@@ -136,7 +136,7 @@
                         },
                         "ignoreGroupMessages": {
                           "type": "boolean",
-                          "example": true
+                          "example": false
                         },
                         "ignoreStatusMessages": {
                           "type": "boolean",
@@ -494,8 +494,11 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Required for `composing`, `recording`, and `paused`]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -521,8 +524,11 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Required for `composing`, `recording`, and `paused`]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -548,8 +554,11 @@
                     "example": "available"
                   },
                   "toJid": {
-                    "description": "Recipient whatsapp jid [Required for `composing`, `recording`, and `paused`]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Required for `composing`, `recording`, and `paused`]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -645,8 +654,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "messageContent": {
@@ -663,7 +675,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "description": "User JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1011,8 +1023,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "messageContent": {
@@ -1029,7 +1044,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "description": "User JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1377,8 +1392,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "messageContent": {
@@ -1395,7 +1413,7 @@
                           "mentions": {
                             "type": "array",
                             "items": {
-                              "description": "Recipient whatsapp jid [user to mention in group message]",
+                              "description": "User JID [user to mention in group message]",
                               "example": "551101234567@s.whatsapp.net",
                               "type": "string"
                             }
@@ -1955,8 +1973,11 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2016,8 +2037,11 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2077,8 +2101,11 @@
                     ]
                   },
                   "jid": {
-                    "description": "Recipient whatsapp jid",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   }
                 },
@@ -2416,8 +2443,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2453,8 +2483,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2490,8 +2523,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2608,8 +2644,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2646,7 +2685,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "description": "User JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2669,8 +2708,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2707,7 +2749,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "description": "User JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2730,8 +2772,11 @@
                 "type": "object",
                 "properties": {
                   "jid": {
-                    "description": "Recipient whatsapp jid [Chat JID where the message exists]",
-                    "example": "551101234567@s.whatsapp.net",
+                    "description": "WhatsApp JID [Chat JID where the message exists]",
+                    "examples": [
+                      "551101234567@s.whatsapp.net",
+                      "123456789012345678@g.us"
+                    ],
                     "type": "string"
                   },
                   "key": {
@@ -2768,7 +2813,7 @@
                       "mentions": {
                         "type": "array",
                         "items": {
-                          "description": "Recipient whatsapp jid [user to mention in group message]",
+                          "description": "User JID [user to mention in group message]",
                           "example": "551101234567@s.whatsapp.net",
                           "type": "string"
                         }
@@ -2807,10 +2852,13 @@
             "required": true
           },
           {
-            "description": "Recipient whatsapp jid",
+            "description": "WhatsApp JID",
+            "examples": [
+              "551101234567@s.whatsapp.net",
+              "123456789012345678@g.us"
+            ],
             "schema": {
-              "type": "string",
-              "example": "551101234567@s.whatsapp.net"
+              "type": "string"
             },
             "in": "query",
             "name": "jid",
@@ -3005,6 +3053,539 @@
                 },
                 "required": [
                   "jids"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-metadata": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          },
+          {
+            "description": "Group JID",
+            "schema": {
+              "type": "string",
+              "example": "123456789012345678@g.us"
+            },
+            "in": "query",
+            "name": "jid",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberGroup-metadata",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group metadata retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Group JID",
+                      "example": "120363425378794738@g.us"
+                    },
+                    "addressingMode": {
+                      "type": "string",
+                      "description": "Addressing mode of the group",
+                      "example": "lid"
+                    },
+                    "subject": {
+                      "type": "string",
+                      "description": "Group name/subject",
+                      "example": "My Group"
+                    },
+                    "subjectOwner": {
+                      "type": "string",
+                      "description": "JID of the user who set the subject",
+                      "example": "12345678901234@lid"
+                    },
+                    "subjectOwnerPn": {
+                      "type": "string",
+                      "description": "Phone number JID of the subject owner",
+                      "example": "551234567890@s.whatsapp.net"
+                    },
+                    "subjectTime": {
+                      "type": "number",
+                      "description": "Timestamp when subject was set"
+                    },
+                    "size": {
+                      "type": "number",
+                      "description": "Number of participants in the group"
+                    },
+                    "creation": {
+                      "type": "number",
+                      "description": "Timestamp when the group was created"
+                    },
+                    "owner": {
+                      "type": "string",
+                      "description": "JID of the group owner",
+                      "example": "12345678901234@lid"
+                    },
+                    "ownerPn": {
+                      "type": "string",
+                      "description": "Phone number JID of the group owner",
+                      "example": "551234567890@s.whatsapp.net"
+                    },
+                    "owner_country_code": {
+                      "type": "string",
+                      "description": "Country code of the group owner",
+                      "example": "BR"
+                    },
+                    "desc": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Group description"
+                    },
+                    "descId": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Description ID"
+                    },
+                    "descOwner": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "JID of the user who set the description"
+                    },
+                    "descTime": {
+                      "type": "number",
+                      "nullable": true,
+                      "description": "Timestamp when description was set"
+                    },
+                    "restrict": {
+                      "type": "boolean",
+                      "description": "Whether only admins can change group settings",
+                      "example": false
+                    },
+                    "announce": {
+                      "type": "boolean",
+                      "description": "Whether only admins can send messages",
+                      "example": false
+                    },
+                    "isCommunity": {
+                      "type": "boolean",
+                      "description": "Whether the group is a community",
+                      "example": false
+                    },
+                    "isCommunityAnnounce": {
+                      "type": "boolean",
+                      "description": "Whether the group is a community announcement group",
+                      "example": false
+                    },
+                    "joinApprovalMode": {
+                      "type": "boolean",
+                      "description": "Whether join requests require admin approval",
+                      "example": false
+                    },
+                    "memberAddMode": {
+                      "type": "boolean",
+                      "description": "Whether members can add other members",
+                      "example": true
+                    },
+                    "participants": {
+                      "type": "array",
+                      "description": "List of group participants",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "Participant JID",
+                            "example": "12345678901234@lid"
+                          },
+                          "phoneNumber": {
+                            "type": "string",
+                            "description": "Participant phone number JID",
+                            "example": "551234567890@s.whatsapp.net"
+                          },
+                          "admin": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Admin status: 'superadmin', 'admin', or null",
+                            "example": "superadmin"
+                          }
+                        }
+                      }
+                    },
+                    "ephemeralDuration": {
+                      "type": "number",
+                      "nullable": true,
+                      "description": "Duration in seconds for disappearing messages",
+                      "example": 604800
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-participants": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-participants",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Manage group participants (add, remove, promote, demote)",
+        "responses": {
+          "200": {
+            "description": "Participants updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "participant": {
+                    "description": "User JID",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "add",
+                      "remove",
+                      "promote",
+                      "demote"
+                    ],
+                    "description": "Action to perform on participants. `add` adds participants, `remove` removes them, `promote` makes them admins, `demote` removes admin privileges.",
+                    "example": "add"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "participant",
+                  "action"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "participant": {
+                    "description": "User JID",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "add",
+                      "remove",
+                      "promote",
+                      "demote"
+                    ],
+                    "description": "Action to perform on participants. `add` adds participants, `remove` removes them, `promote` makes them admins, `demote` removes admin privileges.",
+                    "example": "add"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "participant",
+                  "action"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "participant": {
+                    "description": "User JID",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "add",
+                      "remove",
+                      "promote",
+                      "demote"
+                    ],
+                    "description": "Action to perform on participants. `add` adds participants, `remove` removes them, `promote` makes them admins, `demote` removes admin privileges.",
+                    "example": "add"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "participant",
+                  "action"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-subject": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-subject",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Update group subject (name)",
+        "responses": {
+          "200": {
+            "description": "Group subject updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "description": "New group subject (name)",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "example": "My Group Name",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "subject"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "description": "New group subject (name)",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "example": "My Group Name",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "subject"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "subject": {
+                    "description": "New group subject (name)",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "example": "My Group Name",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "subject"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-description": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-description",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Update group description",
+        "responses": {
+          "200": {
+            "description": "Group description updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "New group description",
+                    "maxLength": 2048,
+                    "example": "This is my group description",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "New group description",
+                    "maxLength": 2048,
+                    "example": "This is my group description",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "New group description",
+                    "maxLength": 2048,
+                    "example": "This is my group description",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
                 ]
               }
             }

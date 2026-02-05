@@ -9,6 +9,7 @@ import makeWASocket, {
   DisconnectReason,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
+  type ParticipantAction,
   type proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
@@ -192,7 +193,13 @@ export class BaileysConnection {
   }
 
   private addEventListeners({ saveCreds }: { saveCreds: () => Promise<void> }) {
-    const handledEvents = {
+    type EventHandlers = {
+      [K in keyof BaileysEventMap]?: (
+        data: BaileysEventMap[K],
+      ) => Promise<void>;
+    };
+
+    const handledEvents: EventHandlers = {
       "creds.update": saveCreds,
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
@@ -213,6 +220,14 @@ export class BaileysConnection {
       "messaging-history.set": this.withErrorHandling(
         "handleMessagingHistorySet",
         this.handleMessagingHistorySet,
+      ),
+      "groups.update": this.withErrorHandling(
+        "handleGroupsUpdate",
+        this.handleGroupsUpdate,
+      ),
+      "group-participants.update": this.withErrorHandling(
+        "handleGroupParticipantsUpdate",
+        this.handleGroupParticipantsUpdate,
       ),
     };
 
@@ -362,6 +377,26 @@ export class BaileysConnection {
     return this.safeSocket().onWhatsApp(...jids);
   }
 
+  groupMetadata(jid: string) {
+    return this.safeSocket().groupMetadata(jid);
+  }
+
+  groupParticipants(
+    jid: string,
+    participants: string[],
+    action: ParticipantAction,
+  ) {
+    return this.safeSocket().groupParticipantsUpdate(jid, participants, action);
+  }
+
+  groupUpdateSubject(jid: string, subject: string) {
+    return this.safeSocket().groupUpdateSubject(jid, subject);
+  }
+
+  groupUpdateDescription(jid: string, description?: string) {
+    return this.safeSocket().groupUpdateDescription(jid, description);
+  }
+
   private safeSocket() {
     if (!this.socket) {
       throw new BaileysNotConnectedError();
@@ -500,6 +535,22 @@ export class BaileysConnection {
     // await downloadMediaFromMessages(data.messages);
 
     this.sendToWebhook({ event: "messaging-history.set", data });
+  }
+
+  private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {
+    this.sendToWebhook({
+      event: "groups.update",
+      data,
+    });
+  }
+
+  private handleGroupParticipantsUpdate(
+    data: BaileysEventMap["group-participants.update"],
+  ) {
+    this.sendToWebhook({
+      event: "group-participants.update",
+      data,
+    });
   }
 
   private handleWrongPhoneNumber() {

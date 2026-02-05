@@ -44,7 +44,7 @@ const config = {
     // we can enable them as needed.
     ignoreGroupMessages: IGNORE_GROUP_MESSAGES
       ? IGNORE_GROUP_MESSAGES === "true"
-      : true,
+      : false,
     ignoreStatusMessages: IGNORE_STATUS_MESSAGES
       ? IGNORE_STATUS_MESSAGES === "true"
       : true,

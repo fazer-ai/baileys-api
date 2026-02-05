@@ -1,9 +1,21 @@
 import { t } from "elysia";
 
-export const jid = (moreInfo?: string) =>
+export const userJid = (moreInfo?: string) =>
   t.String({
-    description: `Recipient whatsapp jid${moreInfo ? ` [${moreInfo}]` : ""}`,
+    description: `User JID${moreInfo ? ` [${moreInfo}]` : ""}`,
     example: "551101234567@s.whatsapp.net",
+  });
+
+export const groupJid = (moreInfo?: string) =>
+  t.String({
+    description: `Group JID${moreInfo ? ` [${moreInfo}]` : ""}`,
+    example: "123456789012345678@g.us",
+  });
+
+export const anyJid = (moreInfo?: string) =>
+  t.String({
+    description: `WhatsApp JID${moreInfo ? ` [${moreInfo}]` : ""}`,
+    examples: ["551101234567@s.whatsapp.net", "123456789012345678@g.us"],
   });
 
 export const phoneNumberParams = t.Object({
@@ -49,7 +61,9 @@ export const anyMessageContent = t.Union([
   t.Object(
     {
       text: t.String({ description: "Text message", example: "Hello world!" }),
-      mentions: t.Optional(t.Array(jid("user to mention in group message"))),
+      mentions: t.Optional(
+        t.Array(userJid("user to mention in group message")),
+      ),
       quotedMessage: t.Optional(quotedMessage),
     },
     {
@@ -123,7 +137,7 @@ export const editableMessageContent = t.Object(
       description: "New text content for the message",
       example: "Updated message text",
     }),
-    mentions: t.Optional(t.Array(jid("user to mention in group message"))),
+    mentions: t.Optional(t.Array(userJid("user to mention in group message"))),
   },
   {
     title: "Editable text message",
