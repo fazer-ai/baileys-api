@@ -653,19 +653,15 @@ const connectionsController = new Elysia({
     "/:phoneNumber/group-participants",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { jid, participants, action } = body;
+      const { jid, participant, action } = body;
 
-      return baileys.groupParticipants(phoneNumber, jid, participants, action);
+      return baileys.groupParticipants(phoneNumber, jid, [participant], action);
     },
     {
       params: phoneNumberParams,
       body: t.Object({
         jid: groupJid(),
-        participants: t.Array(userJid(), {
-          description: "Array of participant JIDs",
-          minItems: 1,
-          maxItems: 50,
-        }),
+        participant: userJid(),
         action: t.Union(
           [
             t.Literal("add", { title: "add" }),
