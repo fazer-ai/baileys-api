@@ -4,6 +4,7 @@ import type {
   ParticipantAction,
   proto,
   WAMessage,
+  WAMessageKey,
   WAPresence,
 } from "@whiskeysockets/baileys";
 import {
@@ -184,6 +185,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
   }
 
+  getBusinessProfile(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).getBusinessProfile(jid);
+  }
+
   groupMetadata(phoneNumber: string, jid: string) {
     return this.getConnection(phoneNumber).groupMetadata(jid);
   }
@@ -214,6 +219,104 @@ export class BaileysConnectionsHandler {
       jid,
       description,
     );
+  }
+
+  groupCreate(phoneNumber: string, subject: string, participants: string[]) {
+    return this.getConnection(phoneNumber).groupCreate(subject, participants);
+  }
+
+  groupLeave(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupLeave(jid);
+  }
+
+  groupRequestParticipantsList(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupRequestParticipantsList(jid);
+  }
+
+  groupRequestParticipantsUpdate(
+    phoneNumber: string,
+    jid: string,
+    participants: string[],
+    action: "approve" | "reject",
+  ) {
+    return this.getConnection(phoneNumber).groupRequestParticipantsUpdate(
+      jid,
+      participants,
+      action,
+    );
+  }
+
+  groupInviteCode(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupInviteCode(jid);
+  }
+
+  groupRevokeInvite(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupRevokeInvite(jid);
+  }
+
+  groupAcceptInvite(phoneNumber: string, code: string) {
+    return this.getConnection(phoneNumber).groupAcceptInvite(code);
+  }
+
+  groupRevokeInviteV4(
+    phoneNumber: string,
+    groupJid: string,
+    invitedJid: string,
+  ) {
+    return this.getConnection(phoneNumber).groupRevokeInviteV4(
+      groupJid,
+      invitedJid,
+    );
+  }
+
+  groupAcceptInviteV4(
+    phoneNumber: string,
+    key: string | WAMessageKey,
+    inviteMessage: proto.Message.IGroupInviteMessage,
+  ) {
+    return this.getConnection(phoneNumber).groupAcceptInviteV4(
+      key,
+      inviteMessage,
+    );
+  }
+
+  groupGetInviteInfo(phoneNumber: string, code: string) {
+    return this.getConnection(phoneNumber).groupGetInviteInfo(code);
+  }
+
+  groupToggleEphemeral(
+    phoneNumber: string,
+    jid: string,
+    ephemeralExpiration: number,
+  ) {
+    return this.getConnection(phoneNumber).groupToggleEphemeral(
+      jid,
+      ephemeralExpiration,
+    );
+  }
+
+  groupSettingUpdate(
+    phoneNumber: string,
+    jid: string,
+    setting: "announcement" | "not_announcement" | "locked" | "unlocked",
+  ) {
+    return this.getConnection(phoneNumber).groupSettingUpdate(jid, setting);
+  }
+
+  groupMemberAddMode(
+    phoneNumber: string,
+    jid: string,
+    mode: "admin_add" | "all_member_add",
+  ) {
+    return this.getConnection(phoneNumber).groupMemberAddMode(jid, mode);
+  }
+
+  groupJoinApprovalMode(phoneNumber: string, jid: string, mode: "on" | "off") {
+    return this.getConnection(phoneNumber).groupJoinApprovalMode(jid, mode);
+  }
+
+  groupFetchAllParticipating(phoneNumber: string) {
+    return this.getConnection(phoneNumber).groupFetchAllParticipating();
   }
 
   async logout(phoneNumber: string) {

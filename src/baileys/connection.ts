@@ -14,6 +14,7 @@ import makeWASocket, {
   type UserFacingSocketConfig,
   type WAConnectionState,
   type WAMessage,
+  type WAMessageKey,
   type WAPresence,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
@@ -377,6 +378,10 @@ export class BaileysConnection {
     return this.safeSocket().onWhatsApp(...jids);
   }
 
+  getBusinessProfile(jid: string) {
+    return this.safeSocket().getBusinessProfile(jid);
+  }
+
   groupMetadata(jid: string) {
     return this.safeSocket().groupMetadata(jid);
   }
@@ -395,6 +400,80 @@ export class BaileysConnection {
 
   groupUpdateDescription(jid: string, description?: string) {
     return this.safeSocket().groupUpdateDescription(jid, description);
+  }
+
+  groupCreate(subject: string, participants: string[]) {
+    return this.safeSocket().groupCreate(subject, participants);
+  }
+
+  groupLeave(jid: string) {
+    return this.safeSocket().groupLeave(jid);
+  }
+
+  groupRequestParticipantsList(jid: string) {
+    return this.safeSocket().groupRequestParticipantsList(jid);
+  }
+
+  groupRequestParticipantsUpdate(
+    jid: string,
+    participants: string[],
+    action: "approve" | "reject",
+  ) {
+    return this.safeSocket().groupRequestParticipantsUpdate(
+      jid,
+      participants,
+      action,
+    );
+  }
+
+  groupInviteCode(jid: string) {
+    return this.safeSocket().groupInviteCode(jid);
+  }
+
+  groupRevokeInvite(jid: string) {
+    return this.safeSocket().groupRevokeInvite(jid);
+  }
+
+  groupAcceptInvite(code: string) {
+    return this.safeSocket().groupAcceptInvite(code);
+  }
+
+  groupRevokeInviteV4(groupJid: string, invitedJid: string) {
+    return this.safeSocket().groupRevokeInviteV4(groupJid, invitedJid);
+  }
+
+  groupAcceptInviteV4(
+    key: string | WAMessageKey,
+    inviteMessage: proto.Message.IGroupInviteMessage,
+  ) {
+    return this.safeSocket().groupAcceptInviteV4(key, inviteMessage);
+  }
+
+  groupGetInviteInfo(code: string) {
+    return this.safeSocket().groupGetInviteInfo(code);
+  }
+
+  groupToggleEphemeral(jid: string, ephemeralExpiration: number) {
+    return this.safeSocket().groupToggleEphemeral(jid, ephemeralExpiration);
+  }
+
+  groupSettingUpdate(
+    jid: string,
+    setting: "announcement" | "not_announcement" | "locked" | "unlocked",
+  ) {
+    return this.safeSocket().groupSettingUpdate(jid, setting);
+  }
+
+  groupMemberAddMode(jid: string, mode: "admin_add" | "all_member_add") {
+    return this.safeSocket().groupMemberAddMode(jid, mode);
+  }
+
+  groupJoinApprovalMode(jid: string, mode: "on" | "off") {
+    return this.safeSocket().groupJoinApprovalMode(jid, mode);
+  }
+
+  groupFetchAllParticipating() {
+    return this.safeSocket().groupFetchAllParticipating();
   }
 
   private safeSocket() {
