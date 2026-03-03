@@ -3060,6 +3060,128 @@
         }
       }
     },
+    "/connections/{phoneNumber}/business-profile": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          },
+          {
+            "description": "User JID",
+            "schema": {
+              "type": "string",
+              "example": "551101234567@s.whatsapp.net"
+            },
+            "in": "query",
+            "name": "jid",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberBusiness-profile",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Get business profile of a WhatsApp Business account",
+        "responses": {
+          "200": {
+            "description": "Business profile retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "wid": {
+                      "type": "string",
+                      "description": "WhatsApp ID of the business",
+                      "example": "551234567890@s.whatsapp.net"
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Business description",
+                      "example": "We are a company that sells products"
+                    },
+                    "email": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Business email",
+                      "example": "contact@business.com"
+                    },
+                    "website": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Business websites",
+                      "example": [
+                        "https://business.com"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Business category",
+                      "example": "Retail"
+                    },
+                    "address": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "Business address",
+                      "example": "123 Main St, City"
+                    },
+                    "business_hours": {
+                      "type": "object",
+                      "description": "Business hours configuration",
+                      "properties": {
+                        "timezone": {
+                          "type": "string",
+                          "description": "Timezone of the business",
+                          "example": "America/Sao_Paulo"
+                        },
+                        "config": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "day_of_week": {
+                                "type": "string"
+                              },
+                              "mode": {
+                                "type": "string"
+                              },
+                              "open_time": {
+                                "type": "number"
+                              },
+                              "close_time": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/connections/{phoneNumber}/group-metadata": {
       "get": {
         "parameters": [
@@ -3589,6 +3711,1470 @@
                 ]
               }
             }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-create": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-create",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Create a new WhatsApp group",
+        "responses": {
+          "200": {
+            "description": "Group created successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "description": "Group name/subject",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "example": "My New Group",
+                    "type": "string"
+                  },
+                  "participants": {
+                    "description": "Array of participant JIDs to add to the group",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "description": "User JID [Participant to add to the group]",
+                      "example": "551101234567@s.whatsapp.net",
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "subject",
+                  "participants"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "description": "Group name/subject",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "example": "My New Group",
+                    "type": "string"
+                  },
+                  "participants": {
+                    "description": "Array of participant JIDs to add to the group",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "description": "User JID [Participant to add to the group]",
+                      "example": "551101234567@s.whatsapp.net",
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "subject",
+                  "participants"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subject": {
+                    "description": "Group name/subject",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "example": "My New Group",
+                    "type": "string"
+                  },
+                  "participants": {
+                    "description": "Array of participant JIDs to add to the group",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "description": "User JID [Participant to add to the group]",
+                      "example": "551101234567@s.whatsapp.net",
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "subject",
+                  "participants"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-leave": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-leave",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Leave a WhatsApp group",
+        "responses": {
+          "200": {
+            "description": "Left group successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-request-participants-list": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          },
+          {
+            "description": "Group JID",
+            "schema": {
+              "type": "string",
+              "example": "123456789012345678@g.us"
+            },
+            "in": "query",
+            "name": "jid",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberGroup-request-participants-list",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "List pending join requests for a group",
+        "responses": {
+          "200": {
+            "description": "Pending join requests retrieved successfully"
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-request-participants-update": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-request-participants-update",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Approve or reject pending join requests for a group",
+        "responses": {
+          "200": {
+            "description": "Join requests updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "participants": {
+                    "description": "Array of participant JIDs to approve or reject",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "description": "User JID [Participant to approve or reject]",
+                      "example": "551101234567@s.whatsapp.net",
+                      "type": "string"
+                    }
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "reject"
+                    ],
+                    "description": "Action to perform on join requests",
+                    "example": "approve"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "participants",
+                  "action"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "participants": {
+                    "description": "Array of participant JIDs to approve or reject",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "description": "User JID [Participant to approve or reject]",
+                      "example": "551101234567@s.whatsapp.net",
+                      "type": "string"
+                    }
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "reject"
+                    ],
+                    "description": "Action to perform on join requests",
+                    "example": "approve"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "participants",
+                  "action"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "participants": {
+                    "description": "Array of participant JIDs to approve or reject",
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "description": "User JID [Participant to approve or reject]",
+                      "example": "551101234567@s.whatsapp.net",
+                      "type": "string"
+                    }
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "reject"
+                    ],
+                    "description": "Action to perform on join requests",
+                    "example": "approve"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "participants",
+                  "action"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-invite-code": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          },
+          {
+            "description": "Group JID",
+            "schema": {
+              "type": "string",
+              "example": "123456789012345678@g.us"
+            },
+            "in": "query",
+            "name": "jid",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberGroup-invite-code",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Get the invite code for a group",
+        "responses": {
+          "200": {
+            "description": "Invite code retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "jid": {
+                          "type": "string"
+                        },
+                        "inviteCode": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-revoke-invite": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-revoke-invite",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Revoke the current invite code and generate a new one for a group",
+        "responses": {
+          "200": {
+            "description": "Invite code revoked successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "jid": {
+                          "type": "string"
+                        },
+                        "inviteCode": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "jid"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-accept-invite": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-accept-invite",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Join a group using an invite code",
+        "responses": {
+          "200": {
+            "description": "Joined group successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "groupJid": {
+                          "type": "string",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "description": "Group invite code",
+                    "example": "ABC123xyz",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "description": "Group invite code",
+                    "example": "ABC123xyz",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "description": "Group invite code",
+                    "example": "ABC123xyz",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-revoke-invite-v4": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-revoke-invite-v4",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Revoke a V4 invite for a specific user",
+        "responses": {
+          "200": {
+            "description": "V4 invite revoked successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "revoked": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "groupJid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "invitedJid": {
+                    "description": "User JID [JID of the invited user]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "groupJid",
+                  "invitedJid"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "groupJid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "invitedJid": {
+                    "description": "User JID [JID of the invited user]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "groupJid",
+                  "invitedJid"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "groupJid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "invitedJid": {
+                    "description": "User JID [JID of the invited user]",
+                    "example": "551101234567@s.whatsapp.net",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "groupJid",
+                  "invitedJid"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-accept-invite-v4": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-accept-invite-v4",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Accept a V4 group invite message",
+        "responses": {
+          "200": {
+            "description": "V4 invite accepted successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "enum": []
+                  },
+                  "inviteMessage": {
+                    "description": "Group invite message content",
+                    "type": "object",
+                    "properties": {
+                      "groupJid": {
+                        "type": "string"
+                      },
+                      "inviteCode": {
+                        "type": "string"
+                      },
+                      "inviteExpiration": {
+                        "type": "number"
+                      },
+                      "groupName": {
+                        "type": "string"
+                      },
+                      "caption": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "key",
+                  "inviteMessage"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "enum": []
+                  },
+                  "inviteMessage": {
+                    "description": "Group invite message content",
+                    "type": "object",
+                    "properties": {
+                      "groupJid": {
+                        "type": "string"
+                      },
+                      "inviteCode": {
+                        "type": "string"
+                      },
+                      "inviteExpiration": {
+                        "type": "number"
+                      },
+                      "groupName": {
+                        "type": "string"
+                      },
+                      "caption": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "key",
+                  "inviteMessage"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "enum": []
+                  },
+                  "inviteMessage": {
+                    "description": "Group invite message content",
+                    "type": "object",
+                    "properties": {
+                      "groupJid": {
+                        "type": "string"
+                      },
+                      "inviteCode": {
+                        "type": "string"
+                      },
+                      "inviteExpiration": {
+                        "type": "number"
+                      },
+                      "groupName": {
+                        "type": "string"
+                      },
+                      "caption": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "key",
+                  "inviteMessage"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-invite-info": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          },
+          {
+            "description": "Group invite code",
+            "schema": {
+              "type": "string",
+              "example": "ABC123xyz"
+            },
+            "in": "query",
+            "name": "code",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberGroup-invite-info",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Get group metadata from an invite code without joining the group",
+        "responses": {
+          "200": {
+            "description": "Group invite info retrieved successfully"
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-toggle-ephemeral": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-toggle-ephemeral",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Toggle disappearing messages for a group",
+        "responses": {
+          "200": {
+            "description": "Ephemeral setting updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "ephemeralExpiration": {
+                    "description": "Duration in seconds for disappearing messages. Use 0 to disable.",
+                    "example": 604800,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "ephemeralExpiration"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "ephemeralExpiration": {
+                    "description": "Duration in seconds for disappearing messages. Use 0 to disable.",
+                    "example": 604800,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "ephemeralExpiration"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "ephemeralExpiration": {
+                    "description": "Duration in seconds for disappearing messages. Use 0 to disable.",
+                    "example": 604800,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "ephemeralExpiration"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-setting-update": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-setting-update",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Update group settings (announcement/locked mode)",
+        "responses": {
+          "200": {
+            "description": "Group setting updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "setting": {
+                    "type": "string",
+                    "enum": [
+                      "announcement",
+                      "not_announcement",
+                      "locked",
+                      "unlocked"
+                    ],
+                    "description": "Group setting to update. `announcement` makes only admins able to send messages. `not_announcement` allows all participants. `locked` makes only admins able to edit group info. `unlocked` allows all participants to edit.",
+                    "example": "announcement"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "setting"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "setting": {
+                    "type": "string",
+                    "enum": [
+                      "announcement",
+                      "not_announcement",
+                      "locked",
+                      "unlocked"
+                    ],
+                    "description": "Group setting to update. `announcement` makes only admins able to send messages. `not_announcement` allows all participants. `locked` makes only admins able to edit group info. `unlocked` allows all participants to edit.",
+                    "example": "announcement"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "setting"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "setting": {
+                    "type": "string",
+                    "enum": [
+                      "announcement",
+                      "not_announcement",
+                      "locked",
+                      "unlocked"
+                    ],
+                    "description": "Group setting to update. `announcement` makes only admins able to send messages. `not_announcement` allows all participants. `locked` makes only admins able to edit group info. `unlocked` allows all participants to edit.",
+                    "example": "announcement"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "setting"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-member-add-mode": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-member-add-mode",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Set who can add members to the group",
+        "responses": {
+          "200": {
+            "description": "Member add mode updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "admin_add",
+                      "all_member_add"
+                    ],
+                    "description": "Who can add members. `admin_add` restricts to admins only. `all_member_add` allows all members.",
+                    "example": "all_member_add"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "mode"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "admin_add",
+                      "all_member_add"
+                    ],
+                    "description": "Who can add members. `admin_add` restricts to admins only. `all_member_add` allows all members.",
+                    "example": "all_member_add"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "mode"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "admin_add",
+                      "all_member_add"
+                    ],
+                    "description": "Who can add members. `admin_add` restricts to admins only. `all_member_add` allows all members.",
+                    "example": "all_member_add"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "mode"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-join-approval-mode": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberGroup-join-approval-mode",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Toggle join approval mode for a group",
+        "responses": {
+          "200": {
+            "description": "Join approval mode updated successfully"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "description": "Whether join requests require admin approval. `on` enables approval mode, `off` disables it.",
+                    "example": "on"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "mode"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "description": "Whether join requests require admin approval. `on` enables approval mode, `off` disables it.",
+                    "example": "on"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "mode"
+                ]
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jid": {
+                    "description": "Group JID",
+                    "example": "123456789012345678@g.us",
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "description": "Whether join requests require admin approval. `on` enables approval mode, `off` disables it.",
+                    "example": "on"
+                  }
+                },
+                "required": [
+                  "jid",
+                  "mode"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/group-fetch-all-participating": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberGroup-fetch-all-participating",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "description": "Fetch metadata for all groups the connected number is participating in",
+        "responses": {
+          "200": {
+            "description": "All group metadata retrieved successfully"
           }
         }
       }
