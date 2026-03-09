@@ -1,3 +1,4 @@
+import path from "node:path";
 import Elysia, { t } from "elysia";
 import baileys from "@/baileys";
 import { BaileysNotConnectedError } from "@/baileys/connection";
@@ -575,7 +576,15 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid } = query;
 
-      return baileys.groupMetadata(phoneNumber, jid);
+      const metadata = await baileys.groupMetadata(phoneNumber, jid);
+      const mediaDir = path.resolve(process.cwd(), "media");
+      const filePath = path.join(mediaDir, `${metadata.id.split("@")[0]}.json`);
+
+      await Bun.write(filePath, JSON.stringify(metadata));
+
+      return new Response(Bun.file(filePath), {
+        headers: { "Content-Type": "application/json" },
+      });
     },
     {
       params: phoneNumberParams,
