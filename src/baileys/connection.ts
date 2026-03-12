@@ -7,6 +7,7 @@ import makeWASocket, {
   type ChatModification,
   type ConnectionState,
   DisconnectReason,
+  isJidGroup,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type ParticipantAction,
@@ -102,6 +103,12 @@ export class BaileysConnection {
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
     null;
   private reconnectCount = 0;
+  private groupsEnabled: boolean;
+  private groupActivityMap: Map<
+    string,
+    { unreadCount: number; lastMessageAt: number }
+  > = new Map();
+  private groupActivityInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -115,6 +122,7 @@ export class BaileysConnection {
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.groupsEnabled = options.groupsEnabled ?? false;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -142,6 +150,7 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.groupsEnabled = options.groupsEnabled ?? false;
   }
 
   async connect() {
@@ -155,6 +164,7 @@ export class BaileysConnection {
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
       syncFullHistory: this.syncFullHistory,
+      groupsEnabled: this.groupsEnabled,
     });
     this.clearAuthState = state.keys.clear;
 
@@ -249,6 +259,7 @@ export class BaileysConnection {
   }
 
   private async close() {
+    this.stopGroupActivityFlush();
     await this.clearAuthState?.();
     this.clearAuthState = null;
     this.socket = null;
@@ -557,6 +568,7 @@ export class BaileysConnection {
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      this.startGroupActivityFlush();
     }
 
     this.sendToWebhook({
@@ -566,12 +578,37 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    let messagesData = data;
+
+    if (!this.groupsEnabled) {
+      const individualMessages: typeof data.messages = [];
+
+      for (const msg of data.messages) {
+        const remoteJid = msg.key?.remoteJid;
+        if (remoteJid && isJidGroup(remoteJid)) {
+          const existing = this.groupActivityMap.get(remoteJid);
+          this.groupActivityMap.set(remoteJid, {
+            unreadCount: (existing?.unreadCount ?? 0) + 1,
+            lastMessageAt: Date.now(),
+          });
+        } else {
+          individualMessages.push(msg);
+        }
+      }
+
+      if (individualMessages.length === 0) {
+        return;
+      }
+
+      messagesData = { ...data, messages: individualMessages };
+    }
+
     const payload: BaileysConnectionWebhookPayload = {
       event: "messages.upsert",
-      data,
+      data: messagesData,
     };
 
-    const media = await downloadMediaFromMessages(data.messages, {
+    const media = await downloadMediaFromMessages(messagesData.messages, {
       includeMedia: this.includeMedia,
     });
     if (media) {
@@ -655,6 +692,46 @@ export class BaileysConnection {
       event: "connection.update",
       data: { connection: "reconnecting" as WAConnectionState },
     });
+  }
+
+  private startGroupActivityFlush() {
+    this.stopGroupActivityFlush();
+    if (this.groupsEnabled) {
+      return;
+    }
+    this.groupActivityInterval = setInterval(() => {
+      this.flushGroupActivity();
+    }, 30_000);
+  }
+
+  private flushGroupActivity() {
+    if (this.groupActivityMap.size === 0) {
+      return;
+    }
+
+    const activities: Array<{
+      jid: string;
+      unreadCount: number;
+      lastMessageAt: number;
+    }> = [];
+
+    for (const [jid, activity] of this.groupActivityMap) {
+      activities.push({ jid, ...activity });
+    }
+    this.groupActivityMap.clear();
+
+    this.sendToWebhook({
+      event: "groups.activity" as keyof BaileysEventMap,
+      data: activities,
+    });
+  }
+
+  private stopGroupActivityFlush() {
+    if (this.groupActivityInterval) {
+      clearInterval(this.groupActivityInterval);
+      this.groupActivityInterval = null;
+    }
+    this.groupActivityMap.clear();
   }
 
   private async sendToWebhook(

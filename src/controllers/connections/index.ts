@@ -68,6 +68,13 @@ const connectionsController = new Elysia({
             default: false,
           }),
         ),
+        groupsEnabled: t.Optional(
+          t.Boolean({
+            description:
+              "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
+            default: false,
+          }),
+        ),
       }),
       detail: {
         responses: {
