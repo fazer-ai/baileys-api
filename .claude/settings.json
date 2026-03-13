@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-before-stop.sh",
+            "timeout": 120,
+            "statusMessage": "Running bun check..."
+          }
+        ]
+      }
+    ]
+  }
+}
