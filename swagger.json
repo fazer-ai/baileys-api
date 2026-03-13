@@ -321,6 +321,11 @@
                     "description": "Sync full history of messages on connection.",
                     "default": false,
                     "type": "boolean"
+                  },
+                  "groupsEnabled": {
+                    "description": "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
+                    "default": false,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -359,6 +364,11 @@
                     "description": "Sync full history of messages on connection.",
                     "default": false,
                     "type": "boolean"
+                  },
+                  "groupsEnabled": {
+                    "description": "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
+                    "default": false,
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -395,6 +405,11 @@
                   },
                   "syncFullHistory": {
                     "description": "Sync full history of messages on connection.",
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "groupsEnabled": {
+                    "description": "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
                     "default": false,
                     "type": "boolean"
                   }
@@ -4741,6 +4756,7 @@
                   },
                   "ephemeralExpiration": {
                     "description": "Duration in seconds for disappearing messages. Use 0 to disable.",
+                    "minimum": 0,
                     "example": 604800,
                     "type": "number"
                   }
@@ -4762,6 +4778,7 @@
                   },
                   "ephemeralExpiration": {
                     "description": "Duration in seconds for disappearing messages. Use 0 to disable.",
+                    "minimum": 0,
                     "example": 604800,
                     "type": "number"
                   }
@@ -4783,6 +4800,7 @@
                   },
                   "ephemeralExpiration": {
                     "description": "Duration in seconds for disappearing messages. Use 0 to disable.",
+                    "minimum": 0,
                     "example": 604800,
                     "type": "number"
                   }

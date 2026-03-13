@@ -1179,7 +1179,7 @@ const connectionsController = new Elysia({
       body: t.Object({
         key: t.Union([
           t.String({ description: "Invite key as string" }),
-          iMessageKey,
+          iMessageKeyWithId,
         ]),
         inviteMessage: t.Object(
           {
@@ -1246,6 +1246,7 @@ const connectionsController = new Elysia({
         ephemeralExpiration: t.Number({
           description:
             "Duration in seconds for disappearing messages. Use 0 to disable.",
+          minimum: 0,
           example: 604800,
         }),
       }),
