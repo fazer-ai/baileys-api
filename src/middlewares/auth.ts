@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Elysia } from "elysia";
 import { LRUCache } from "lru-cache";
 import config from "@/config";
@@ -29,13 +30,15 @@ export const authMiddleware = (app: Elysia) =>
     .derive(async ({ request }) => {
       const apiKey = getApiKey(request.headers);
       if (!apiKey) {
-        return { auth: null };
+        return { auth: null, apiKeyHash: null as string | null };
       }
+
+      const apiKeyHash = createHash("sha256").update(apiKey).digest("hex");
 
       try {
         const cached = apiKeyCache.get(apiKey);
         if (cached) {
-          return { auth: cached };
+          return { auth: cached, apiKeyHash };
         }
 
         const key = `${REDIS_KEY_PREFIX}:${apiKey}`;
@@ -43,15 +46,15 @@ export const authMiddleware = (app: Elysia) =>
 
         if (!raw) {
           logger.warn("Invalid API key attempted: %s", apiKey);
-          return { auth: null };
+          return { auth: null, apiKeyHash: null as string | null };
         }
 
         const auth = JSON.parse(raw) as AuthData;
         apiKeyCache.set(apiKey, auth);
-        return { auth };
+        return { auth, apiKeyHash };
       } catch (error) {
         logger.error("Auth middleware error %s", errorToString(error));
-        return { auth: null };
+        return { auth: null, apiKeyHash: null as string | null };
       }
     })
     .onBeforeHandle(({ auth, set }) => {

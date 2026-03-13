@@ -1,7 +1,10 @@
 import path from "node:path";
 import Elysia, { t } from "elysia";
 import baileys from "@/baileys";
-import { BaileysNotConnectedError } from "@/baileys/connection";
+import {
+  BaileysConnectionForbiddenError,
+  BaileysNotConnectedError,
+} from "@/baileys/connection";
 import {
   buildEditableMessageContent,
   buildMessageContent,
@@ -26,14 +29,27 @@ const connectionsController = new Elysia({
     security: [{ xApiKey: [] }],
   },
 })
-  // TODO: Use auth data to limit access to existing connections.
   .use(authMiddleware)
+  .onBeforeHandle(({ params, apiKeyHash, set }) => {
+    const phoneNumber = (params as { phoneNumber?: string })?.phoneNumber;
+    if (phoneNumber) {
+      try {
+        baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
+      } catch (e) {
+        if (e instanceof BaileysConnectionForbiddenError) {
+          set.status = 403;
+          return { error: "Forbidden", message: e.message };
+        }
+        throw e;
+      }
+    }
+  })
   .post(
     "/:phoneNumber",
-    async ({ params, body }) => {
+    async ({ params, body, apiKeyHash }) => {
       const { phoneNumber } = params;
 
-      await baileys.connect(phoneNumber, body);
+      await baileys.connect(phoneNumber, { ...body, apiKeyHash });
     },
     {
       params: phoneNumberParams,

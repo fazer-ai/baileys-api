@@ -9,6 +9,7 @@ import type {
 } from "@whiskeysockets/baileys";
 import {
   BaileysConnection,
+  BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
 import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
@@ -97,6 +98,20 @@ export class BaileysConnectionsHandler {
       "Now tracking %d connections",
       Object.keys(this.connections).length,
     );
+  }
+
+  verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {
+    const connection = this.connections[phoneNumber];
+    if (!connection) {
+      return;
+    }
+    if (
+      connection.apiKeyHash &&
+      apiKeyHash &&
+      connection.apiKeyHash !== apiKeyHash
+    ) {
+      throw new BaileysConnectionForbiddenError();
+    }
   }
 
   private getConnection(phoneNumber: string) {

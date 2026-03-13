@@ -41,6 +41,12 @@ export class BaileysNotConnectedError extends Error {
   }
 }
 
+export class BaileysConnectionForbiddenError extends Error {
+  constructor() {
+    super("Connection not owned by this API key");
+  }
+}
+
 export class BaileysConnection {
   private LOGGER_OMIT_KEYS: ReadonlyArray<string> = [
     "qr",
@@ -104,6 +110,7 @@ export class BaileysConnection {
     null;
   private reconnectCount = 0;
   private groupsEnabled: boolean;
+  private _apiKeyHash: string | null;
   private groupActivityMap: Map<
     string,
     { unreadCount: number; lastMessageAt: number }
@@ -123,6 +130,11 @@ export class BaileysConnection {
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
     this.groupsEnabled = options.groupsEnabled ?? false;
+    this._apiKeyHash = options.apiKeyHash ?? null;
+  }
+
+  get apiKeyHash(): string | null {
+    return this._apiKeyHash;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -165,6 +177,7 @@ export class BaileysConnection {
       includeMedia: this.includeMedia,
       syncFullHistory: this.syncFullHistory,
       groupsEnabled: this.groupsEnabled,
+      apiKeyHash: this._apiKeyHash,
     });
     this.clearAuthState = state.keys.clear;
 
