@@ -23,7 +23,7 @@ describe("promisify", () => {
     const { promise, reject } = promisify<string>();
     const error = new Error("fail");
     reject(error);
-    expect(promise).rejects.toThrow("fail");
+    await expect(promise).rejects.toThrow("fail");
   });
 
   it("works with different generic types", async () => {

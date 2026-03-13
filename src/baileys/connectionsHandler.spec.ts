@@ -252,7 +252,7 @@ describe("BaileysConnectionsHandler", () => {
         new Error("unexpected error"),
       );
 
-      expect(handler.connect("+5511999", defaultOptions)).rejects.toThrow(
+      await expect(handler.connect("+5511999", defaultOptions)).rejects.toThrow(
         "unexpected error",
       );
     });
@@ -434,8 +434,8 @@ describe("BaileysConnectionsHandler", () => {
   });
 
   describe("#logout", () => {
-    it("throws BaileysNotConnectedError when connection does not exist", () => {
-      expect(handler.logout("+5511999")).rejects.toThrow(
+    it("throws BaileysNotConnectedError when connection does not exist", async () => {
+      await expect(handler.logout("+5511999")).rejects.toThrow(
         BaileysNotConnectedError,
       );
     });
@@ -448,7 +448,7 @@ describe("BaileysConnectionsHandler", () => {
 
       expect(mockLogout).toHaveBeenCalledTimes(1);
       // Connection should be removed, so subsequent calls should throw
-      expect(handler.logout("+5511999")).rejects.toThrow(
+      await expect(handler.logout("+5511999")).rejects.toThrow(
         BaileysNotConnectedError,
       );
     });

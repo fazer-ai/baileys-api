@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": ".claude/hooks/check-before-stop.sh",
-            "timeout": 120,
+            "timeout": 600,
             "statusMessage": "Running bun check..."
           }
         ]

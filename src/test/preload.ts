@@ -1,4 +1,4 @@
-import { mock } from "bun:test";
+import { afterEach, mock } from "bun:test";
 
 /**
  * Shared test preload — runs before every test file.
@@ -30,8 +30,9 @@ const mockRedis = {
     return hashData.get(key)?.get(field) ?? null;
   }),
   del: mock(async (key: string) => {
-    hashData.delete(key);
-    return 1;
+    const deletedHash = hashData.delete(key);
+    const deletedString = stringData.delete(key);
+    return Number(deletedHash || deletedString);
   }),
   keys: mock(async (pattern: string) => {
     const regex = new RegExp(`^${pattern.replace(/\*/g, ".*")}$`);
@@ -269,3 +270,11 @@ mock.module("@whiskeysockets/baileys", () => ({
     },
   },
 }));
+
+// ===== Global cleanup =====
+afterEach(() => {
+  hashData.clear();
+  stringData.clear();
+  multiCommands.length = 0;
+  mockEventHandlers.clear();
+});

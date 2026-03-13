@@ -173,7 +173,9 @@ describe("getRedisSavedAuthStateIds", () => {
       new Map([["metadata", JSON.stringify({ webhookUrl: "url2" })]]),
     );
 
-    const result = await getRedisSavedAuthStateIds<{ webhookUrl: string }>();
+    const result = (
+      await getRedisSavedAuthStateIds<{ webhookUrl: string }>()
+    ).sort((a, b) => a.id.localeCompare(b.id));
     expect(result.length).toBe(2);
     expect(result[0].id).toBe("+5511999");
     expect(result[0].metadata.webhookUrl).toBe("url1");

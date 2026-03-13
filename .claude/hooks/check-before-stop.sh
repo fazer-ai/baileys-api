@@ -11,7 +11,14 @@ if [ "$stop_hook_active" = "true" ]; then
   exit 0
 fi
 
-cd "$(git rev-parse --show-toplevel)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo '{"ok": false, "reason": "Unable to resolve git repository root before running bun check."}'
+  exit 0
+}
+cd "$repo_root" || {
+  echo '{"ok": false, "reason": "Unable to access git repository root before running bun check."}'
+  exit 0
+}
 
 # Only run if there are uncommitted changes to files that bun check cares about
 changed_files=$(git diff --name-only HEAD 2>/dev/null; git diff --name-only --cached 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null)
@@ -25,5 +32,5 @@ fi
 if bun check 2>&1; then
   echo '{"ok": true}'
 else
-  echo '{"ok": false, "reason": "bun check failed. Please fix the lint, type-check, i18n, or test issues above before stopping."}'
+  echo '{"ok": false, "reason": "bun check failed. Please fix the lint, type-check, or test issues above before stopping."}'
 fi

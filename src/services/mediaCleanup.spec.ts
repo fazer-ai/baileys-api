@@ -87,7 +87,7 @@ describe("MediaCleanupService", () => {
 
     it("rethrows non-ENOENT errors", async () => {
       spyOn(fs, "readdir").mockRejectedValue(new Error("permission denied"));
-      expect(service.cleanup()).rejects.toThrow("permission denied");
+      await expect(service.cleanup()).rejects.toThrow("permission denied");
     });
 
     it("deletes files older than maxAge", async () => {

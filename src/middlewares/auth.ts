@@ -45,7 +45,7 @@ export const authMiddleware = (app: Elysia) =>
         const raw = await redis.get(key);
 
         if (!raw) {
-          logger.warn("Invalid API key attempted: %s", apiKey);
+          logger.warn("Invalid API key attempted: %s", apiKeyHash);
           return { auth: null, apiKeyHash: null as string | null };
         }
 
