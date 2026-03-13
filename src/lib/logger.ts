@@ -47,53 +47,52 @@ export function deepSanitizeObject(
   return output;
 }
 
+const isDev = config.env === "development";
+
+function buildTransportTargets(
+  level: string,
+  logFile: string,
+): pino.TransportTargetOptions[] {
+  const targets: pino.TransportTargetOptions[] = [
+    {
+      level,
+      target: "pino-roll",
+      options: {
+        file: path.join("logs", logFile),
+        size: "50m",
+        limit: { count: 10 },
+      },
+    },
+  ];
+
+  if (isDev) {
+    targets.push({
+      level,
+      target: "pino-pretty",
+      options: {
+        colorize: true,
+        translateTime: "SYS:standard",
+      } as PrettyOptions,
+    });
+  }
+
+  return targets;
+}
+
 export const baileysLogger = pino({
   level: "debug",
   transport: {
-    targets: [
-      {
-        level: config.baileys.logLevel,
-        target: "pino-pretty",
-        options: {
-          colorize: true,
-          translateTime: "SYS:standard",
-        } as PrettyOptions,
-      },
-      {
-        level: config.baileys.logLevel,
-        target: "pino-roll",
-        options: {
-          file: path.join("logs", "baileys"),
-          size: "50m",
-          limit: { count: 10 },
-        },
-      },
-    ],
+    targets: buildTransportTargets(
+      config.baileys.logLevel as string,
+      "baileys",
+    ),
   },
 });
 
 let logger = pino({
   level: "debug",
   transport: {
-    targets: [
-      {
-        level: config.logLevel,
-        target: "pino-pretty",
-        options: {
-          colorize: true,
-          translateTime: "SYS:standard",
-        } as PrettyOptions,
-      },
-      {
-        level: config.logLevel,
-        target: "pino-roll",
-        options: {
-          file: path.join("logs", "log"),
-          size: "50m",
-          limit: { count: 10 },
-        },
-      },
-    ],
+    targets: buildTransportTargets(config.logLevel as string, "log"),
   },
 });
 

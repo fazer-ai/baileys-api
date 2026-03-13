@@ -11,13 +11,22 @@ import logger from "@/lib/logger";
 
 const app = new Elysia()
   .onAfterResponse(({ request, response, set }) => {
-    logger.info(
-      "%s %s [%d] %o",
-      request.method,
-      request.url,
-      (response as Response)?.status ?? set.status,
-      response ?? {},
-    );
+    if (config.env === "development") {
+      logger.info(
+        "%s %s [%d] %o",
+        request.method,
+        request.url,
+        (response as Response)?.status ?? set.status,
+        response ?? {},
+      );
+    } else {
+      logger.info(
+        "%s %s [%d]",
+        request.method,
+        request.url,
+        (response as Response)?.status ?? set.status,
+      );
+    }
   })
   .onError(({ path, error, code }) => {
     logger.error("%s\n%s", path, errorToString(error));
