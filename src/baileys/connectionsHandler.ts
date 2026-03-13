@@ -18,6 +18,7 @@ import type {
   MessageKeyWithId,
   SendReceiptsOptions,
 } from "@/baileys/types";
+import { asyncSleep } from "@/helpers/asyncSleep";
 import logger from "@/lib/logger";
 
 export class BaileysConnectionsHandler {
@@ -40,21 +41,27 @@ export class BaileysConnectionsHandler {
       savedConnections.map(({ id }) => id),
     );
 
-    // TODO: Handle thundering herd issue.
-    for (const { id, metadata } of savedConnections) {
-      const connection = new BaileysConnection(id, {
-        onConnectionClose: () => {
-          delete this.connections[id];
-          logger.debug(
-            "Now tracking %d connections",
-            Object.keys(this.connections).length,
-          );
-        },
-        isReconnect: true,
-        ...metadata,
-      });
-      this.connections[id] = connection;
-      await connection.connect();
+    const CONCURRENCY = 5;
+    for (let i = 0; i < savedConnections.length; i += CONCURRENCY) {
+      const chunk = savedConnections.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(
+        chunk.map(async ({ id, metadata }) => {
+          await asyncSleep(Math.floor(Math.random() * 100));
+          const connection = new BaileysConnection(id, {
+            onConnectionClose: () => {
+              delete this.connections[id];
+              logger.debug(
+                "Now tracking %d connections",
+                Object.keys(this.connections).length,
+              );
+            },
+            isReconnect: true,
+            ...metadata,
+          });
+          this.connections[id] = connection;
+          await connection.connect();
+        }),
+      );
     }
   }
 
