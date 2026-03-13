@@ -1,71 +1,76 @@
-import { randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Readable } from "node:stream";
-import ffmpeg from "@/bindings/ffmpeg";
-import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
-function bufferToStream(buffer: Buffer) {
-  const stream = new Readable();
-  stream.push(buffer);
-  stream.push(null);
-  return stream;
+type AudioFormat = "ogg-low" | "mp3-high" | "wav";
+
+interface PendingRequest {
+  resolve: (result: Buffer) => void;
+  reject: (error: Error) => void;
+}
+
+const POOL_SIZE =
+  typeof navigator !== "undefined" && navigator.hardwareConcurrency
+    ? navigator.hardwareConcurrency
+    : 4;
+
+const workers: Worker[] = [];
+let nextWorkerIndex = 0;
+let messageId = 0;
+const pendingRequests = new Map<number, PendingRequest>();
+
+function getWorkerPool(): Worker[] {
+  if (workers.length > 0) {
+    return workers;
+  }
+
+  for (let i = 0; i < POOL_SIZE; i++) {
+    const worker = new Worker(
+      new URL("./preprocessAudioWorker.ts", import.meta.url).href,
+    );
+
+    worker.onmessage = (
+      event: MessageEvent<{
+        id: number;
+        result?: ArrayBuffer;
+        error?: string;
+      }>,
+    ) => {
+      const { id, result, error } = event.data;
+      const pending = pendingRequests.get(id);
+      if (!pending) {
+        return;
+      }
+      pendingRequests.delete(id);
+
+      if (error) {
+        pending.reject(new Error(error));
+      } else if (result) {
+        pending.resolve(Buffer.from(result));
+      }
+    };
+
+    worker.onerror = (event) => {
+      logger.error("Audio worker error: %s", event.message);
+    };
+
+    workers.push(worker);
+  }
+
+  return workers;
 }
 
 export async function preprocessAudio(
   audio: Buffer,
-  format: "ogg-low" | "mp3-high" | "wav",
+  format: AudioFormat,
 ): Promise<Buffer> {
-  const tmpFilename = join(
-    tmpdir(),
-    `audio-${randomBytes(6).toString("hex")}.${format}`,
-  );
-  try {
-    const command = ffmpeg(bufferToStream(audio));
+  const pool = getWorkerPool();
+  const worker = pool[nextWorkerIndex % pool.length];
+  nextWorkerIndex++;
 
-    if (format === "wav") {
-      command
-        .audioCodec("pcm_s16le")
-        .format("wav")
-        .audioFrequency(16000)
-        .audioChannels(1);
-    }
-    if (format === "ogg-low") {
-      command
-        .audioCodec("libopus")
-        .format("ogg")
-        .audioBitrate("48k")
-        .audioChannels(1);
-    }
-    if (format === "mp3-high") {
-      command
-        .audioCodec("libmp3lame")
-        .format("mp3")
-        .audioFrequency(44100)
-        .audioChannels(2)
-        .audioBitrate("128k");
-    }
+  const id = messageId++;
+  const arrayBuffer = new Uint8Array(audio).buffer as ArrayBuffer;
 
-    // NOTE: We need to output to a tmp file due to limitations in ffmpeg outputting to a node stream.
-    await new Promise<void>((ffResolve, ffReject) =>
-      command
-        .on("end", () => ffResolve())
-        .on("error", (err) => ffReject(err))
-        .save(tmpFilename),
-    );
-    const processedBuffer = await fs.readFile(tmpFilename);
-
-    return processedBuffer;
-  } finally {
-    try {
-      await fs.unlink(tmpFilename);
-    } catch (unlinkError) {
-      logger.error(
-        "Failed to delete temporary audio file: %s",
-        errorToString(unlinkError),
-      );
-    }
-  }
+  return new Promise<Buffer>((resolve, reject) => {
+    pendingRequests.set(id, { resolve, reject });
+    worker.postMessage({ id, audio: arrayBuffer, format }, [arrayBuffer]);
+  });
 }
