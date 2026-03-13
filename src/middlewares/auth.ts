@@ -1,4 +1,5 @@
 import type { Elysia } from "elysia";
+import { LRUCache } from "lru-cache";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
@@ -9,6 +10,15 @@ export interface AuthData {
 }
 
 export const REDIS_KEY_PREFIX = "@baileys-api:api-keys";
+
+const apiKeyCache = new LRUCache<string, AuthData>({
+  max: 1000,
+  ttl: 5 * 60 * 1000,
+});
+
+export function clearApiKeyCache(apiKey: string) {
+  apiKeyCache.delete(apiKey);
+}
 
 function getApiKey(headers: Headers): string | null {
   return headers.get("x-api-key");
@@ -23,6 +33,11 @@ export const authMiddleware = (app: Elysia) =>
       }
 
       try {
+        const cached = apiKeyCache.get(apiKey);
+        if (cached) {
+          return { auth: cached };
+        }
+
         const key = `${REDIS_KEY_PREFIX}:${apiKey}`;
         const raw = await redis.get(key);
 
@@ -32,6 +47,7 @@ export const authMiddleware = (app: Elysia) =>
         }
 
         const auth = JSON.parse(raw) as AuthData;
+        apiKeyCache.set(apiKey, auth);
         return { auth };
       } catch (error) {
         logger.error("Auth middleware error %s", errorToString(error));
