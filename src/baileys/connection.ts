@@ -740,19 +740,27 @@ export class BaileysConnection {
       awaitResponse?: boolean;
     },
   ) {
-    const sanitizedPayload = deepSanitizeObject(
-      { ...payload },
-      {
-        omitKeys: [...this.LOGGER_OMIT_KEYS],
-      },
-    );
+    let sanitizedPayload: Record<string, unknown> | null = null;
+    if (logger.isLevelEnabled("debug")) {
+      sanitizedPayload = deepSanitizeObject(
+        { ...payload },
+        {
+          omitKeys: [...this.LOGGER_OMIT_KEYS],
+        },
+      );
+      logger.debug(
+        "[%s] [sendToWebhook] (options: %o) payload=%o",
+        this.phoneNumber,
+        options || {},
+        sanitizedPayload,
+      );
+    }
 
-    logger.debug(
-      "[%s] [sendToWebhook] (options: %o) payload=%o",
-      this.phoneNumber,
-      options || {},
-      sanitizedPayload,
-    );
+    const serializedBody = JSON.stringify({
+      ...payload,
+      webhookVerifyToken: this.webhookVerifyToken,
+      awaitResponse: options?.awaitResponse,
+    });
 
     const { maxRetries, retryInterval, backoffFactor } =
       config.webhook.retryPolicy;
@@ -760,25 +768,25 @@ export class BaileysConnection {
     let delay = retryInterval;
 
     while (attempt <= maxRetries) {
-      const { response, error } = await this.sendPayloadToWebhook(
-        payload,
-        options,
-      );
+      const { response, error } =
+        await this.sendPayloadToWebhook(serializedBody);
       if (response) {
         if (response.ok) {
-          logger.debug(
-            "[%s] [sendToWebhook] [SUCCESS] payload=%o response=%o",
-            this.phoneNumber,
-            sanitizedPayload,
-            response,
-          );
+          if (logger.isLevelEnabled("debug")) {
+            logger.debug(
+              "[%s] [sendToWebhook] [SUCCESS] payload=%o response=%o",
+              this.phoneNumber,
+              sanitizedPayload,
+              response,
+            );
+          }
           return response;
         }
         logger.error(
           "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o response=%o",
           this.phoneNumber,
           this.webhookUrl,
-          sanitizedPayload,
+          sanitizedPayload ?? payload.event,
           { status: response.status, statusText: response.statusText },
         );
       }
@@ -788,7 +796,7 @@ export class BaileysConnection {
           "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o error=%s",
           this.phoneNumber,
           this.webhookUrl,
-          sanitizedPayload,
+          sanitizedPayload ?? payload.event,
           errorToString(error),
         );
       }
@@ -798,7 +806,7 @@ export class BaileysConnection {
         logger.info(
           "[%s] [sendToWebhook] [RETRYING] payload=%o attempt=%d/%d delay=%dms",
           this.phoneNumber,
-          sanitizedPayload,
+          sanitizedPayload ?? payload.event,
           attempt,
           maxRetries,
           delay,
@@ -813,15 +821,12 @@ export class BaileysConnection {
       "[%s] [sendToWebhook] [FAILED] webhookUrl=%s payload=%o",
       this.phoneNumber,
       this.webhookUrl,
-      sanitizedPayload,
+      sanitizedPayload ?? payload.event,
     );
   }
 
   private async sendPayloadToWebhook(
-    payload: BaileysConnectionWebhookPayload,
-    options?: {
-      awaitResponse?: boolean;
-    },
+    serializedBody: string,
   ): Promise<{ response?: Response; error?: Error }> {
     try {
       const response = await fetch(this.webhookUrl, {
@@ -829,11 +834,7 @@ export class BaileysConnection {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          ...payload,
-          webhookVerifyToken: this.webhookVerifyToken,
-          awaitResponse: options?.awaitResponse,
-        }),
+        body: serializedBody,
       });
       return { response };
     } catch (error) {
