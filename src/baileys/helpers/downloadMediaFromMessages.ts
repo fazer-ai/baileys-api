@@ -16,6 +16,8 @@ type MediaMessage =
   | proto.Message.IVideoMessage
   | proto.Message.IDocumentMessage;
 
+const CONCURRENCY = 3;
+
 export async function downloadMediaFromMessages(
   messages: BaileysEventMap["messages.upsert"]["messages"],
   options?: {
@@ -25,32 +27,54 @@ export async function downloadMediaFromMessages(
   const downloadedMedia: Record<string, string> = {};
   const mediaDir = path.resolve(process.cwd(), "media");
 
-  for (const { key, message } of messages) {
-    if (!key.id || !message) {
-      continue;
-    }
+  const downloadableMessages = messages.filter(
+    ({ key, message }) =>
+      key.id && message && extractMediaMessage(message).mediaMessage,
+  );
 
-    const { mediaMessage, mediaType } = extractMediaMessage(message);
-    if (!mediaMessage || !mediaType) {
-      continue;
-    }
+  if (downloadableMessages.length === 0) {
+    return null;
+  }
 
-    try {
-      const stream = await downloadContentFromMessage(mediaMessage, mediaType);
-      let fileBuffer = await streamToBuffer(stream);
+  for (let i = 0; i < downloadableMessages.length; i += CONCURRENCY) {
+    const chunk = downloadableMessages.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map(async ({ key, message }) => {
+        if (!key.id || !message) {
+          return;
+        }
 
-      if (message.audioMessage) {
-        fileBuffer = await preprocessAudio(fileBuffer, "mp3-high");
-        message.audioMessage.mimetype = "audio/ogg; codecs=opus";
+        const { mediaMessage, mediaType } = extractMediaMessage(message);
+        if (!mediaMessage || !mediaType) {
+          return;
+        }
+
+        const stream = await downloadContentFromMessage(
+          mediaMessage,
+          mediaType,
+        );
+        let fileBuffer = await streamToBuffer(stream);
+
+        if (message.audioMessage) {
+          fileBuffer = await preprocessAudio(fileBuffer, "mp3-high");
+          message.audioMessage.mimetype = "audio/ogg; codecs=opus";
+        }
+
+        if (options?.includeMedia) {
+          downloadedMedia[key.id] = fileBuffer.toString("base64");
+        }
+
+        await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        logger.error(
+          "Failed to download media: %s",
+          errorToString(result.reason),
+        );
       }
-
-      if (options?.includeMedia) {
-        downloadedMedia[key.id] = fileBuffer.toString("base64");
-      }
-
-      await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
-    } catch (error) {
-      logger.error("Failed to download media: %s", errorToString(error));
     }
   }
 
