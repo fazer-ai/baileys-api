@@ -50,6 +50,10 @@ function getWorkerPool(): Worker[] {
 
     worker.onerror = (event) => {
       logger.error("Audio worker error: %s", event.message);
+      for (const [id, pending] of pendingRequests) {
+        pending.reject(new Error(`Worker error: ${event.message}`));
+        pendingRequests.delete(id);
+      }
     };
 
     workers.push(worker);
