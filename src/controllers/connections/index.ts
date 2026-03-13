@@ -49,7 +49,10 @@ const connectionsController = new Elysia({
     async ({ params, body, apiKeyHash }) => {
       const { phoneNumber } = params;
 
-      await baileys.connect(phoneNumber, { ...body, apiKeyHash });
+      await baileys.connect(phoneNumber, {
+        ...body,
+        apiKeyHash: apiKeyHash ?? undefined,
+      });
     },
     {
       params: phoneNumberParams,

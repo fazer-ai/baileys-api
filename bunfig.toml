@@ -1,2 +1,4 @@
 [test]
 root = "src"
+preload = ["./src/test/preload.ts"]
+coverage = true
