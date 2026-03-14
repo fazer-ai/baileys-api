@@ -90,7 +90,7 @@ const connectionsController = new Elysia({
           t.Boolean({
             description:
               "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
-            default: false,
+            default: true,
           }),
         ),
       }),
@@ -1174,7 +1174,7 @@ const connectionsController = new Elysia({
         ]),
         inviteMessage: t.Object(
           {
-            groupJid: t.String({ description: "JID of the group" }),
+            groupJid: groupJid("target group for the invite"),
             inviteCode: t.String({ description: "Invite code" }),
             inviteExpiration: t.Optional(t.Number()),
             groupName: t.Optional(t.String()),

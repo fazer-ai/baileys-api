@@ -129,7 +129,7 @@ export class BaileysConnection {
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
-    this.groupsEnabled = options.groupsEnabled ?? false;
+    this.groupsEnabled = options.groupsEnabled ?? true;
     this._apiKeyHash = options.apiKeyHash ?? null;
   }
 
@@ -162,7 +162,7 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
-    this.groupsEnabled = options.groupsEnabled ?? false;
+    this.groupsEnabled = options.groupsEnabled ?? true;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
   }
 

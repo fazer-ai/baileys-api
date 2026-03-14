@@ -18,7 +18,11 @@ const mockEditMessage = mock(async function (this: any) {});
 const mockProfilePictureUrl = mock(async function (this: any) {
   return "https://example.com/pic.jpg";
 });
-const mockUpdateOptions = mock(function (this: any) {});
+const mockUpdateOptions = mock(function (this: any, options: any) {
+  if (options.apiKeyHash !== undefined) {
+    this._apiKeyHash = options.apiKeyHash;
+  }
+});
 const mockOnWhatsApp = mock(async function (this: any) {
   return [];
 });
