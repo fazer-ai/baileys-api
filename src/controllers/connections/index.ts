@@ -35,11 +35,11 @@ const connectionsController = new Elysia({
   },
 })
   .use(authMiddleware)
-  .onBeforeHandle(({ params, apiKeyHash, set }) => {
+  .onBeforeHandle(async ({ params, apiKeyHash, set }) => {
     const phoneNumber = (params as { phoneNumber?: string })?.phoneNumber;
     if (phoneNumber) {
       try {
-        baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
+        await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
       } catch (e) {
         if (e instanceof BaileysConnectionForbiddenError) {
           set.status = 403;

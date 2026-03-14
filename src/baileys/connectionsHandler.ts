@@ -12,7 +12,10 @@ import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
+import {
+  getRedisAuthMetadata,
+  getRedisSavedAuthStateIds,
+} from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   FetchMessageHistoryOptions,
@@ -100,16 +103,18 @@ export class BaileysConnectionsHandler {
     );
   }
 
-  verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {
+  async verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {
     const connection = this.connections[phoneNumber];
-    if (!connection) {
-      return;
+    let ownerHash: string | null | undefined;
+    if (connection) {
+      ownerHash = connection.apiKeyHash;
+    } else {
+      const metadata = await getRedisAuthMetadata<{
+        apiKeyHash?: string | null;
+      }>(phoneNumber);
+      ownerHash = metadata?.apiKeyHash;
     }
-    if (
-      connection.apiKeyHash &&
-      apiKeyHash &&
-      connection.apiKeyHash !== apiKeyHash
-    ) {
+    if (ownerHash && apiKeyHash && ownerHash !== apiKeyHash) {
       throw new BaileysConnectionForbiddenError();
     }
   }

@@ -134,6 +134,7 @@ import {
   BaileysNotConnectedError,
 } from "@/baileys/connection";
 import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
+import redis from "@/lib/redis";
 import { BaileysConnectionsHandler } from "./connectionsHandler";
 
 describe("BaileysConnectionsHandler", () => {
@@ -281,15 +282,15 @@ describe("BaileysConnectionsHandler", () => {
   });
 
   describe("#verifyConnectionAccess", () => {
-    it("does nothing when no connection exists", () => {
+    it("does nothing when no connection exists and no Redis metadata", async () => {
       // Should not throw
-      handler.verifyConnectionAccess("+5511999", "some-hash");
+      await handler.verifyConnectionAccess("+5511999", "some-hash");
     });
 
     it("does nothing when connection has no apiKeyHash", async () => {
       await handler.connect("+5511999", defaultOptions);
       // Should not throw
-      handler.verifyConnectionAccess("+5511999", "some-hash");
+      await handler.verifyConnectionAccess("+5511999", "some-hash");
     });
 
     it("does nothing when hashes match", async () => {
@@ -298,7 +299,7 @@ describe("BaileysConnectionsHandler", () => {
         apiKeyHash: "matching-hash",
       });
       // Should not throw
-      handler.verifyConnectionAccess("+5511999", "matching-hash");
+      await handler.verifyConnectionAccess("+5511999", "matching-hash");
     });
 
     it("throws BaileysConnectionForbiddenError when hashes don't match", async () => {
@@ -306,9 +307,28 @@ describe("BaileysConnectionsHandler", () => {
         ...defaultOptions,
         apiKeyHash: "hash-a",
       });
-      expect(() =>
+      expect(
         handler.verifyConnectionAccess("+5511999", "hash-b"),
-      ).toThrow(BaileysConnectionForbiddenError);
+      ).rejects.toThrow(BaileysConnectionForbiddenError);
+    });
+
+    it("checks Redis metadata when connection is not in memory", async () => {
+      // Simulate persisted metadata in Redis without an active connection
+      const hashData = (redis as any).__hashData;
+      hashData.set(
+        "@baileys-api:connections:+5511999:authState",
+        new Map([
+          ["metadata", JSON.stringify({ apiKeyHash: "persisted-hash" })],
+        ]),
+      );
+
+      // Same hash should pass
+      await handler.verifyConnectionAccess("+5511999", "persisted-hash");
+
+      // Different hash should throw
+      expect(
+        handler.verifyConnectionAccess("+5511999", "wrong-hash"),
+      ).rejects.toThrow(BaileysConnectionForbiddenError);
     });
   });
 

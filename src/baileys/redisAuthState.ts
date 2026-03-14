@@ -89,6 +89,14 @@ export async function useRedisAuthState(
   };
 }
 
+export async function getRedisAuthMetadata<T>(id: string): Promise<T | null> {
+  const data = await redis.hGet(
+    `${redisKeyPrefix}:${id}:authState`,
+    "metadata",
+  );
+  return data ? JSON.parse(data) : null;
+}
+
 export async function getRedisSavedAuthStateIds<T>(): Promise<
   Array<{ id: string; metadata: T }>
 > {
