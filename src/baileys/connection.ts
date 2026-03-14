@@ -163,6 +163,7 @@ export class BaileysConnection {
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
     this.groupsEnabled = options.groupsEnabled ?? false;
+    this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
   }
 
   async connect() {
@@ -744,7 +745,7 @@ export class BaileysConnection {
       clearInterval(this.groupActivityInterval);
       this.groupActivityInterval = null;
     }
-    this.groupActivityMap.clear();
+    this.flushGroupActivity();
   }
 
   private async sendToWebhook(

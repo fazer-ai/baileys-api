@@ -269,6 +269,10 @@ describe("BaileysConnectionsHandler", () => {
       instance.options.onConnectionClose();
 
       expect(onClose).toHaveBeenCalled();
+      // Connection should be removed after close
+      expect(() =>
+        handler.sendPresenceUpdate("+5511999", { type: "available" }),
+      ).toThrow(BaileysNotConnectedError);
     });
   });
 

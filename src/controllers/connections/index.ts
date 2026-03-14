@@ -1174,8 +1174,8 @@ const connectionsController = new Elysia({
         ]),
         inviteMessage: t.Object(
           {
-            groupJid: t.Optional(t.String()),
-            inviteCode: t.Optional(t.String()),
+            groupJid: t.String({ description: "JID of the group" }),
+            inviteCode: t.String({ description: "Invite code" }),
             inviteExpiration: t.Optional(t.Number()),
             groupName: t.Optional(t.String()),
             caption: t.Optional(t.String()),

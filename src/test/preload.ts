@@ -91,6 +91,7 @@ function sanitizeItem(
     return Array.from(item).map((i) => sanitizeItem(i, options));
   }
   if (typeof item === "object") {
+    if (item === null) return item;
     return deepSanitizeObject(item as Record<string, unknown>, options);
   }
   return item;
@@ -182,50 +183,70 @@ mock.module("qrcode", () => ({
 
 // ===== @whiskeysockets/baileys =====
 const mockEventHandlers = new Map<string, (...args: never[]) => unknown>();
-const mockSocket = {
-  ev: {
-    on: mock((event: string, handler: (...args: never[]) => unknown) => {
-      mockEventHandlers.set(event, handler);
-    }),
-    removeAllListeners: mock(() => {}),
+
+function createMockSocket() {
+  return {
+    ev: {
+      on: mock((event: string, handler: (...args: never[]) => unknown) => {
+        mockEventHandlers.set(event, handler);
+      }),
+      removeAllListeners: mock(() => {}),
+    },
+    logout: mock(async () => {}),
+    sendMessage: mock(async () => ({ key: { id: "sent-1" } })),
+    sendPresenceUpdate: mock(async () => {}),
+    readMessages: mock(async () => {}),
+    chatModify: mock(async () => {}),
+    fetchMessageHistory: mock(async () => {}),
+    sendReceipts: mock(async () => {}),
+    profilePictureUrl: mock(async () => "https://example.com/pic.jpg"),
+    onWhatsApp: mock(async () => []),
+    getBusinessProfile: mock(async () => {}),
+    groupMetadata: mock(async () => {}),
+    groupParticipantsUpdate: mock(async () => {}),
+    user: { id: "5511999999999:0@s.whatsapp.net" },
+    authState: { creds: { me: { id: "5511999999999:0@s.whatsapp.net" } } },
+    groupCreate: mock(async () => {}),
+    groupLeave: mock(async () => {}),
+    groupUpdateSubject: mock(async () => {}),
+    groupUpdateDescription: mock(async () => {}),
+    groupRequestParticipantsList: mock(async () => []),
+    groupRequestParticipantsUpdate: mock(async () => {}),
+    groupInviteCode: mock(async () => "invite-code"),
+    groupRevokeInvite: mock(async () => "new-invite"),
+    groupAcceptInvite: mock(async () => "group-jid"),
+    groupRevokeInviteV4: mock(async () => {}),
+    groupAcceptInviteV4: mock(async () => "group-jid"),
+    groupGetInviteInfo: mock(async () => ({})),
+    groupToggleEphemeral: mock(async () => {}),
+    groupSettingUpdate: mock(async () => {}),
+    groupMemberAddMode: mock(async () => {}),
+    groupJoinApprovalMode: mock(async () => {}),
+    groupFetchAllParticipating: mock(async () => ({})),
+  };
+}
+
+// Track the latest socket created by makeWASocket.
+// __mockSocket is a Proxy that delegates to the latest instance so that
+// tests can assert on it without knowing which socket object the connection holds.
+let _latestMockSocket = createMockSocket();
+const mockSocket = new Proxy({} as ReturnType<typeof createMockSocket>, {
+  get(_, prop) {
+    return (_latestMockSocket as any)[prop];
   },
-  logout: mock(async () => {}),
-  sendMessage: mock(async () => ({ key: { id: "sent-1" } })),
-  sendPresenceUpdate: mock(async () => {}),
-  readMessages: mock(async () => {}),
-  chatModify: mock(async () => {}),
-  fetchMessageHistory: mock(async () => {}),
-  sendReceipts: mock(async () => {}),
-  profilePictureUrl: mock(async () => "https://example.com/pic.jpg"),
-  onWhatsApp: mock(async () => []),
-  getBusinessProfile: mock(async () => {}),
-  groupMetadata: mock(async () => {}),
-  groupParticipantsUpdate: mock(async () => {}),
-  user: { id: "5511999999999:0@s.whatsapp.net" },
-  authState: { creds: { me: { id: "5511999999999:0@s.whatsapp.net" } } },
-  groupCreate: mock(async () => {}),
-  groupLeave: mock(async () => {}),
-  groupUpdateSubject: mock(async () => {}),
-  groupUpdateDescription: mock(async () => {}),
-  groupRequestParticipantsList: mock(async () => []),
-  groupRequestParticipantsUpdate: mock(async () => {}),
-  groupInviteCode: mock(async () => "invite-code"),
-  groupRevokeInvite: mock(async () => "new-invite"),
-  groupAcceptInvite: mock(async () => "group-jid"),
-  groupRevokeInviteV4: mock(async () => {}),
-  groupAcceptInviteV4: mock(async () => "group-jid"),
-  groupGetInviteInfo: mock(async () => ({})),
-  groupToggleEphemeral: mock(async () => {}),
-  groupSettingUpdate: mock(async () => {}),
-  groupMemberAddMode: mock(async () => {}),
-  groupJoinApprovalMode: mock(async () => {}),
-  groupFetchAllParticipating: mock(async () => ({})),
-};
+  set(_, prop, value) {
+    (_latestMockSocket as any)[prop] = value;
+    return true;
+  },
+});
 
 mock.module("@whiskeysockets/baileys", () => ({
   __mockSocket: mockSocket,
   __mockEventHandlers: mockEventHandlers,
-  default: mock(() => mockSocket),
+  default: mock(() => {
+    _latestMockSocket = createMockSocket();
+    return _latestMockSocket;
+  }),
   Browsers: { windows: (name: string) => ["Windows", name, "10"] },
   DisconnectReason: { loggedOut: 401, badSession: 500 },
   makeCacheableSignalKeyStore: mock((keys: any) => keys),
