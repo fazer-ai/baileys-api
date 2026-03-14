@@ -34,6 +34,7 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
+import redis from "@/lib/redis";
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -162,8 +163,36 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+
+    const prevGroupsEnabled = this.groupsEnabled;
     this.groupsEnabled = options.groupsEnabled ?? true;
+    if (prevGroupsEnabled !== this.groupsEnabled && this.socket) {
+      if (this.groupsEnabled) {
+        this.stopGroupActivityFlush();
+      } else {
+        this.startGroupActivityFlush();
+      }
+    }
+
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
+    this.persistMetadata();
+  }
+
+  private persistMetadata() {
+    const key = `@baileys-api:connections:${this.phoneNumber}:authState`;
+    redis.hSet(
+      key,
+      "metadata",
+      JSON.stringify({
+        clientName: this.clientName,
+        webhookUrl: this.webhookUrl,
+        webhookVerifyToken: this.webhookVerifyToken,
+        includeMedia: this.includeMedia,
+        syncFullHistory: this.syncFullHistory,
+        groupsEnabled: this.groupsEnabled,
+        apiKeyHash: this._apiKeyHash,
+      }),
+    );
   }
 
   async connect() {

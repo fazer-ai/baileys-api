@@ -267,6 +267,60 @@ describe("BaileysConnection", () => {
       });
       // No direct assertion on private fields — we verify it doesn't throw
     });
+
+    it("persists metadata to Redis on update", () => {
+      (redis as any).hSet.mockClear();
+      connection.updateOptions({
+        webhookUrl: "https://new-hook.com",
+        webhookVerifyToken: "new-token",
+        groupsEnabled: false,
+        apiKeyHash: "abc123",
+      });
+      expect((redis as any).hSet).toHaveBeenCalledWith(
+        "@baileys-api:connections:+5511999999999:authState",
+        "metadata",
+        expect.stringContaining('"apiKeyHash":"abc123"'),
+      );
+    });
+
+    it("starts group activity flush when groupsEnabled switches to false on active connection", async () => {
+      await connection.connect();
+
+      // Switch to groupsEnabled=false on the live connection
+      connection.updateOptions({
+        webhookUrl: "https://example.com/webhook",
+        webhookVerifyToken: "test-token",
+        groupsEnabled: false,
+      });
+
+      // Simulate a group message — it should be diverted to the activity map
+      const handler = mockEventHandlers.get("messages.upsert");
+      expect(handler).toBeDefined();
+
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response("ok", { status: 200 })),
+      ) as any;
+
+      await handler!({
+        type: "notify",
+        messages: [
+          {
+            key: { remoteJid: "group@g.us", id: "msg1" },
+            message: { conversation: "hello" },
+          },
+        ],
+      });
+
+      // The group message should NOT have been sent as messages.upsert webhook
+      const webhookCalls = (globalThis.fetch as any).mock.calls;
+      const upsertCalls = webhookCalls.filter((c: any) => {
+        const body = JSON.parse(c[1].body);
+        return body.event === "messages.upsert";
+      });
+      expect(upsertCalls).toHaveLength(0);
+
+      globalThis.fetch = originalFetch;
+    });
   });
 
   describe("group methods", () => {
