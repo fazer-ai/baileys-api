@@ -770,6 +770,10 @@ export class BaileysConnection {
       );
     }
 
+    // Snapshot webhook destination to prevent updateOptions() from changing
+    // the target mid-retry.
+    const webhookUrl = this.webhookUrl;
+
     const serializedBody = JSON.stringify({
       ...payload,
       webhookVerifyToken: this.webhookVerifyToken,
@@ -782,8 +786,10 @@ export class BaileysConnection {
     let delay = retryInterval;
 
     while (attempt <= maxRetries) {
-      const { response, error } =
-        await this.sendPayloadToWebhook(serializedBody);
+      const { response, error } = await this.sendPayloadToWebhook(
+        webhookUrl,
+        serializedBody,
+      );
       if (response) {
         if (response.ok) {
           if (logger.isLevelEnabled("debug")) {
@@ -799,7 +805,7 @@ export class BaileysConnection {
         logger.error(
           "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o response=%o",
           this.phoneNumber,
-          this.webhookUrl,
+          webhookUrl,
           sanitizedPayload ?? payload.event,
           { status: response.status, statusText: response.statusText },
         );
@@ -809,7 +815,7 @@ export class BaileysConnection {
         logger.error(
           "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o error=%s",
           this.phoneNumber,
-          this.webhookUrl,
+          webhookUrl,
           sanitizedPayload ?? payload.event,
           errorToString(error),
         );
@@ -834,16 +840,17 @@ export class BaileysConnection {
     logger.error(
       "[%s] [sendToWebhook] [FAILED] webhookUrl=%s payload=%o",
       this.phoneNumber,
-      this.webhookUrl,
+      webhookUrl,
       sanitizedPayload ?? payload.event,
     );
   }
 
   private async sendPayloadToWebhook(
+    webhookUrl: string,
     serializedBody: string,
   ): Promise<{ response?: Response; error?: Error }> {
     try {
-      const response = await fetch(this.webhookUrl, {
+      const response = await fetch(webhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

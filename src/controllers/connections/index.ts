@@ -26,6 +26,12 @@ const connectionsController = new Elysia({
   detail: {
     tags: ["Connections"],
     security: [{ xApiKey: [] }],
+    responses: {
+      403: {
+        description:
+          "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key.",
+      },
+    },
   },
 })
   .use(authMiddleware)
