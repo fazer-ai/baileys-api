@@ -88,7 +88,15 @@ function sanitizeItem(
     return `${item.slice(0, 50)}${item.length > 50 ? "..." : ""}`;
   }
   if (Array.isArray(item) || item instanceof Set) {
-    return Array.from(item).map((i) => sanitizeItem(i, options));
+    const arr = Array.from(item);
+    const maxItems = 3;
+    const sanitized = arr
+      .slice(0, maxItems)
+      .map((i) => sanitizeItem(i, options));
+    if (arr.length > maxItems) {
+      sanitized.push(`... and ${arr.length - maxItems} more`);
+    }
+    return sanitized;
   }
   if (typeof item === "object") {
     if (item === null) return item;

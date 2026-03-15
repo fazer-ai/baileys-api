@@ -19,7 +19,15 @@ function sanitizeItem(
     return `${item.slice(0, 50)}${item.length > 50 ? "..." : ""}`;
   }
   if (Array.isArray(item) || item instanceof Set) {
-    return Array.from(item).map((i) => sanitizeItem(i, options));
+    const arr = Array.from(item);
+    const maxItems = 3;
+    const sanitized = arr
+      .slice(0, maxItems)
+      .map((i) => sanitizeItem(i, options));
+    if (arr.length > maxItems) {
+      sanitized.push(`... and ${arr.length - maxItems} more`);
+    }
+    return sanitized;
   }
   if (typeof item === "object") {
     return deepSanitizeObject(item as Record<string, unknown>, options);
@@ -49,51 +57,48 @@ export function deepSanitizeObject(
 
 const isDev = config.env === "development";
 
-function buildTransportTargets(
+function buildDevTransport(
   level: string,
   logFile: string,
-): pino.TransportTargetOptions[] {
-  const targets: pino.TransportTargetOptions[] = [
-    {
-      level,
-      target: "pino-roll",
-      options: {
-        file: path.join("logs", logFile),
-        size: "50m",
-        limit: { count: 10 },
+): pino.TransportMultiOptions {
+  return {
+    targets: [
+      {
+        level,
+        target: "pino-roll",
+        options: {
+          file: path.join("logs", logFile),
+          size: "50m",
+          limit: { count: 10 },
+        },
       },
-    },
-  ];
-
-  if (isDev) {
-    targets.push({
-      level,
-      target: "pino-pretty",
-      options: {
-        colorize: true,
-        translateTime: "SYS:standard",
-      } as PrettyOptions,
-    });
-  }
-
-  return targets;
+      {
+        level,
+        target: "pino-pretty",
+        options: {
+          colorize: true,
+          translateTime: "SYS:standard",
+        } as PrettyOptions,
+      },
+    ],
+  };
 }
 
 export const baileysLogger = pino({
-  level: "debug",
-  transport: {
-    targets: buildTransportTargets(
+  level: isDev ? "debug" : (config.baileys.logLevel as string),
+  ...(isDev && {
+    transport: buildDevTransport(
       config.baileys.logLevel as string,
       "baileys",
     ),
-  },
+  }),
 });
 
 let logger = pino({
-  level: "debug",
-  transport: {
-    targets: buildTransportTargets(config.logLevel as string, "log"),
-  },
+  level: isDev ? "debug" : (config.logLevel as string),
+  ...(isDev && {
+    transport: buildDevTransport(config.logLevel as string, "log"),
+  }),
 });
 
 if (config.env === "development") {

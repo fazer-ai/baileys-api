@@ -7,7 +7,7 @@ import connectionsController from "@/controllers/connections";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
-import logger from "@/lib/logger";
+import logger, { deepSanitizeObject } from "@/lib/logger";
 
 const app = new Elysia()
   .onAfterResponse(({ request, response, set }) => {
@@ -17,7 +17,9 @@ const app = new Elysia()
         request.method,
         request.url,
         (response as Response)?.status ?? set.status,
-        response ?? {},
+        typeof response === "object" && response !== null
+          ? deepSanitizeObject(response as Record<string, unknown>)
+          : response ?? {},
       );
     } else {
       logger.info(

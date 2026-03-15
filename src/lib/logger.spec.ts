@@ -38,6 +38,25 @@ describe("deepSanitizeObject", () => {
     expect((result.items as string[])[1]).toBe("short");
   });
 
+  it("truncates arrays longer than 3 items", () => {
+    const result = deepSanitizeObject({
+      items: [1, 2, 3, 4, 5, 6],
+    });
+    const items = result.items as unknown[];
+    expect(items).toHaveLength(4);
+    expect(items[0]).toBe(1);
+    expect(items[1]).toBe(2);
+    expect(items[2]).toBe(3);
+    expect(items[3]).toBe("... and 3 more");
+  });
+
+  it("does not truncate arrays with 3 or fewer items", () => {
+    const result = deepSanitizeObject({
+      items: ["a", "b", "c"],
+    });
+    expect(result.items).toEqual(["a", "b", "c"]);
+  });
+
   it("preserves numbers and booleans", () => {
     const result = deepSanitizeObject({
       count: 42,
