@@ -87,10 +87,7 @@ function buildDevTransport(
 export const baileysLogger = pino({
   level: isDev ? "debug" : (config.baileys.logLevel as string),
   ...(isDev && {
-    transport: buildDevTransport(
-      config.baileys.logLevel as string,
-      "baileys",
-    ),
+    transport: buildDevTransport(config.baileys.logLevel as string, "baileys"),
   }),
 });
 

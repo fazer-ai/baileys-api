@@ -428,6 +428,10 @@ export class BaileysConnection {
     return this.safeSocket().profilePictureUrl(jid, type);
   }
 
+  async updateProfilePicture(jid: string, image: Buffer) {
+    return this.safeSocket().updateProfilePicture(jid, image);
+  }
+
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
   }

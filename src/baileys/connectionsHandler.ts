@@ -208,6 +208,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).profilePictureUrl(jid, type);
   }
 
+  updateProfilePicture(phoneNumber: string, jid: string, image: Buffer) {
+    return this.getConnection(phoneNumber).updateProfilePicture(jid, image);
+  }
+
   onWhatsApp(phoneNumber: string, jids: string[]) {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
   }

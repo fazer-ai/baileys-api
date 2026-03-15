@@ -867,6 +867,33 @@ const connectionsController = new Elysia({
     },
   )
   .post(
+    "/:phoneNumber/update-profile-picture",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jid, image } = body;
+
+      const buffer = Buffer.from(image, "base64");
+      await baileys.updateProfilePicture(phoneNumber, jid, buffer);
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jid: anyJid(),
+        image: t.String({
+          description: "Base64-encoded image data",
+        }),
+      }),
+      detail: {
+        description: "Update profile picture for a contact or group",
+        responses: {
+          200: {
+            description: "Profile picture updated successfully",
+          },
+        },
+      },
+    },
+  )
+  .post(
     "/:phoneNumber/group-create",
     async ({ params, body }) => {
       const { phoneNumber } = params;

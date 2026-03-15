@@ -19,7 +19,7 @@ const app = new Elysia()
         (response as Response)?.status ?? set.status,
         typeof response === "object" && response !== null
           ? deepSanitizeObject(response as Record<string, unknown>)
-          : response ?? {},
+          : (response ?? {}),
       );
     } else {
       logger.info(
