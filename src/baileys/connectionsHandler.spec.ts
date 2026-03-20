@@ -307,7 +307,7 @@ describe("BaileysConnectionsHandler", () => {
         ...defaultOptions,
         apiKeyHash: "hash-a",
       });
-      expect(
+      await expect(
         handler.verifyConnectionAccess("+5511999", "hash-b"),
       ).rejects.toThrow(BaileysConnectionForbiddenError);
     });
@@ -326,7 +326,7 @@ describe("BaileysConnectionsHandler", () => {
       await handler.verifyConnectionAccess("+5511999", "persisted-hash");
 
       // Different hash should throw
-      expect(
+      await expect(
         handler.verifyConnectionAccess("+5511999", "wrong-hash"),
       ).rejects.toThrow(BaileysConnectionForbiddenError);
     });
