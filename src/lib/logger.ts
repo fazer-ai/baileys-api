@@ -30,7 +30,18 @@ function sanitizeItem(
     return sanitized;
   }
   if (typeof item === "object") {
-    return deepSanitizeObject(item as Record<string, unknown>, options);
+    const obj = item as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    const maxKeys = 20;
+    if (keys.length > maxKeys) {
+      const truncated: Record<string, unknown> = {};
+      for (const key of keys.slice(0, maxKeys)) {
+        truncated[key] = sanitizeItem(obj[key], options);
+      }
+      truncated["..."] = `${keys.length - maxKeys} more keys`;
+      return truncated;
+    }
+    return deepSanitizeObject(obj, options);
   }
   return item;
 }
