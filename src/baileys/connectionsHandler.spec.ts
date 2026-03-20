@@ -217,8 +217,12 @@ describe("BaileysConnectionsHandler", () => {
       expect(mockConnectionInstances.size).toBe(2);
 
       // Verify the handler actually registered the connections (not just the mock constructor)
-      expect(() => handler.sendPresenceUpdate("+5511999", { type: "available" })).not.toThrow();
-      expect(() => handler.sendPresenceUpdate("+5521888", { type: "available" })).not.toThrow();
+      expect(() =>
+        handler.sendPresenceUpdate("+5511999", { type: "available" }),
+      ).not.toThrow();
+      expect(() =>
+        handler.sendPresenceUpdate("+5521888", { type: "available" }),
+      ).not.toThrow();
     });
   });
 

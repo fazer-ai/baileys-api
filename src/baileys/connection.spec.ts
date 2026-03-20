@@ -129,8 +129,8 @@ describe("BaileysConnection", () => {
   });
 
   describe("#sendMessage", () => {
-    it("throws BaileysNotConnectedError if not connected", () => {
-      expect(
+    it("throws BaileysNotConnectedError if not connected", async () => {
+      await expect(
         connection.sendMessage("jid@s.whatsapp.net", { text: "hi" }),
       ).rejects.toThrow(BaileysNotConnectedError);
     });
