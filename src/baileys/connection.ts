@@ -64,6 +64,7 @@ export class BaileysConnection {
     "thumbnailSha256",
     "thumbnailEncSha256",
     "appStateSyncKeyShare",
+    "initialHistBootstrapInlinePayload",
   ];
   private ALL_BAILEYS_SOCKET_EVENTS: ReadonlyArray<keyof BaileysEventMap> = [
     "connection.update",
@@ -827,10 +828,10 @@ export class BaileysConnection {
         if (response.ok) {
           if (logger.isLevelEnabled("debug")) {
             logger.debug(
-              "[%s] [sendToWebhook] [SUCCESS] payload=%o response=%o",
+              "[%s] [sendToWebhook] [SUCCESS] event=%s status=%d",
               this.phoneNumber,
-              sanitizedPayload,
-              response,
+              payload.event,
+              response.status,
             );
           }
           return response;
