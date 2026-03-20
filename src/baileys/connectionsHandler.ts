@@ -4,19 +4,25 @@ import type {
   ParticipantAction,
   proto,
   WAMessage,
+  WAMessageKey,
   WAPresence,
 } from "@whiskeysockets/baileys";
 import {
   BaileysConnection,
+  BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
+import {
+  getRedisAuthMetadata,
+  getRedisSavedAuthStateIds,
+} from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   FetchMessageHistoryOptions,
   MessageKeyWithId,
   SendReceiptsOptions,
 } from "@/baileys/types";
+import { asyncSleep } from "@/helpers/asyncSleep";
 import logger from "@/lib/logger";
 
 export class BaileysConnectionsHandler {
@@ -39,21 +45,27 @@ export class BaileysConnectionsHandler {
       savedConnections.map(({ id }) => id),
     );
 
-    // TODO: Handle thundering herd issue.
-    for (const { id, metadata } of savedConnections) {
-      const connection = new BaileysConnection(id, {
-        onConnectionClose: () => {
-          delete this.connections[id];
-          logger.debug(
-            "Now tracking %d connections",
-            Object.keys(this.connections).length,
-          );
-        },
-        isReconnect: true,
-        ...metadata,
-      });
-      this.connections[id] = connection;
-      await connection.connect();
+    const CONCURRENCY = 5;
+    for (let i = 0; i < savedConnections.length; i += CONCURRENCY) {
+      const chunk = savedConnections.slice(i, i + CONCURRENCY);
+      await Promise.allSettled(
+        chunk.map(async ({ id, metadata }) => {
+          await asyncSleep(Math.floor(Math.random() * 100));
+          const connection = new BaileysConnection(id, {
+            onConnectionClose: () => {
+              delete this.connections[id];
+              logger.debug(
+                "Now tracking %d connections",
+                Object.keys(this.connections).length,
+              );
+            },
+            isReconnect: true,
+            ...metadata,
+          });
+          this.connections[id] = connection;
+          await connection.connect();
+        }),
+      );
     }
   }
 
@@ -89,6 +101,22 @@ export class BaileysConnectionsHandler {
       "Now tracking %d connections",
       Object.keys(this.connections).length,
     );
+  }
+
+  async verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {
+    const connection = this.connections[phoneNumber];
+    let ownerHash: string | null | undefined;
+    if (connection) {
+      ownerHash = connection.apiKeyHash;
+    } else {
+      const metadata = await getRedisAuthMetadata<{
+        apiKeyHash?: string | null;
+      }>(phoneNumber);
+      ownerHash = metadata?.apiKeyHash;
+    }
+    if (ownerHash && apiKeyHash && ownerHash !== apiKeyHash) {
+      throw new BaileysConnectionForbiddenError();
+    }
   }
 
   private getConnection(phoneNumber: string) {
@@ -180,8 +208,16 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).profilePictureUrl(jid, type);
   }
 
+  updateProfilePicture(phoneNumber: string, jid: string, image: Buffer) {
+    return this.getConnection(phoneNumber).updateProfilePicture(jid, image);
+  }
+
   onWhatsApp(phoneNumber: string, jids: string[]) {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
+  }
+
+  getBusinessProfile(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).getBusinessProfile(jid);
   }
 
   groupMetadata(phoneNumber: string, jid: string) {
@@ -214,6 +250,104 @@ export class BaileysConnectionsHandler {
       jid,
       description,
     );
+  }
+
+  groupCreate(phoneNumber: string, subject: string, participants: string[]) {
+    return this.getConnection(phoneNumber).groupCreate(subject, participants);
+  }
+
+  groupLeave(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupLeave(jid);
+  }
+
+  groupRequestParticipantsList(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupRequestParticipantsList(jid);
+  }
+
+  groupRequestParticipantsUpdate(
+    phoneNumber: string,
+    jid: string,
+    participants: string[],
+    action: "approve" | "reject",
+  ) {
+    return this.getConnection(phoneNumber).groupRequestParticipantsUpdate(
+      jid,
+      participants,
+      action,
+    );
+  }
+
+  groupInviteCode(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupInviteCode(jid);
+  }
+
+  groupRevokeInvite(phoneNumber: string, jid: string) {
+    return this.getConnection(phoneNumber).groupRevokeInvite(jid);
+  }
+
+  groupAcceptInvite(phoneNumber: string, code: string) {
+    return this.getConnection(phoneNumber).groupAcceptInvite(code);
+  }
+
+  groupRevokeInviteV4(
+    phoneNumber: string,
+    groupJid: string,
+    invitedJid: string,
+  ) {
+    return this.getConnection(phoneNumber).groupRevokeInviteV4(
+      groupJid,
+      invitedJid,
+    );
+  }
+
+  groupAcceptInviteV4(
+    phoneNumber: string,
+    key: string | WAMessageKey,
+    inviteMessage: proto.Message.IGroupInviteMessage,
+  ) {
+    return this.getConnection(phoneNumber).groupAcceptInviteV4(
+      key,
+      inviteMessage,
+    );
+  }
+
+  groupGetInviteInfo(phoneNumber: string, code: string) {
+    return this.getConnection(phoneNumber).groupGetInviteInfo(code);
+  }
+
+  groupToggleEphemeral(
+    phoneNumber: string,
+    jid: string,
+    ephemeralExpiration: number,
+  ) {
+    return this.getConnection(phoneNumber).groupToggleEphemeral(
+      jid,
+      ephemeralExpiration,
+    );
+  }
+
+  groupSettingUpdate(
+    phoneNumber: string,
+    jid: string,
+    setting: "announcement" | "not_announcement" | "locked" | "unlocked",
+  ) {
+    return this.getConnection(phoneNumber).groupSettingUpdate(jid, setting);
+  }
+
+  groupMemberAddMode(
+    phoneNumber: string,
+    jid: string,
+    mode: "admin_add" | "all_member_add",
+  ) {
+    return this.getConnection(phoneNumber).groupMemberAddMode(jid, mode);
+  }
+
+  groupJoinApprovalMode(phoneNumber: string, jid: string, mode: "on" | "off") {
+    return this.getConnection(phoneNumber).groupJoinApprovalMode(jid, mode);
+  }
+
+  groupFetchAllParticipating(phoneNumber: string) {
+    return this.getConnection(phoneNumber).groupFetchAllParticipating();
   }
 
   async logout(phoneNumber: string) {

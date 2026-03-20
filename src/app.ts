@@ -7,17 +7,28 @@ import connectionsController from "@/controllers/connections";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
-import logger from "@/lib/logger";
+import logger, { deepSanitizeObject } from "@/lib/logger";
 
 const app = new Elysia()
   .onAfterResponse(({ request, response, set }) => {
-    logger.info(
-      "%s %s [%d] %o",
-      request.method,
-      request.url,
-      (response as Response)?.status ?? set.status,
-      response ?? {},
-    );
+    if (config.env === "development") {
+      logger.info(
+        "%s %s [%d] %o",
+        request.method,
+        request.url,
+        (response as Response)?.status ?? set.status,
+        typeof response === "object" && response !== null
+          ? deepSanitizeObject(response as Record<string, unknown>)
+          : (response ?? {}),
+      );
+    } else {
+      logger.info(
+        "%s %s [%d]",
+        request.method,
+        request.url,
+        (response as Response)?.status ?? set.status,
+      );
+    }
   })
   .onError(({ path, error, code }) => {
     logger.error("%s\n%s", path, errorToString(error));

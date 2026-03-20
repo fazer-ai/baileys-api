@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import type { Elysia } from "elysia";
+import { LRUCache } from "lru-cache";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
@@ -10,6 +12,15 @@ export interface AuthData {
 
 export const REDIS_KEY_PREFIX = "@baileys-api:api-keys";
 
+const apiKeyCache = new LRUCache<string, AuthData>({
+  max: 1000,
+  ttl: 5 * 60 * 1000,
+});
+
+export function clearApiKeyCache(apiKey: string) {
+  apiKeyCache.delete(apiKey);
+}
+
 function getApiKey(headers: Headers): string | null {
   return headers.get("x-api-key");
 }
@@ -19,23 +30,31 @@ export const authMiddleware = (app: Elysia) =>
     .derive(async ({ request }) => {
       const apiKey = getApiKey(request.headers);
       if (!apiKey) {
-        return { auth: null };
+        return { auth: null, apiKeyHash: null as string | null };
       }
 
+      const apiKeyHash = createHash("sha256").update(apiKey).digest("hex");
+
       try {
+        const cached = apiKeyCache.get(apiKey);
+        if (cached) {
+          return { auth: cached, apiKeyHash };
+        }
+
         const key = `${REDIS_KEY_PREFIX}:${apiKey}`;
         const raw = await redis.get(key);
 
         if (!raw) {
-          logger.warn("Invalid API key attempted: %s", apiKey);
-          return { auth: null };
+          logger.warn("Invalid API key attempted: %s", apiKeyHash);
+          return { auth: null, apiKeyHash: null as string | null };
         }
 
         const auth = JSON.parse(raw) as AuthData;
-        return { auth };
+        apiKeyCache.set(apiKey, auth);
+        return { auth, apiKeyHash };
       } catch (error) {
         logger.error("Auth middleware error %s", errorToString(error));
-        return { auth: null };
+        return { auth: null, apiKeyHash: null as string | null };
       }
     })
     .onBeforeHandle(({ auth, set }) => {

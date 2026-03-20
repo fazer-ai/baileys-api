@@ -7,6 +7,7 @@ import makeWASocket, {
   type ChatModification,
   type ConnectionState,
   DisconnectReason,
+  isJidGroup,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type ParticipantAction,
@@ -14,6 +15,7 @@ import makeWASocket, {
   type UserFacingSocketConfig,
   type WAConnectionState,
   type WAMessage,
+  type WAMessageKey,
   type WAPresence,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
@@ -32,10 +34,17 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
+import redis from "@/lib/redis";
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
     super("Phone number not connected");
+  }
+}
+
+export class BaileysConnectionForbiddenError extends Error {
+  constructor() {
+    super("Connection not owned by this API key");
   }
 }
 
@@ -101,6 +110,13 @@ export class BaileysConnection {
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
     null;
   private reconnectCount = 0;
+  private groupsEnabled: boolean;
+  private _apiKeyHash: string | null;
+  private groupActivityMap: Map<
+    string,
+    { unreadCount: number; lastMessageAt: number }
+  > = new Map();
+  private groupActivityInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -114,6 +130,12 @@ export class BaileysConnection {
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+    this.groupsEnabled = options.groupsEnabled ?? true;
+    this._apiKeyHash = options.apiKeyHash ?? null;
+  }
+
+  get apiKeyHash(): string | null {
+    return this._apiKeyHash;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -141,6 +163,36 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
+
+    const prevGroupsEnabled = this.groupsEnabled;
+    this.groupsEnabled = options.groupsEnabled ?? true;
+    if (prevGroupsEnabled !== this.groupsEnabled && this.socket) {
+      if (this.groupsEnabled) {
+        this.stopGroupActivityFlush();
+      } else {
+        this.startGroupActivityFlush();
+      }
+    }
+
+    this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
+    this.persistMetadata();
+  }
+
+  private persistMetadata() {
+    const key = `@baileys-api:connections:${this.phoneNumber}:authState`;
+    redis.hSet(
+      key,
+      "metadata",
+      JSON.stringify({
+        clientName: this.clientName,
+        webhookUrl: this.webhookUrl,
+        webhookVerifyToken: this.webhookVerifyToken,
+        includeMedia: this.includeMedia,
+        syncFullHistory: this.syncFullHistory,
+        groupsEnabled: this.groupsEnabled,
+        apiKeyHash: this._apiKeyHash,
+      }),
+    );
   }
 
   async connect() {
@@ -154,6 +206,8 @@ export class BaileysConnection {
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
       syncFullHistory: this.syncFullHistory,
+      groupsEnabled: this.groupsEnabled,
+      apiKeyHash: this._apiKeyHash,
     });
     this.clearAuthState = state.keys.clear;
 
@@ -248,6 +302,7 @@ export class BaileysConnection {
   }
 
   private async close() {
+    this.stopGroupActivityFlush();
     await this.clearAuthState?.();
     this.clearAuthState = null;
     this.socket = null;
@@ -373,8 +428,16 @@ export class BaileysConnection {
     return this.safeSocket().profilePictureUrl(jid, type);
   }
 
+  async updateProfilePicture(jid: string, image: Buffer) {
+    return this.safeSocket().updateProfilePicture(jid, image);
+  }
+
   onWhatsApp(jids: string[]) {
     return this.safeSocket().onWhatsApp(...jids);
+  }
+
+  getBusinessProfile(jid: string) {
+    return this.safeSocket().getBusinessProfile(jid);
   }
 
   groupMetadata(jid: string) {
@@ -395,6 +458,80 @@ export class BaileysConnection {
 
   groupUpdateDescription(jid: string, description?: string) {
     return this.safeSocket().groupUpdateDescription(jid, description);
+  }
+
+  groupCreate(subject: string, participants: string[]) {
+    return this.safeSocket().groupCreate(subject, participants);
+  }
+
+  groupLeave(jid: string) {
+    return this.safeSocket().groupLeave(jid);
+  }
+
+  groupRequestParticipantsList(jid: string) {
+    return this.safeSocket().groupRequestParticipantsList(jid);
+  }
+
+  groupRequestParticipantsUpdate(
+    jid: string,
+    participants: string[],
+    action: "approve" | "reject",
+  ) {
+    return this.safeSocket().groupRequestParticipantsUpdate(
+      jid,
+      participants,
+      action,
+    );
+  }
+
+  groupInviteCode(jid: string) {
+    return this.safeSocket().groupInviteCode(jid);
+  }
+
+  groupRevokeInvite(jid: string) {
+    return this.safeSocket().groupRevokeInvite(jid);
+  }
+
+  groupAcceptInvite(code: string) {
+    return this.safeSocket().groupAcceptInvite(code);
+  }
+
+  groupRevokeInviteV4(groupJid: string, invitedJid: string) {
+    return this.safeSocket().groupRevokeInviteV4(groupJid, invitedJid);
+  }
+
+  groupAcceptInviteV4(
+    key: string | WAMessageKey,
+    inviteMessage: proto.Message.IGroupInviteMessage,
+  ) {
+    return this.safeSocket().groupAcceptInviteV4(key, inviteMessage);
+  }
+
+  groupGetInviteInfo(code: string) {
+    return this.safeSocket().groupGetInviteInfo(code);
+  }
+
+  groupToggleEphemeral(jid: string, ephemeralExpiration: number) {
+    return this.safeSocket().groupToggleEphemeral(jid, ephemeralExpiration);
+  }
+
+  groupSettingUpdate(
+    jid: string,
+    setting: "announcement" | "not_announcement" | "locked" | "unlocked",
+  ) {
+    return this.safeSocket().groupSettingUpdate(jid, setting);
+  }
+
+  groupMemberAddMode(jid: string, mode: "admin_add" | "all_member_add") {
+    return this.safeSocket().groupMemberAddMode(jid, mode);
+  }
+
+  groupJoinApprovalMode(jid: string, mode: "on" | "off") {
+    return this.safeSocket().groupJoinApprovalMode(jid, mode);
+  }
+
+  groupFetchAllParticipating() {
+    return this.safeSocket().groupFetchAllParticipating();
   }
 
   private safeSocket() {
@@ -478,6 +615,7 @@ export class BaileysConnection {
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      this.startGroupActivityFlush();
     }
 
     this.sendToWebhook({
@@ -487,12 +625,37 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    let messagesData = data;
+
+    if (!this.groupsEnabled) {
+      const individualMessages: typeof data.messages = [];
+
+      for (const msg of data.messages) {
+        const remoteJid = msg.key?.remoteJid;
+        if (remoteJid && isJidGroup(remoteJid)) {
+          const existing = this.groupActivityMap.get(remoteJid);
+          this.groupActivityMap.set(remoteJid, {
+            unreadCount: (existing?.unreadCount ?? 0) + 1,
+            lastMessageAt: Date.now(),
+          });
+        } else {
+          individualMessages.push(msg);
+        }
+      }
+
+      if (individualMessages.length === 0) {
+        return;
+      }
+
+      messagesData = { ...data, messages: individualMessages };
+    }
+
     const payload: BaileysConnectionWebhookPayload = {
       event: "messages.upsert",
-      data,
+      data: messagesData,
     };
 
-    const media = await downloadMediaFromMessages(data.messages, {
+    const media = await downloadMediaFromMessages(messagesData.messages, {
       includeMedia: this.includeMedia,
     });
     if (media) {
@@ -578,25 +741,77 @@ export class BaileysConnection {
     });
   }
 
+  private startGroupActivityFlush() {
+    this.stopGroupActivityFlush();
+    if (this.groupsEnabled) {
+      return;
+    }
+    this.groupActivityInterval = setInterval(() => {
+      this.flushGroupActivity();
+    }, 30_000);
+  }
+
+  private flushGroupActivity() {
+    if (this.groupActivityMap.size === 0) {
+      return;
+    }
+
+    const activities: Array<{
+      jid: string;
+      unreadCount: number;
+      lastMessageAt: number;
+    }> = [];
+
+    for (const [jid, activity] of this.groupActivityMap) {
+      activities.push({ jid, ...activity });
+    }
+    this.groupActivityMap.clear();
+
+    this.sendToWebhook({
+      event: "groups.activity" as keyof BaileysEventMap,
+      data: activities,
+    });
+  }
+
+  private stopGroupActivityFlush() {
+    if (this.groupActivityInterval) {
+      clearInterval(this.groupActivityInterval);
+      this.groupActivityInterval = null;
+    }
+    this.flushGroupActivity();
+  }
+
   private async sendToWebhook(
     payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;
     },
   ) {
-    const sanitizedPayload = deepSanitizeObject(
-      { ...payload },
-      {
-        omitKeys: [...this.LOGGER_OMIT_KEYS],
-      },
-    );
+    let sanitizedPayload: Record<string, unknown> | null = null;
+    if (logger.isLevelEnabled("debug")) {
+      sanitizedPayload = deepSanitizeObject(
+        { ...payload },
+        {
+          omitKeys: [...this.LOGGER_OMIT_KEYS],
+        },
+      );
+      logger.debug(
+        "[%s] [sendToWebhook] (options: %o) payload=%o",
+        this.phoneNumber,
+        options || {},
+        sanitizedPayload,
+      );
+    }
 
-    logger.debug(
-      "[%s] [sendToWebhook] (options: %o) payload=%o",
-      this.phoneNumber,
-      options || {},
-      sanitizedPayload,
-    );
+    // Snapshot webhook destination to prevent updateOptions() from changing
+    // the target mid-retry.
+    const webhookUrl = this.webhookUrl;
+
+    const serializedBody = JSON.stringify({
+      ...payload,
+      webhookVerifyToken: this.webhookVerifyToken,
+      awaitResponse: options?.awaitResponse,
+    });
 
     const { maxRetries, retryInterval, backoffFactor } =
       config.webhook.retryPolicy;
@@ -605,24 +820,26 @@ export class BaileysConnection {
 
     while (attempt <= maxRetries) {
       const { response, error } = await this.sendPayloadToWebhook(
-        payload,
-        options,
+        webhookUrl,
+        serializedBody,
       );
       if (response) {
         if (response.ok) {
-          logger.debug(
-            "[%s] [sendToWebhook] [SUCCESS] payload=%o response=%o",
-            this.phoneNumber,
-            sanitizedPayload,
-            response,
-          );
+          if (logger.isLevelEnabled("debug")) {
+            logger.debug(
+              "[%s] [sendToWebhook] [SUCCESS] payload=%o response=%o",
+              this.phoneNumber,
+              sanitizedPayload,
+              response,
+            );
+          }
           return response;
         }
         logger.error(
           "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o response=%o",
           this.phoneNumber,
-          this.webhookUrl,
-          sanitizedPayload,
+          webhookUrl,
+          sanitizedPayload ?? payload.event,
           { status: response.status, statusText: response.statusText },
         );
       }
@@ -631,8 +848,8 @@ export class BaileysConnection {
         logger.error(
           "[%s] [sendToWebhook] [ERROR] webhookUrl=%s payload=%o error=%s",
           this.phoneNumber,
-          this.webhookUrl,
-          sanitizedPayload,
+          webhookUrl,
+          sanitizedPayload ?? payload.event,
           errorToString(error),
         );
       }
@@ -642,7 +859,7 @@ export class BaileysConnection {
         logger.info(
           "[%s] [sendToWebhook] [RETRYING] payload=%o attempt=%d/%d delay=%dms",
           this.phoneNumber,
-          sanitizedPayload,
+          sanitizedPayload ?? payload.event,
           attempt,
           maxRetries,
           delay,
@@ -656,28 +873,22 @@ export class BaileysConnection {
     logger.error(
       "[%s] [sendToWebhook] [FAILED] webhookUrl=%s payload=%o",
       this.phoneNumber,
-      this.webhookUrl,
-      sanitizedPayload,
+      webhookUrl,
+      sanitizedPayload ?? payload.event,
     );
   }
 
   private async sendPayloadToWebhook(
-    payload: BaileysConnectionWebhookPayload,
-    options?: {
-      awaitResponse?: boolean;
-    },
+    webhookUrl: string,
+    serializedBody: string,
   ): Promise<{ response?: Response; error?: Error }> {
     try {
-      const response = await fetch(this.webhookUrl, {
+      const response = await fetch(webhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          ...payload,
-          webhookVerifyToken: this.webhookVerifyToken,
-          awaitResponse: options?.awaitResponse,
-        }),
+        body: serializedBody,
       });
       return { response };
     } catch (error) {

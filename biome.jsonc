@@ -44,5 +44,20 @@
       }
     },
     "includes": ["src/**/*.ts"]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/**/*.spec.ts", "src/test/**/*.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          },
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    }
+  ]
 }
