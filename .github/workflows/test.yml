@@ -29,8 +29,5 @@ jobs:
       - name: Install All Dependencies
         run: bun install
 
-      - name: Run connection test only
-        run: bun test src/baileys/connection.spec.ts 2>&1 | tail -20
-
-      - name: Run all tests
+      - name: Run Tests
         run: bun run test

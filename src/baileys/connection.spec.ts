@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
+// Prevent mock.module leak from connectionsHandler.spec.ts which mocks
+// @/baileys/connection with a stub class. Re-mock with the real module
+// so this file tests the actual BaileysConnection implementation.
+mock.module("@/baileys/connection", () => import("./connection.ts"));
+
 // Track fetch calls for webhook tests
 const fetchCalls: Array<{ url: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
