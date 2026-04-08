@@ -29,19 +29,8 @@ jobs:
       - name: Install All Dependencies
         run: bun install
 
-      - name: Debug mock.module
-        run: |
-          bun -e "
-            import { mock } from 'bun:test';
-            mock.module('@whiskeysockets/baileys', () => ({
-              default: () => 'MOCKED',
-              __test: true,
-            }));
-            const mod = await import('@whiskeysockets/baileys');
-            console.log('default is mocked:', typeof mod.default === 'function' && mod.default() === 'MOCKED');
-            console.log('__test exists:', (mod as any).__test);
-            console.log('keys:', Object.keys(mod).slice(0, 10));
-          "
+      - name: Run connection test only
+        run: bun test src/baileys/connection.spec.ts 2>&1 | tail -20
 
-      - name: Run Tests
+      - name: Run all tests
         run: bun run test
