@@ -25,8 +25,19 @@ import type {
 import { asyncSleep } from "@/helpers/asyncSleep";
 import logger from "@/lib/logger";
 
+type ConnectionFactory = (
+  phoneNumber: string,
+  options: BaileysConnectionOptions,
+) => BaileysConnection;
+
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
+  private createConnection: ConnectionFactory;
+
+  constructor(createConnection?: ConnectionFactory) {
+    this.createConnection =
+      createConnection || ((phone, opts) => new BaileysConnection(phone, opts));
+  }
 
   async reconnectFromAuthStore() {
     const savedConnections =
@@ -51,7 +62,7 @@ export class BaileysConnectionsHandler {
       await Promise.allSettled(
         chunk.map(async ({ id, metadata }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
-          const connection = new BaileysConnection(id, {
+          const connection = this.createConnection(id, {
             onConnectionClose: () => {
               delete this.connections[id];
               logger.debug(
@@ -88,7 +99,7 @@ export class BaileysConnectionsHandler {
       }
     }
 
-    const connection = new BaileysConnection(phoneNumber, {
+    const connection = this.createConnection(phoneNumber, {
       ...options,
       onConnectionClose: () => {
         delete this.connections[phoneNumber];

@@ -15,12 +15,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Cache Bun Installation
-        uses: actions/cache@v5
-        with:
-          path: ~/.bun
-          key: ${{ runner.os }}-bun
-
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
@@ -28,9 +22,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-deps-${{ hashFiles('bun.lockb') }}
+          key: ${{ runner.os }}-bun-deps-v2-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-deps-
+            ${{ runner.os }}-bun-deps-v2-
 
       - name: Install All Dependencies
         run: bun install

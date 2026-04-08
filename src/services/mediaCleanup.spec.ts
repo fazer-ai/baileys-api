@@ -1,12 +1,4 @@
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  mock,
-  spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { promises as fs } from "node:fs";
 import { MediaCleanupService } from "./mediaCleanup";
 
@@ -24,7 +16,9 @@ describe("MediaCleanupService", () => {
 
   afterEach(() => {
     service.stop();
-    mock.restore();
+    for (const method of ["readdir", "stat", "unlink"] as const) {
+      (fs[method] as any)?.mockRestore?.();
+    }
   });
 
   describe("constructor", () => {
