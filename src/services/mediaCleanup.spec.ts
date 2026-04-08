@@ -24,7 +24,11 @@ describe("MediaCleanupService", () => {
 
   afterEach(() => {
     service.stop();
-    mock.restore();
+    // Restore fs spies individually instead of mock.restore() which
+    // also destroys module mocks from the preload (bun bug oven-sh/bun#12823).
+    for (const method of ["readdir", "stat", "unlink"] as const) {
+      (fs[method] as any)?.mockRestore?.();
+    }
   });
 
   describe("constructor", () => {
