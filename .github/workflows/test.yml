@@ -30,4 +30,9 @@ jobs:
         run: bun install
 
       - name: Run Tests
-        run: bun run test
+        run: |
+          # connection.spec.ts must run in a separate process because
+          # connectionsHandler.spec.ts mocks @/baileys/connection and
+          # bun leaks mock.module across files (oven-sh/bun#12823).
+          bun test src/baileys/connection.spec.ts
+          bun test --coverage --path-ignore-patterns 'src/baileys/connection.spec.ts'
