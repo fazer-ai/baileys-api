@@ -75,6 +75,20 @@ describe("withIdempotency", () => {
     });
   });
 
+  describe("with idempotency key, function throws", () => {
+    it("releases the lock and rethrows the error", async () => {
+      const fn = mock(async () => {
+        throw new Error("send failed");
+      });
+
+      await expect(withIdempotency("test-key", fn)).rejects.toThrow(
+        "send failed",
+      );
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(stringData.has("test-key")).toBe(false);
+    });
+  });
+
   describe("redis failures (fail-open)", () => {
     it("executes function when lock acquire fails", async () => {
       const originalSet = redis.set;
@@ -82,13 +96,15 @@ describe("withIdempotency", () => {
         throw new Error("Redis down");
       });
 
-      const fn = mock(async () => ({ id: "msg_1" }));
-      const result = await withIdempotency("test-key", fn);
+      try {
+        const fn = mock(async () => ({ id: "msg_1" }));
+        const result = await withIdempotency("test-key", fn);
 
-      expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
-      expect(fn).toHaveBeenCalledTimes(1);
-
-      (redis as any).set = originalSet;
+        expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
+        expect(fn).toHaveBeenCalledTimes(1);
+      } finally {
+        (redis as any).set = originalSet;
+      }
     });
 
     it("returns processing when cache read fails after lock not acquired", async () => {
@@ -98,13 +114,15 @@ describe("withIdempotency", () => {
         throw new Error("Redis down");
       });
 
-      const fn = mock(async () => ({ id: "msg_1" }));
-      const result = await withIdempotency("test-key", fn);
+      try {
+        const fn = mock(async () => ({ id: "msg_1" }));
+        const result = await withIdempotency("test-key", fn);
 
-      expect(result).toEqual({ status: "processing" });
-      expect(fn).not.toHaveBeenCalled();
-
-      (redis as any).get = originalGet;
+        expect(result).toEqual({ status: "processing" });
+        expect(fn).not.toHaveBeenCalled();
+      } finally {
+        (redis as any).get = originalGet;
+      }
     });
   });
 });

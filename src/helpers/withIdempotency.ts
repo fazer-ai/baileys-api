@@ -29,15 +29,22 @@ export async function withIdempotency<T>(
     return { status: "processing" };
   }
 
-  const value = await fn();
+  try {
+    const value = await fn();
 
-  if (value === null) {
+    if (value === null) {
+      await releaseLock(key);
+      return { status: "failed" };
+    }
+
+    const cached = await cacheResult(key, value);
+    if (!cached) await releaseLock(key);
+
+    return { status: "executed", value };
+  } catch (error) {
     await releaseLock(key);
-    return { status: "failed" };
+    throw error;
   }
-
-  await cacheResult(key, value);
-  return { status: "executed", value };
 }
 
 async function acquireLock(key: string): Promise<boolean> {
@@ -80,13 +87,15 @@ async function releaseLock(key: string): Promise<void> {
   }
 }
 
-async function cacheResult<T>(key: string, value: T): Promise<void> {
+async function cacheResult<T>(key: string, value: T): Promise<boolean> {
   try {
     await redis.set(key, JSON.stringify(value), { EX: IDEMPOTENCY_TTL });
+    return true;
   } catch (error) {
     logger.warn(
       "[withIdempotency] cache write failed: %s",
       errorToString(error),
     );
+    return false;
   }
 }

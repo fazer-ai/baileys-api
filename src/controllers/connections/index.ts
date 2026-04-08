@@ -153,9 +153,10 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, messageContent, chatwootMessageId } = body;
 
-      const idempotencyKey = chatwootMessageId
-        ? `@baileys-api:idempotency:send-message:${phoneNumber}:${chatwootMessageId}`
-        : null;
+      const idempotencyKey =
+        chatwootMessageId !== undefined && chatwootMessageId !== null
+          ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
+          : null;
 
       const result = await withIdempotency(idempotencyKey, async () => {
         const { messageContent: builtContent, quoted } =
