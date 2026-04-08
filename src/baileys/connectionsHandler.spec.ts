@@ -111,7 +111,7 @@ class MockBaileysConnection {
   groupFetchAllParticipating = mockGroupFetchAllParticipating;
 }
 
-mock.module("@/baileys/connectionExports", () => ({
+mock.module("@/baileys/connection", () => ({
   BaileysConnection: MockBaileysConnection,
   BaileysNotConnectedError: class BaileysNotConnectedError extends Error {
     constructor() {
@@ -132,7 +132,7 @@ mock.module("@/baileys/redisAuthState", () => ({
 import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
-} from "@/baileys/connectionExports";
+} from "@/baileys/connection";
 import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
 import redis from "@/lib/redis";
 import { BaileysConnectionsHandler } from "./connectionsHandler";

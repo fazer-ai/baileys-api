@@ -29,15 +29,5 @@ jobs:
       - name: Install All Dependencies
         run: bun install
 
-      - name: Debug - connection + connectionsHandler only
-        run: bun test src/baileys/connection.spec.ts src/baileys/connectionsHandler.spec.ts 2>&1 | tail -5
-
-      - name: Debug - find interfering file
-        run: |
-          for f in src/controllers/status.spec.ts src/baileys/redisAuthState.spec.ts src/baileys/connectionsHandler.spec.ts; do
-            echo "=== Testing connection.spec.ts with $f ==="
-            bun test src/baileys/connection.spec.ts "$f" 2>&1 | grep -E "pass|fail" | tail -3
-          done
-
       - name: Run Tests
         run: bun run test

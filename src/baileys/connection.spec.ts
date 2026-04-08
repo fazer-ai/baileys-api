@@ -7,7 +7,12 @@ const originalFetch = globalThis.fetch;
 import * as baileysModule from "@whiskeysockets/baileys";
 import config from "@/config";
 import redis from "@/lib/redis";
-import { BaileysConnection, BaileysNotConnectedError } from "./connection";
+
+// Import real BaileysConnection via dynamic import to bypass mock.module leak
+// from connectionsHandler.spec.ts (bun mock.module leaks: oven-sh/bun#12823).
+const { BaileysConnection, BaileysNotConnectedError } = await import(
+  `${import.meta.dir}/connection.ts`
+);
 
 const mockSocket = (baileysModule as any).__mockSocket;
 const mockEventHandlers = (baileysModule as any).__mockEventHandlers;

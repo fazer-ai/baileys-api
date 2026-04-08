@@ -11,7 +11,7 @@ import {
   BaileysConnection,
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
-} from "@/baileys/connectionExports";
+} from "@/baileys/connection";
 import {
   getRedisAuthMetadata,
   getRedisSavedAuthStateIds,
