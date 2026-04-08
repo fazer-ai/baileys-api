@@ -8,6 +8,7 @@ import {
   buildEditableMessageContent,
   buildMessageContent,
 } from "@/controllers/connections/helpers";
+import { withIdempotency } from "@/helpers/withIdempotency";
 import { authMiddleware } from "@/middlewares/auth";
 import {
   anyJid,
@@ -150,33 +151,49 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-message",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { jid, messageContent } = body;
+      const { jid, messageContent, chatwootMessageId } = body;
 
-      const { messageContent: builtContent, quoted } =
-        buildMessageContent(messageContent);
+      const idempotencyKey =
+        chatwootMessageId !== undefined && chatwootMessageId !== null
+          ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
+          : null;
 
-      const response = await baileys.sendMessage(phoneNumber, {
-        jid,
-        messageContent: builtContent,
-        quoted,
+      const result = await withIdempotency(idempotencyKey, async () => {
+        const { messageContent: builtContent, quoted } =
+          buildMessageContent(messageContent);
+
+        const response = await baileys.sendMessage(phoneNumber, {
+          jid,
+          messageContent: builtContent,
+          quoted,
+        });
+
+        if (!response) return null;
+
+        return {
+          key: response.key,
+          messageTimestamp: response.messageTimestamp,
+        };
       });
 
-      if (!response) {
+      if (result.status === "processing") {
+        return new Response("Message is already being processed", {
+          status: 409,
+        });
+      }
+
+      if (result.status === "failed") {
         return new Response("Message not sent", { status: 500 });
       }
 
-      return {
-        data: {
-          key: response.key,
-          messageTimestamp: response.messageTimestamp,
-        },
-      };
+      return { data: result.value };
     },
     {
       params: phoneNumberParams,
       body: t.Object({
         jid: anyJid(),
         messageContent: anyMessageContent,
+        chatwootMessageId: t.Optional(t.Union([t.String(), t.Number()])),
       }),
       detail: {
         responses: {
@@ -192,6 +209,9 @@ const connectionsController = new Elysia({
                 }),
               },
             },
+          },
+          409: {
+            description: "Message is already being processed",
           },
           500: {
             description: "Message not sent",

@@ -41,6 +41,17 @@ const mockRedis = {
   get: mock(async (key: string) => {
     return stringData.get(key) ?? null;
   }),
+  set: mock(
+    async (
+      key: string,
+      value: string,
+      options?: { NX?: boolean; EX?: number },
+    ) => {
+      if (options?.NX && stringData.has(key)) return null;
+      stringData.set(key, value);
+      return "OK";
+    },
+  ),
   multi: mock(() => {
     multiCommands.length = 0;
     return {
