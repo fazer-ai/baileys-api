@@ -111,20 +111,6 @@ class MockBaileysConnection {
   groupFetchAllParticipating = mockGroupFetchAllParticipating;
 }
 
-mock.module("@/baileys/connection", () => ({
-  BaileysConnection: MockBaileysConnection,
-  BaileysNotConnectedError: class BaileysNotConnectedError extends Error {
-    constructor() {
-      super("Phone number not connected");
-    }
-  },
-  BaileysConnectionForbiddenError: class BaileysConnectionForbiddenError extends Error {
-    constructor() {
-      super("Connection not owned by this API key");
-    }
-  },
-}));
-
 mock.module("@/baileys/redisAuthState", () => ({
   getRedisSavedAuthStateIds: mock(async () => []),
 }));
@@ -146,7 +132,9 @@ describe("BaileysConnectionsHandler", () => {
   };
 
   beforeEach(() => {
-    handler = new BaileysConnectionsHandler();
+    handler = new BaileysConnectionsHandler(
+      (phone, opts) => new MockBaileysConnection(phone, opts) as any,
+    );
     mockConnectionInstances.clear();
     mockConnect.mockClear();
     mockLogout.mockClear();
