@@ -5,7 +5,7 @@ import redis from "@/lib/redis";
 const IDEMPOTENCY_TTL = 600;
 const PROCESSING_VALUE = "processing";
 
-type IdempotencyResult<T> =
+export type IdempotencyResult<T> =
   | { status: "executed"; value: T }
   | { status: "cached"; value: T }
   | { status: "processing" }

@@ -89,6 +89,29 @@ describe("withIdempotency", () => {
     });
   });
 
+  describe("with idempotency key, cache write fails after successful send", () => {
+    it("releases lock and still returns executed", async () => {
+      const originalSet = redis.set;
+      let callCount = 0;
+      (redis as any).set = mock(async () => {
+        callCount++;
+        if (callCount === 1) return "OK";
+        throw new Error("Cache write failed");
+      });
+
+      try {
+        const fn = mock(async () => ({ id: "msg_1" }));
+        const result = await withIdempotency("test-key", fn);
+
+        expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
+        expect(fn).toHaveBeenCalledTimes(1);
+        expect(stringData.has("test-key")).toBe(false);
+      } finally {
+        (redis as any).set = originalSet;
+      }
+    });
+  });
+
   describe("redis failures (fail-open)", () => {
     it("executes function when lock acquire fails", async () => {
       const originalSet = redis.set;
