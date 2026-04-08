@@ -192,9 +192,7 @@ const connectionsController = new Elysia({
       body: t.Object({
         jid: anyJid(),
         messageContent: anyMessageContent,
-        chatwootMessageId: t.Optional(
-          t.Union([t.String(), t.Number()]),
-        ),
+        chatwootMessageId: t.Optional(t.Union([t.String(), t.Number()])),
       }),
       detail: {
         responses: {
