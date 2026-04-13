@@ -313,6 +313,10 @@ export class BaileysConnection {
 
   private async close() {
     this.stopGroupActivityFlush();
+    if (this.clearOnlinePresenceTimeout) {
+      clearTimeout(this.clearOnlinePresenceTimeout);
+      this.clearOnlinePresenceTimeout = null;
+    }
     await this.clearAuthState?.();
     this.clearAuthState = null;
     this.socket = null;
@@ -394,6 +398,7 @@ export class BaileysConnection {
         }
         if (type === "available") {
           this.clearOnlinePresenceTimeout = setTimeout(() => {
+            this.clearOnlinePresenceTimeout = null;
             this.socket?.sendPresenceUpdate("unavailable", toJid);
           }, 60000);
         }
@@ -429,14 +434,14 @@ export class BaileysConnection {
 
     this.resolveToPN(jid)
       .then((pnJid) => {
-        if (!pnJid) return;
+        const targetJid = pnJid ?? jid;
         return this.ensureAvailablePresence()
-          .then(() => this.safeSocket().presenceSubscribe(pnJid))
+          .then(() => this.safeSocket().presenceSubscribe(targetJid))
           .then(() => {
             logger.debug(
               "[%s] [autoSubscribePresence] Subscribed to %s",
               this.phoneNumber,
-              pnJid,
+              targetJid,
             );
           });
       })
@@ -800,9 +805,7 @@ export class BaileysConnection {
     });
   }
 
-  private async handlePresenceUpdate(
-    data: BaileysEventMap["presence.update"],
-  ) {
+  private async handlePresenceUpdate(data: BaileysEventMap["presence.update"]) {
     const enrichedData = { ...data } as BaileysEventMap["presence.update"] & {
       jidAlt?: string;
     };
