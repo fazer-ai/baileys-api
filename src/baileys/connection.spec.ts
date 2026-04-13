@@ -45,6 +45,7 @@ describe("BaileysConnection", () => {
     mockSocket.groupSettingUpdate.mockClear();
     mockSocket.groupToggleEphemeral.mockClear();
     mockSocket.groupFetchAllParticipating.mockClear();
+    mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
 
     // Clear redis state
     (redis as any).__hashData.clear();
@@ -522,6 +523,305 @@ describe("BaileysConnection", () => {
         const body = JSON.parse(fetchCalls[0].body);
         expect(body.event).toBe("group-participants.update");
       });
+    });
+  });
+
+  describe("#presenceSubscribe", () => {
+    it("throws BaileysNotConnectedError if not connected", async () => {
+      await expect(
+        connection.presenceSubscribe(["user@s.whatsapp.net"]),
+      ).rejects.toThrow(BaileysNotConnectedError);
+    });
+
+    it("calls socket.presenceSubscribe for each JID", async () => {
+      await connection.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      const result = await connection.presenceSubscribe([
+        "user1@s.whatsapp.net",
+        "user2@s.whatsapp.net",
+      ]);
+
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledTimes(2);
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "user1@s.whatsapp.net",
+      );
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "user2@s.whatsapp.net",
+      );
+      expect(result.subscribed).toEqual([
+        "user1@s.whatsapp.net",
+        "user2@s.whatsapp.net",
+      ]);
+    });
+
+    it("falls back to original JID when LID resolution fails", async () => {
+      await connection.connect();
+      mockSocket.presenceSubscribe.mockClear();
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockRejectedValueOnce(
+        new Error("lookup failed"),
+      );
+
+      const result = await connection.presenceSubscribe([
+        "999@lid",
+        "user2@s.whatsapp.net",
+      ]);
+
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledTimes(2);
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith("999@lid");
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "user2@s.whatsapp.net",
+      );
+      expect(result.subscribed).toEqual(["999@lid", "user2@s.whatsapp.net"]);
+    });
+
+    it("subscribes again on repeated calls (no cache)", async () => {
+      await connection.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await connection.presenceSubscribe(["user1@s.whatsapp.net"]);
+      mockSocket.presenceSubscribe.mockClear();
+
+      const result = await connection.presenceSubscribe([
+        "user1@s.whatsapp.net",
+      ]);
+
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledTimes(1);
+      expect(result.subscribed).toEqual(["user1@s.whatsapp.net"]);
+    });
+  });
+
+  describe("autoSubscribePresence", () => {
+    it("auto-subscribes on sendMessage when enabled", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await conn.sendMessage("user@s.whatsapp.net", { text: "hi" });
+
+      // Give the fire-and-forget promise time to resolve
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "user@s.whatsapp.net",
+      );
+    });
+
+    it("does NOT auto-subscribe when disabled (default)", async () => {
+      await connection.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await connection.sendMessage("user@s.whatsapp.net", { text: "hi" });
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).not.toHaveBeenCalled();
+    });
+
+    it("auto-subscribes on sendPresenceUpdate with composing/recording/paused", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await conn.sendPresenceUpdate("composing", "user@s.whatsapp.net");
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "user@s.whatsapp.net",
+      );
+    });
+
+    it("does NOT auto-subscribe on sendPresenceUpdate with available/unavailable", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await conn.sendPresenceUpdate("available");
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).not.toHaveBeenCalled();
+    });
+
+    it("auto-subscribes on incoming messages (type: notify)", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({
+        type: "notify",
+        messages: [
+          {
+            key: { remoteJid: "sender@s.whatsapp.net", id: "msg-1" },
+            message: { conversation: "hello" },
+          },
+        ],
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "sender@s.whatsapp.net",
+      );
+    });
+
+    it("does NOT auto-subscribe on history sync messages", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({
+        type: "append",
+        messages: [
+          {
+            key: { remoteJid: "sender@s.whatsapp.net", id: "msg-1" },
+            message: { conversation: "hello" },
+          },
+        ],
+      });
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).not.toHaveBeenCalled();
+    });
+
+    it("skips group JIDs in auto-subscribe", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await conn.sendMessage("group@g.us", { text: "hi" });
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).not.toHaveBeenCalled();
+    });
+
+    it("re-subscribes on repeated auto-subscribe calls (no cache)", async () => {
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        autoPresenceSubscribe: true,
+      });
+      await conn.connect();
+      mockSocket.presenceSubscribe.mockClear();
+
+      await conn.sendMessage("user@s.whatsapp.net", { text: "hi" });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledTimes(1);
+
+      mockSocket.presenceSubscribe.mockClear();
+      await conn.sendMessage("user@s.whatsapp.net", { text: "hi again" });
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("LID resolution in presence events", () => {
+    beforeEach(async () => {
+      await connection.connect();
+    });
+
+    it("adds jidAlt when LID is resolved by Baileys signalRepository", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        "553499503261@s.whatsapp.net",
+      );
+
+      const presenceHandler = mockEventHandlers.get("presence.update")!;
+      await presenceHandler({
+        id: "167392323834034@lid",
+        presences: {
+          "167392323834034@lid": { lastKnownPresence: "composing" },
+        },
+      });
+
+      expect(
+        mockSocket.signalRepository.lidMapping.getPNForLID,
+      ).toHaveBeenCalledWith("167392323834034@lid");
+      const presenceCall = fetchCalls.find((c) => {
+        const body = JSON.parse(c.body);
+        return body.event === "presence.update";
+      });
+      expect(presenceCall).toBeDefined();
+      const body = JSON.parse(presenceCall!.body);
+      expect(body.data.jidAlt).toBe("553499503261@s.whatsapp.net");
+    });
+
+    it("does not add jidAlt when presence id is not a LID", async () => {
+      const presenceHandler = mockEventHandlers.get("presence.update")!;
+      await presenceHandler({
+        id: "553499503261@s.whatsapp.net",
+        presences: {
+          "553499503261@s.whatsapp.net": { lastKnownPresence: "available" },
+        },
+      });
+
+      expect(
+        mockSocket.signalRepository.lidMapping.getPNForLID,
+      ).not.toHaveBeenCalled();
+      const presenceCall = fetchCalls.find((c) => {
+        const body = JSON.parse(c.body);
+        return body.event === "presence.update";
+      });
+      const body = JSON.parse(presenceCall!.body);
+      expect(body.data.jidAlt).toBeUndefined();
+    });
+
+    it("does not add jidAlt when LID has no known mapping", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        null,
+      );
+
+      const presenceHandler = mockEventHandlers.get("presence.update")!;
+      await presenceHandler({
+        id: "999999999@lid",
+        presences: {
+          "999999999@lid": { lastKnownPresence: "composing" },
+        },
+      });
+
+      const presenceCall = fetchCalls.find((c) => {
+        const body = JSON.parse(c.body);
+        return body.event === "presence.update";
+      });
+      const body = JSON.parse(presenceCall!.body);
+      expect(body.data.jidAlt).toBeUndefined();
+    });
+
+    it("still forwards presence event if LID resolution fails", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockRejectedValueOnce(
+        new Error("resolution failed"),
+      );
+
+      const presenceHandler = mockEventHandlers.get("presence.update")!;
+      await presenceHandler({
+        id: "167392323834034@lid",
+        presences: {
+          "167392323834034@lid": { lastKnownPresence: "composing" },
+        },
+      });
+
+      const presenceCall = fetchCalls.find((c) => {
+        const body = JSON.parse(c.body);
+        return body.event === "presence.update";
+      });
+      expect(presenceCall).toBeDefined();
+      const body = JSON.parse(presenceCall!.body);
+      expect(body.data.jidAlt).toBeUndefined();
+      expect(body.data.id).toBe("167392323834034@lid");
     });
   });
 

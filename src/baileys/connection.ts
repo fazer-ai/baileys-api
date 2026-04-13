@@ -112,6 +112,7 @@ export class BaileysConnection {
     null;
   private reconnectCount = 0;
   private groupsEnabled: boolean;
+  private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
   private groupActivityMap: Map<
     string,
@@ -132,6 +133,7 @@ export class BaileysConnection {
     this.includeMedia = options.includeMedia ?? true;
     this.syncFullHistory = options.syncFullHistory ?? false;
     this.groupsEnabled = options.groupsEnabled ?? true;
+    this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? null;
   }
 
@@ -175,6 +177,7 @@ export class BaileysConnection {
       }
     }
 
+    this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
     this.persistMetadata();
   }
@@ -191,6 +194,7 @@ export class BaileysConnection {
         includeMedia: this.includeMedia,
         syncFullHistory: this.syncFullHistory,
         groupsEnabled: this.groupsEnabled,
+        autoPresenceSubscribe: this.autoPresenceSubscribe,
         apiKeyHash: this._apiKeyHash,
       }),
     );
@@ -208,6 +212,7 @@ export class BaileysConnection {
       includeMedia: this.includeMedia,
       syncFullHistory: this.syncFullHistory,
       groupsEnabled: this.groupsEnabled,
+      autoPresenceSubscribe: this.autoPresenceSubscribe,
       apiKeyHash: this._apiKeyHash,
     });
     this.clearAuthState = state.keys.clear;
@@ -284,6 +289,10 @@ export class BaileysConnection {
         "handleGroupParticipantsUpdate",
         this.handleGroupParticipantsUpdate,
       ),
+      "presence.update": this.withErrorHandling(
+        "handlePresenceUpdate",
+        this.handlePresenceUpdate,
+      ),
     };
 
     Object.entries(handledEvents).forEach(([event, handler]) => {
@@ -304,6 +313,10 @@ export class BaileysConnection {
 
   private async close() {
     this.stopGroupActivityFlush();
+    if (this.clearOnlinePresenceTimeout) {
+      clearTimeout(this.clearOnlinePresenceTimeout);
+      this.clearOnlinePresenceTimeout = null;
+    }
     await this.clearAuthState?.();
     this.clearAuthState = null;
     this.socket = null;
@@ -330,6 +343,7 @@ export class BaileysConnection {
     options?: { quoted?: WAMessage },
   ) {
     this.safeSocket();
+    this.autoSubscribePresence(jid);
 
     let waveformProxy: Buffer | null = null;
     try {
@@ -368,6 +382,10 @@ export class BaileysConnection {
       return;
     }
 
+    if (toJid && ["composing", "recording", "paused"].includes(type)) {
+      this.autoSubscribePresence(toJid);
+    }
+
     return this.safeSocket()
       .sendPresenceUpdate(type, toJid)
       .then(() => {
@@ -380,10 +398,72 @@ export class BaileysConnection {
         }
         if (type === "available") {
           this.clearOnlinePresenceTimeout = setTimeout(() => {
+            this.clearOnlinePresenceTimeout = null;
             this.socket?.sendPresenceUpdate("unavailable", toJid);
           }, 60000);
         }
       });
+  }
+
+  async presenceSubscribe(jids: string[]) {
+    this.safeSocket();
+    await this.ensureAvailablePresence();
+    const subscribed: string[] = [];
+
+    for (const jid of jids) {
+      try {
+        const resolvedJid =
+          (await this.resolveToPN(jid).catch(() => null)) ?? jid;
+        await this.safeSocket().presenceSubscribe(resolvedJid);
+        subscribed.push(jid);
+      } catch (error) {
+        logger.error(
+          "[%s] [presenceSubscribe] Failed to subscribe to %s: %s",
+          this.phoneNumber,
+          jid,
+          errorToString(error),
+        );
+      }
+    }
+
+    return { subscribed };
+  }
+
+  private autoSubscribePresence(jid: string) {
+    if (!this.autoPresenceSubscribe) return;
+    if (isJidGroup(jid)) return;
+
+    this.resolveToPN(jid)
+      .then((pnJid) => {
+        const targetJid = pnJid ?? jid;
+        return this.ensureAvailablePresence()
+          .then(() => this.safeSocket().presenceSubscribe(targetJid))
+          .then(() => {
+            logger.debug(
+              "[%s] [autoSubscribePresence] Subscribed to %s",
+              this.phoneNumber,
+              targetJid,
+            );
+          });
+      })
+      .catch((error) => {
+        logger.error(
+          "[%s] [autoSubscribePresence] Failed for %s: %s",
+          this.phoneNumber,
+          jid,
+          errorToString(error),
+        );
+      });
+  }
+
+  private async resolveToPN(jid: string): Promise<string | null> {
+    if (!jid.endsWith("@lid")) return jid;
+    return this.safeSocket().signalRepository.lidMapping.getPNForLID(jid);
+  }
+
+  private async ensureAvailablePresence() {
+    if (this.clearOnlinePresenceTimeout) return;
+    await this.sendPresenceUpdate("available");
   }
 
   readMessages(keys: proto.IMessageKey[]) {
@@ -626,6 +706,15 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    if (data.type === "notify") {
+      for (const msg of data.messages) {
+        const remoteJid = msg.key?.remoteJid;
+        if (remoteJid) {
+          this.autoSubscribePresence(remoteJid);
+        }
+      }
+    }
+
     let messagesData = data;
 
     if (!this.groupsEnabled) {
@@ -714,6 +803,36 @@ export class BaileysConnection {
     this.sendToWebhook({
       event: "group-participants.update",
       data,
+    });
+  }
+
+  private async handlePresenceUpdate(data: BaileysEventMap["presence.update"]) {
+    const enrichedData = { ...data } as BaileysEventMap["presence.update"] & {
+      jidAlt?: string;
+    };
+
+    if (data.id.endsWith("@lid")) {
+      try {
+        const pn =
+          await this.safeSocket().signalRepository.lidMapping.getPNForLID(
+            data.id,
+          );
+        if (pn) {
+          enrichedData.jidAlt = pn;
+        }
+      } catch (error) {
+        logger.error(
+          "[%s] [handlePresenceUpdate] Failed to resolve LID %s: %s",
+          this.phoneNumber,
+          data.id,
+          errorToString(error),
+        );
+      }
+    }
+
+    this.sendToWebhook({
+      event: "presence.update",
+      data: enrichedData,
     });
   }
 

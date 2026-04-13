@@ -11,6 +11,7 @@ export interface BaileysConnectionOptions {
   includeMedia?: boolean;
   syncFullHistory?: boolean;
   groupsEnabled?: boolean;
+  autoPresenceSubscribe?: boolean;
   apiKeyHash?: string;
   isReconnect?: boolean;
   onConnectionClose?: () => void;

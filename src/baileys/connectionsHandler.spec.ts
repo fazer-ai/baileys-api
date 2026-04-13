@@ -60,6 +60,9 @@ const mockGroupJoinApprovalMode = mock(async function (this: any) {});
 const mockGroupFetchAllParticipating = mock(async function (this: any) {
   return {};
 });
+const mockPresenceSubscribe = mock(async function (this: any) {
+  return { subscribed: [] };
+});
 
 class MockBaileysConnection {
   phoneNumber: string;
@@ -109,6 +112,7 @@ class MockBaileysConnection {
   groupMemberAddMode = mockGroupMemberAddMode;
   groupJoinApprovalMode = mockGroupJoinApprovalMode;
   groupFetchAllParticipating = mockGroupFetchAllParticipating;
+  presenceSubscribe = mockPresenceSubscribe;
 }
 
 mock.module("@/baileys/redisAuthState", () => ({
@@ -169,6 +173,7 @@ describe("BaileysConnectionsHandler", () => {
     mockGroupMemberAddMode.mockClear();
     mockGroupJoinApprovalMode.mockClear();
     mockGroupFetchAllParticipating.mockClear();
+    mockPresenceSubscribe.mockClear();
   });
 
   describe("#reconnectFromAuthStore", () => {
@@ -761,6 +766,27 @@ describe("BaileysConnectionsHandler", () => {
       await handler.connect("+5511999", defaultOptions);
       handler.groupFetchAllParticipating("+5511999");
       expect(mockGroupFetchAllParticipating).toHaveBeenCalled();
+    });
+  });
+
+  describe("#presenceSubscribe", () => {
+    it("throws BaileysNotConnectedError when connection does not exist", () => {
+      expect(() =>
+        handler.presenceSubscribe("+5511999", ["user@s.whatsapp.net"]),
+      ).toThrow(BaileysNotConnectedError);
+    });
+
+    it("delegates to the connection", async () => {
+      await handler.connect("+5511999", defaultOptions);
+      mockPresenceSubscribe.mockClear();
+      handler.presenceSubscribe("+5511999", [
+        "user1@s.whatsapp.net",
+        "user2@s.whatsapp.net",
+      ]);
+      expect(mockPresenceSubscribe).toHaveBeenCalledWith([
+        "user1@s.whatsapp.net",
+        "user2@s.whatsapp.net",
+      ]);
     });
   });
 });

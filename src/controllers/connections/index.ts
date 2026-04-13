@@ -100,6 +100,13 @@ const connectionsController = new Elysia({
             default: true,
           }),
         ),
+        autoPresenceSubscribe: t.Optional(
+          t.Boolean({
+            description:
+              "Automatically subscribe to presence updates when sending/receiving messages or typing status to/from a contact. Subscriptions are ephemeral and re-established automatically.",
+            default: false,
+          }),
+        ),
       }),
       detail: {
         responses: {
@@ -142,6 +149,38 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Presence update sent successfully",
+          },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/presence-subscribe",
+    async ({ params, body }) => {
+      const { phoneNumber } = params;
+      const { jids } = body;
+
+      const result = await baileys.presenceSubscribe(phoneNumber, jids);
+      return { data: result };
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        jids: t.Array(
+          anyJid("WhatsApp JID to subscribe to presence updates for"),
+          {
+            description: "Array of JIDs to subscribe to presence updates",
+            minItems: 1,
+            maxItems: 50,
+          },
+        ),
+      }),
+      detail: {
+        description:
+          "Subscribe to presence updates for one or more JIDs. Presence updates will be forwarded via the `presence.update` webhook event. Subscriptions are ephemeral, so re-subscribe periodically for continuous monitoring. LID JIDs are automatically resolved to phone number JIDs before subscribing.",
+        responses: {
+          200: {
+            description: "Presence subscription result",
           },
         },
       },
