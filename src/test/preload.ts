@@ -242,6 +242,12 @@ function createMockSocket() {
     groupMemberAddMode: mock(async () => {}),
     groupJoinApprovalMode: mock(async () => {}),
     groupFetchAllParticipating: mock(async () => ({})),
+    presenceSubscribe: mock(async () => {}),
+    signalRepository: {
+      lidMapping: {
+        getPNForLID: mock(async () => null),
+      },
+    },
   };
 }
 

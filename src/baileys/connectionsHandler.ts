@@ -145,6 +145,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).sendPresenceUpdate(type, toJid);
   }
 
+  presenceSubscribe(phoneNumber: string, jids: string[]) {
+    return this.getConnection(phoneNumber).presenceSubscribe(jids);
+  }
+
   sendMessage(
     phoneNumber: string,
     {
