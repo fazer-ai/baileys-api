@@ -555,6 +555,26 @@ describe("BaileysConnection", () => {
       ]);
     });
 
+    it("falls back to original JID when LID resolution fails", async () => {
+      await connection.connect();
+      mockSocket.presenceSubscribe.mockClear();
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockRejectedValueOnce(
+        new Error("lookup failed"),
+      );
+
+      const result = await connection.presenceSubscribe([
+        "999@lid",
+        "user2@s.whatsapp.net",
+      ]);
+
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledTimes(2);
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith("999@lid");
+      expect(mockSocket.presenceSubscribe).toHaveBeenCalledWith(
+        "user2@s.whatsapp.net",
+      );
+      expect(result.subscribed).toEqual(["999@lid", "user2@s.whatsapp.net"]);
+    });
+
     it("subscribes again on repeated calls (no cache)", async () => {
       await connection.connect();
       mockSocket.presenceSubscribe.mockClear();

@@ -411,15 +411,16 @@ export class BaileysConnection {
     const subscribed: string[] = [];
 
     for (const jid of jids) {
-      const resolvedJid = (await this.resolveToPN(jid)) ?? jid;
       try {
+        const resolvedJid =
+          (await this.resolveToPN(jid).catch(() => null)) ?? jid;
         await this.safeSocket().presenceSubscribe(resolvedJid);
         subscribed.push(jid);
       } catch (error) {
         logger.error(
           "[%s] [presenceSubscribe] Failed to subscribe to %s: %s",
           this.phoneNumber,
-          resolvedJid,
+          jid,
           errorToString(error),
         );
       }
