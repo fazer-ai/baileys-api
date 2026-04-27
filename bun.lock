@@ -13,7 +13,7 @@
         "audio-decode": "^2.2.3",
         "elysia": "^1.4.28",
         "fluent-ffmpeg": "^2.1.3",
-        "link-preview-js": "^4.0.0",
+        "link-preview-js": "^4.0.1",
         "lru-cache": "^11.3.5",
         "pino": "^10.3.1",
         "pino-pretty": "^13.1.3",
@@ -340,7 +340,7 @@
 
     "libsignal": ["@whiskeysockets/libsignal-node@github:whiskeysockets/libsignal-node#1c30d7d", { "dependencies": { "curve25519-js": "^0.0.4", "protobufjs": "6.8.8" } }, "WhiskeySockets-libsignal-node-1c30d7d"],
 
-    "link-preview-js": ["link-preview-js@4.0.0", "", { "dependencies": { "cheerio": "1.0.0-rc.11" } }, "sha512-KYYiMVOAguIFNdoVGVjd+6cgknv5XHbr1IuRdj3T5EkN7JNaqUh4a1NSCi5FX6zyZzILI55OQA6+YxBAcPY2wA=="],
+    "link-preview-js": ["link-preview-js@4.0.1", "", { "dependencies": { "cheerio": "1.0.0-rc.11" } }, "sha512-yWsaFbBqtq1dZmbXJocNFGrrOkUhSTJzCqG9TGi3OcZEc+4K6GHgrTGCluou2gjrrFegaHWMNSIrlbiN/gBYcw=="],
 
     "locate-path": ["locate-path@5.0.0", "", { "dependencies": { "p-locate": "^4.1.0" } }, "sha512-t7hw9pI+WvuwNJXwk5zVHpyhIqzg2qTlklJOf0mVxGSbe3Fp2VieZcduNYjaLDoy6p9uGpQEGWG87WpMKlNq8g=="],
 
