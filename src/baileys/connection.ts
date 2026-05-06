@@ -70,8 +70,10 @@ export class BaileysConnection {
     "connection.update",
     "creds.update",
     "messaging-history.set",
+    "messaging-history.status",
     "chats.upsert",
     "chats.update",
+    "chats.lock",
     "lid-mapping.update",
     "chats.delete",
     "presence.update",
@@ -83,10 +85,12 @@ export class BaileysConnection {
     "messages.upsert",
     "messages.reaction",
     "message-receipt.update",
+    "message-capping.update",
     "groups.upsert",
     "groups.update",
     "group-participants.update",
     "group.join-request",
+    "group.member-tag.update",
     "blocklist.set",
     "blocklist.update",
     "call",
@@ -96,6 +100,7 @@ export class BaileysConnection {
     "newsletter.view",
     "newsletter-participants.update",
     "newsletter-settings.update",
+    "settings.update",
   ];
 
   private phoneNumber: string;
