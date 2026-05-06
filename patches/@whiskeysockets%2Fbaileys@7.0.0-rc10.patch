@@ -47,10 +47,10 @@ index 0004fb678bf732ec3fd5ec35ae48594bd5960c43..c0802d9e512724d06ef8f3bdd52f0325
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..b2eca6630b0b8b5ad35a20b66c5b88dd6648e6e2 100644
+index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..840dd0d7e0c78ceab41dfa8e224990730797e136 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
-@@ -1,6 +1,40 @@
+@@ -1,6 +1,53 @@
  import { prepareWAMessageMedia } from './messages.js';
  import { extractImageThumb, getHttpStream } from './messages-media.js';
  const THUMBNAIL_WIDTH_PX = 192;
@@ -58,16 +58,29 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..b2eca6630b0b8b5ad35a20b66c5b88dd
 +    return /(?:youtube\.com\/watch\?v=|youtu\.be\/)/.test(url);
 +};
 +const getVideoId = (url) => {
-+    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/);
-+    return match ? match[1] : null;
++    try {
++        const parsed = new URL(url.startsWith('http') ? url : `https://${url}`);
++        const hostname = parsed.hostname.toLowerCase();
++        if (hostname === 'youtu.be' || hostname.endsWith('.youtu.be')) {
++            const id = parsed.pathname.slice(1);
++            return id || null;
++        }
++        if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com')) {
++            return parsed.searchParams.get('v');
++        }
++        return null;
++    }
++    catch {
++        return null;
++    }
 +};
-+const getYouTubeLinkPreview = async (videoUrl) => {
++const getYouTubeLinkPreview = async (videoUrl, fetchOpts) => {
 +    const videoId = getVideoId(videoUrl);
 +    if (!videoId) {
 +        throw new Error('Invalid YouTube URL');
 +    }
 +    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
-+    const response = await fetch(oembedUrl);
++    const response = await fetch(oembedUrl, fetchOpts);
 +    if (!response.ok) {
 +        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
 +    }
@@ -91,7 +104,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..b2eca6630b0b8b5ad35a20b66c5b88dd
  /** Fetches an image and generates a thumbnail for it */
  const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
      const stream = await getHttpStream(url, fetchOpts);
-@@ -26,27 +60,33 @@ export const getUrlInfo = async (text, opts = {
+@@ -26,27 +73,33 @@ export const getUrlInfo = async (text, opts = {
          if (!text.startsWith('https://') && !text.startsWith('http://')) {
              previewLink = 'https://' + previewLink;
          }
@@ -118,7 +131,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..b2eca6630b0b8b5ad35a20b66c5b88dd
 -        });
 +        let info;
 +        if (isYouTubeUrl(previewLink)) {
-+            info = await getYouTubeLinkPreview(previewLink);
++            info = await getYouTubeLinkPreview(previewLink, opts.fetchOpts);
 +        }
 +        else {
 +            info = await getLinkPreview(previewLink, {
