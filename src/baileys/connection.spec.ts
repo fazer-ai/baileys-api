@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  setSystemTime,
+} from "bun:test";
 
 // Track fetch calls for webhook tests
 const fetchCalls: Array<{ url: string; body: string }> = [];
@@ -6,6 +14,7 @@ const originalFetch = globalThis.fetch;
 
 import * as baileysModule from "@whiskeysockets/baileys";
 import config from "@/config";
+import { asyncSleep } from "@/helpers/asyncSleep";
 import redis from "@/lib/redis";
 import { BaileysConnection, BaileysNotConnectedError } from "./connection";
 
@@ -454,6 +463,70 @@ describe("BaileysConnection", () => {
         expect(fetchCalls[0].url).toBe("https://example.com/webhook");
         const body = JSON.parse(fetchCalls[0].body);
         expect(body.webhookVerifyToken).toBe("test-token");
+      });
+
+      describe("connectionReplaced (440 conflict/replaced)", () => {
+        const conflictClosePayload = {
+          connection: "close" as const,
+          lastDisconnect: {
+            error: {
+              output: {
+                statusCode: 440,
+                payload: {
+                  statusCode: 440,
+                  error: "Unknown",
+                  message: "Stream Errored (conflict)",
+                },
+              },
+              message: "Stream Errored (conflict)",
+            },
+          },
+        };
+
+        beforeEach(() => {
+          (asyncSleep as any).mockClear();
+        });
+
+        it("reconnects without backoff on a single occurrence", async () => {
+          const handler = mockEventHandlers.get("connection.update")!;
+          await handler(conflictClosePayload);
+
+          expect((asyncSleep as any).mock.calls.length).toBe(0);
+        });
+
+        it("backs off after 5 occurrences within the window", async () => {
+          const handler = mockEventHandlers.get("connection.update")!;
+
+          for (let i = 0; i < 4; i++) {
+            await handler(conflictClosePayload);
+          }
+          expect((asyncSleep as any).mock.calls.length).toBe(0);
+
+          await handler(conflictClosePayload);
+          expect((asyncSleep as any).mock.calls.length).toBe(1);
+          expect((asyncSleep as any).mock.calls[0][0]).toBe(30_000);
+        });
+
+        it("does not back off when events are spread beyond the sliding window", async () => {
+          const handler = mockEventHandlers.get("connection.update")!;
+          const base = Date.now();
+
+          try {
+            for (let i = 0; i < 4; i++) {
+              setSystemTime(new Date(base + i * 1_000));
+              await handler(conflictClosePayload);
+            }
+            expect((asyncSleep as any).mock.calls.length).toBe(0);
+
+            // Jump past the window so the prior 4 timestamps are evicted.
+            setSystemTime(new Date(base + 35_000));
+            await handler(conflictClosePayload);
+
+            expect((asyncSleep as any).mock.calls.length).toBe(0);
+          } finally {
+            setSystemTime();
+          }
+        });
       });
     });
 
