@@ -6,6 +6,7 @@ const originalFetch = globalThis.fetch;
 
 import * as baileysModule from "@whiskeysockets/baileys";
 import config from "@/config";
+import { asyncSleep } from "@/helpers/asyncSleep";
 import redis from "@/lib/redis";
 import { BaileysConnection, BaileysNotConnectedError } from "./connection";
 
@@ -454,6 +455,49 @@ describe("BaileysConnection", () => {
         expect(fetchCalls[0].url).toBe("https://example.com/webhook");
         const body = JSON.parse(fetchCalls[0].body);
         expect(body.webhookVerifyToken).toBe("test-token");
+      });
+
+      describe("connectionReplaced (440 conflict/replaced)", () => {
+        const conflictClosePayload = {
+          connection: "close" as const,
+          lastDisconnect: {
+            error: {
+              output: {
+                statusCode: 440,
+                payload: {
+                  statusCode: 440,
+                  error: "Unknown",
+                  message: "Stream Errored (conflict)",
+                },
+              },
+              message: "Stream Errored (conflict)",
+            },
+          },
+        };
+
+        beforeEach(() => {
+          (asyncSleep as any).mockClear();
+        });
+
+        it("reconnects without backoff on a single occurrence", async () => {
+          const handler = mockEventHandlers.get("connection.update")!;
+          await handler(conflictClosePayload);
+
+          expect((asyncSleep as any).mock.calls.length).toBe(0);
+        });
+
+        it("backs off after 5 occurrences within the window", async () => {
+          const handler = mockEventHandlers.get("connection.update")!;
+
+          for (let i = 0; i < 4; i++) {
+            await handler(conflictClosePayload);
+          }
+          expect((asyncSleep as any).mock.calls.length).toBe(0);
+
+          await handler(conflictClosePayload);
+          expect((asyncSleep as any).mock.calls.length).toBe(1);
+          expect((asyncSleep as any).mock.calls[0][0]).toBe(30_000);
+        });
       });
     });
 

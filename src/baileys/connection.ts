@@ -36,6 +36,14 @@ import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import redis from "@/lib/redis";
 
+// `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
+// so default behavior is a normal reconnect. When the same disconnect repeats
+// rapidly it indicates another session is competing for this slot and the tight
+// retry only feeds the loop, so after the threshold we add a backoff.
+const CONNECTION_REPLACED_LOOP_WINDOW_MS = 30_000;
+const CONNECTION_REPLACED_LOOP_THRESHOLD = 5;
+const CONNECTION_REPLACED_BACKOFF_MS = 30_000;
+
 export class BaileysNotConnectedError extends Error {
   constructor() {
     super("Phone number not connected");
@@ -116,6 +124,7 @@ export class BaileysConnection {
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
     null;
   private reconnectCount = 0;
+  private connectionReplacedTimestamps: number[] = [];
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -326,6 +335,7 @@ export class BaileysConnection {
     this.clearAuthState = null;
     this.socket = null;
     this.reconnectCount = 0;
+    this.connectionReplacedTimestamps = [];
     this.onConnectionClose?.();
   }
 
@@ -671,6 +681,21 @@ export class BaileysConnection {
         await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
         this.socket = null;
+
+        if (statusCode === DisconnectReason.connectionReplaced) {
+          const recentCount = this.trackConnectionReplaced();
+          if (recentCount >= CONNECTION_REPLACED_LOOP_THRESHOLD) {
+            logger.warn(
+              "[%s] [handleConnectionUpdate] connectionReplaced loop detected (%d events in %dms window), backing off %dms before reconnect",
+              this.phoneNumber,
+              recentCount,
+              CONNECTION_REPLACED_LOOP_WINDOW_MS,
+              CONNECTION_REPLACED_BACKOFF_MS,
+            );
+            await asyncSleep(CONNECTION_REPLACED_BACKOFF_MS);
+          }
+        }
+
         this.connect();
         return;
       }
@@ -864,6 +889,16 @@ export class BaileysConnection {
       event: "connection.update",
       data: { connection: "reconnecting" as WAConnectionState },
     });
+  }
+
+  private trackConnectionReplaced(): number {
+    const now = Date.now();
+    this.connectionReplacedTimestamps =
+      this.connectionReplacedTimestamps.filter(
+        (ts) => now - ts <= CONNECTION_REPLACED_LOOP_WINDOW_MS,
+      );
+    this.connectionReplacedTimestamps.push(now);
+    return this.connectionReplacedTimestamps.length;
   }
 
   private startGroupActivityFlush() {
