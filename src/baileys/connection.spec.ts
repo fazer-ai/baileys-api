@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  setSystemTime,
+} from "bun:test";
 
 // Track fetch calls for webhook tests
 const fetchCalls: Array<{ url: string; body: string }> = [];
@@ -497,6 +505,27 @@ describe("BaileysConnection", () => {
           await handler(conflictClosePayload);
           expect((asyncSleep as any).mock.calls.length).toBe(1);
           expect((asyncSleep as any).mock.calls[0][0]).toBe(30_000);
+        });
+
+        it("does not back off when events are spread beyond the sliding window", async () => {
+          const handler = mockEventHandlers.get("connection.update")!;
+          const base = Date.now();
+
+          try {
+            for (let i = 0; i < 4; i++) {
+              setSystemTime(new Date(base + i * 1_000));
+              await handler(conflictClosePayload);
+            }
+            expect((asyncSleep as any).mock.calls.length).toBe(0);
+
+            // Jump past the window so the prior 4 timestamps are evicted.
+            setSystemTime(new Date(base + 35_000));
+            await handler(conflictClosePayload);
+
+            expect((asyncSleep as any).mock.calls.length).toBe(0);
+          } finally {
+            setSystemTime();
+          }
         });
       });
     });
