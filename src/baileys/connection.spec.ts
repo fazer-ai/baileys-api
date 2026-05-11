@@ -138,6 +138,65 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("#discard", () => {
+    it("prevents subsequent connect() from opening a new socket", async () => {
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      const callsBefore = makeSocket.mock.calls.length;
+
+      connection.discard();
+      await connection.connect();
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("aborts the post-backoff reconnect after connectionReplaced", async () => {
+      // Reproduces the race that survived the in-flight lock: after
+      // connectionReplaced threshold, BaileysConnection sleeps for the
+      // backoff. If the handler discards the connection during that sleep
+      // (because a POST drove it into the BaileysNotConnectedError
+      // recovery path and spawned a replacement), the post-sleep
+      // this.connect() must NOT bring up a second socket — that would
+      // race the replacement on the same identity.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const conflictClosePayload = {
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: {
+              statusCode: 440,
+              payload: {
+                statusCode: 440,
+                error: "Unknown",
+                message: "Stream Errored (conflict)",
+              },
+            },
+            message: "Stream Errored (conflict)",
+          },
+        },
+      };
+
+      // Cross the backoff threshold.
+      for (let i = 0; i < 5; i++) {
+        await handler(conflictClosePayload);
+      }
+      // The fifth close triggered asyncSleep(30_000); since asyncSleep is
+      // mocked to resolve immediately, we cannot interleave the discard with
+      // the sleep in real time — instead, count makeWASocket calls before
+      // and after, then discard and run another close cycle.
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      const callsBefore = makeSocket.mock.calls.length;
+
+      connection.discard();
+      await handler(conflictClosePayload);
+
+      // After discard, no new socket may be created on the post-backoff path.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+    });
+  });
+
   describe("#sendMessage", () => {
     it("throws BaileysNotConnectedError if not connected", async () => {
       await expect(

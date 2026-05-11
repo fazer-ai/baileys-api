@@ -7,6 +7,7 @@ const mockConnectionInstances: Map<string, any> = new Map();
 
 const mockConnect = mock(async function (this: any) {});
 const mockLogout = mock(async function (this: any) {});
+const mockDiscard = mock(function (this: any) {});
 const mockSendPresenceUpdate = mock(async function (this: any) {});
 const mockSendMessage = mock(async function (this: any) {});
 const mockReadMessages = mock(async function (this: any) {});
@@ -81,6 +82,7 @@ class MockBaileysConnection {
   }
   connect = mockConnect;
   logout = mockLogout;
+  discard = mockDiscard;
   sendPresenceUpdate = mockSendPresenceUpdate;
   sendMessage = mockSendMessage;
   readMessages = mockReadMessages;
@@ -142,6 +144,7 @@ describe("BaileysConnectionsHandler", () => {
     mockConnectionInstances.clear();
     mockConnect.mockClear();
     mockLogout.mockClear();
+    mockDiscard.mockClear();
     mockSendPresenceUpdate.mockClear();
     mockSendMessage.mockClear();
     mockReadMessages.mockClear();
@@ -248,8 +251,11 @@ describe("BaileysConnectionsHandler", () => {
       );
 
       await handler.connect("+5511999", defaultOptions);
-      // Should create a new connection
+      // Should create a new connection and discard the stale one so its
+      // pending reconnect (e.g. after a connectionReplaced backoff) cannot
+      // resurrect a parallel socket.
       expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockDiscard).toHaveBeenCalledTimes(1);
     });
 
     it("re-throws non-BaileysNotConnectedError errors", async () => {
@@ -642,6 +648,50 @@ describe("BaileysConnectionsHandler", () => {
         BaileysNotConnectedError,
       );
     });
+
+    it("waits for an in-flight connect before logging out", async () => {
+      // A DELETE arriving while reconnectFromAuthStore is mid-flight must not
+      // beat the spawn — otherwise the freshly created socket would survive
+      // a logout that thought there was nothing to do, leaving an orphaned
+      // BaileysConnection authenticated with that identity.
+      let resolveSlowConnect: () => void = () => {};
+      mockConnect.mockImplementationOnce(
+        () =>
+          new Promise<void>((res) => {
+            resolveSlowConnect = res;
+          }),
+      );
+
+      (
+        getRedisSavedAuthStateIds as ReturnType<typeof mock>
+      ).mockResolvedValueOnce([
+        {
+          id: "+5511999",
+          metadata: { webhookUrl: "https://h.com", webhookVerifyToken: "t" },
+        },
+      ]);
+
+      const reconnectPromise = handler.reconnectFromAuthStore();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      const logoutPromise = handler.logout("+5511999");
+      // Yield so logout reaches the in-flight drain.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // Logout must not have called the connection's logout yet — the spawn
+      // is still running.
+      expect(mockLogout).not.toHaveBeenCalled();
+
+      resolveSlowConnect();
+      await reconnectPromise;
+      await logoutPromise;
+
+      // After both settle, the logout drove a real WhatsApp logout on the
+      // freshly spawned connection.
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("#logoutAll", () => {
@@ -662,6 +712,46 @@ describe("BaileysConnectionsHandler", () => {
     it("handles empty handler gracefully", async () => {
       await handler.logoutAll();
       // Should not throw
+    });
+
+    it("waits for in-flight spawns before iterating connections", async () => {
+      // logoutAll must wait for any connection that is still being spawned
+      // (e.g. by reconnectFromAuthStore on boot). Otherwise the new socket
+      // would survive the bulk logout, leaving an orphaned BaileysConnection
+      // authenticated with our identity.
+      let resolveSlowConnect: () => void = () => {};
+      mockConnect.mockImplementationOnce(
+        () =>
+          new Promise<void>((res) => {
+            resolveSlowConnect = res;
+          }),
+      );
+
+      (
+        getRedisSavedAuthStateIds as ReturnType<typeof mock>
+      ).mockResolvedValueOnce([
+        {
+          id: "+5511999",
+          metadata: { webhookUrl: "https://h.com", webhookVerifyToken: "t" },
+        },
+      ]);
+
+      const reconnectPromise = handler.reconnectFromAuthStore();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      const logoutAllPromise = handler.logoutAll();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      expect(mockLogout).not.toHaveBeenCalled();
+
+      resolveSlowConnect();
+      await reconnectPromise;
+      await logoutAllPromise;
+
+      // The spawned connection was reaped by logoutAll once the spawn settled.
+      expect(mockLogout).toHaveBeenCalledTimes(1);
     });
   });
 

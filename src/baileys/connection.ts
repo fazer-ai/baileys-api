@@ -125,6 +125,7 @@ export class BaileysConnection {
     null;
   private reconnectCount = 0;
   private connectionReplacedTimestamps: number[] = [];
+  private isDiscarded = false;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -215,7 +216,7 @@ export class BaileysConnection {
   }
 
   async connect() {
-    if (this.socket) {
+    if (this.isDiscarded || this.socket) {
       return;
     }
 
@@ -350,6 +351,36 @@ export class BaileysConnection {
       );
     }
     await this.close();
+  }
+
+  // Atomically disowns this connection so it cannot resurrect itself.
+  // Used by the handler when a stale connection is being replaced (e.g.
+  // recovery path from BaileysNotConnectedError, or a stuck reconnect
+  // backoff). Does NOT clear the Redis auth state — the replacement will
+  // reuse the same identity — and does NOT fire onConnectionClose — the
+  // handler driving the discard already owns the replacement, and a late
+  // callback would only race with it.
+  discard() {
+    if (this.isDiscarded) {
+      return;
+    }
+    this.isDiscarded = true;
+    this.onConnectionClose = null;
+    this.stopGroupActivityFlush();
+    if (this.clearOnlinePresenceTimeout) {
+      clearTimeout(this.clearOnlinePresenceTimeout);
+      this.clearOnlinePresenceTimeout = null;
+    }
+    try {
+      this.socket?.end(undefined);
+    } catch (error) {
+      logger.warn(
+        "[%s] [discard] error while ending socket: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
+    this.socket = null;
   }
 
   async sendMessage(
@@ -696,6 +727,9 @@ export class BaileysConnection {
           }
         }
 
+        if (this.isDiscarded) {
+          return;
+        }
         this.connect();
         return;
       }

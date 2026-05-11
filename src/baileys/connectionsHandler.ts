@@ -32,7 +32,7 @@ type ConnectionFactory = (
 
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
-  private inFlightConnects: Record<string, Promise<void>> = {};
+  private inFlightOps: Record<string, Promise<void>> = {};
   private createConnection: ConnectionFactory;
 
   constructor(createConnection?: ConnectionFactory) {
@@ -72,7 +72,7 @@ export class BaileysConnectionsHandler {
     }
   }
 
-  // Reserves the inFlightConnects slot for `phoneNumber` synchronously and
+  // Reserves the inFlightOps slot for `phoneNumber` synchronously and
   // creates/connects a BaileysConnection. Serializes concurrent connect calls
   // for the same number so we never have two parallel sockets with the same
   // identity (which the WhatsApp server kicks with conflict/replaced).
@@ -84,7 +84,7 @@ export class BaileysConnectionsHandler {
     const slot = new Promise<void>((res) => {
       resolveSlot = res;
     });
-    this.inFlightConnects[phoneNumber] = slot;
+    this.inFlightOps[phoneNumber] = slot;
 
     try {
       const connection = this.createConnection(phoneNumber, {
@@ -106,8 +106,8 @@ export class BaileysConnectionsHandler {
       this.connections[phoneNumber] = connection;
       await connection.connect();
     } finally {
-      if (this.inFlightConnects[phoneNumber] === slot) {
-        delete this.inFlightConnects[phoneNumber];
+      if (this.inFlightOps[phoneNumber] === slot) {
+        delete this.inFlightOps[phoneNumber];
       }
       resolveSlot();
     }
@@ -125,8 +125,8 @@ export class BaileysConnectionsHandler {
     //      otherwise both spawn parallel sockets with the same identity).
     //   3. Otherwise spawn a new connection.
     for (;;) {
-      while (this.inFlightConnects[phoneNumber]) {
-        await this.inFlightConnects[phoneNumber].catch(() => {});
+      while (this.inFlightOps[phoneNumber]) {
+        await this.inFlightOps[phoneNumber].catch(() => {});
       }
 
       const existing = this.connections[phoneNumber];
@@ -145,6 +145,10 @@ export class BaileysConnectionsHandler {
           throw error;
         }
         if (this.connections[phoneNumber] === existing) {
+          // Discard the stale connection synchronously so any pending
+          // reconnect (e.g. after a connectionReplaced backoff) cannot
+          // resurrect a parallel socket once we spawn the replacement.
+          existing.discard();
           delete this.connections[phoneNumber];
         }
         logger.debug(
@@ -407,15 +411,41 @@ export class BaileysConnectionsHandler {
   }
 
   async logout(phoneNumber: string) {
-    await this.getConnection(phoneNumber).logout();
-    delete this.connections[phoneNumber];
-    logger.debug(
-      "Now tracking %d connections",
-      Object.keys(this.connections).length,
-    );
+    // Park behind any in-flight connect/logout for this number so we don't
+    // race a freshly spawned socket (e.g. from reconnectFromAuthStore on
+    // boot) that hasn't registered itself in `connections` yet.
+    while (this.inFlightOps[phoneNumber]) {
+      await this.inFlightOps[phoneNumber].catch(() => {});
+    }
+
+    let resolveSlot: () => void = () => {};
+    const slot = new Promise<void>((res) => {
+      resolveSlot = res;
+    });
+    this.inFlightOps[phoneNumber] = slot;
+    try {
+      await this.getConnection(phoneNumber).logout();
+      delete this.connections[phoneNumber];
+      logger.debug(
+        "Now tracking %d connections",
+        Object.keys(this.connections).length,
+      );
+    } finally {
+      if (this.inFlightOps[phoneNumber] === slot) {
+        delete this.inFlightOps[phoneNumber];
+      }
+      resolveSlot();
+    }
   }
 
   async logoutAll() {
+    // Wait out any in-flight connect/logout so a connection that hasn't been
+    // registered yet (e.g. mid-spawn from reconnectFromAuthStore) is not
+    // left orphaned with a live socket after we clear `connections`.
+    const inFlight = Object.values(this.inFlightOps);
+    if (inFlight.length > 0) {
+      await Promise.allSettled(inFlight);
+    }
     const connections = Object.values(this.connections);
     await Promise.allSettled(connections.map((c) => c.logout()));
     this.connections = {};
