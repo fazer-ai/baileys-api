@@ -177,31 +177,53 @@ describe("BaileysConnection", () => {
     it("re-checks isDiscarded after each await in connect()", async () => {
       // discard() may run while connect() is awaiting useRedisAuthState or
       // the version fetch. Without per-await guards, the stale instance
-      // would still call makeWASocket and race the replacement.
+      // would still call makeWASocket and race the replacement. We pin the
+      // window open with a deferred fetchLatestWaWebVersion: connect()
+      // parks on the version fetch, we discard, then release — the second
+      // guard must short-circuit before makeWASocket.
       const baileys = (await import("@whiskeysockets/baileys")) as any;
       const makeSocket = baileys.default as ReturnType<typeof mock>;
+      const fetchVersion = baileys.fetchLatestWaWebVersion as ReturnType<
+        typeof mock
+      >;
 
-      // Make useRedisAuthState (mocked via redis hash data) settle quickly
-      // and trip the discard between its resolution and makeWASocket.
-      const connectPromise = connection.connect();
-      // Let the first await (useRedisAuthState) settle, then discard before
-      // makeWASocket runs.
-      await new Promise((r) => setImmediate(r));
-      connection.discard();
+      let releaseFetch: () => void = () => {};
+      const fetchDeferred = new Promise<{
+        version: [number, number, number];
+      }>((res) => {
+        releaseFetch = () => res({ version: [2, 2400, 0] });
+      });
+      fetchVersion.mockImplementationOnce(() => fetchDeferred);
+
       const callsBefore = makeSocket.mock.calls.length;
+      const connectPromise = connection.connect();
+
+      // Yield until connect() is parked on the deferred fetch. Polling
+      // beats a fixed setImmediate count because it doesn't bake the
+      // number of intermediate awaits into the test.
+      while (fetchVersion.mock.calls.length === 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      // Socket can't have been created yet — connect() is awaiting the fetch.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+
+      connection.discard();
+      releaseFetch();
       await connectPromise;
 
+      // After resuming, the post-fetch isDiscarded guard must bail before
+      // makeWASocket runs.
       expect(makeSocket.mock.calls.length).toBe(callsBefore);
     });
 
     it("aborts the post-backoff reconnect after connectionReplaced", async () => {
-      // Reproduces the race that survived the in-flight lock: after
-      // connectionReplaced threshold, BaileysConnection sleeps for the
-      // backoff. If the handler discards the connection during that sleep
-      // (because a POST drove it into the BaileysNotConnectedError
-      // recovery path and spawned a replacement), the post-sleep
-      // this.connect() must NOT bring up a second socket — that would
-      // race the replacement on the same identity.
+      // The exact race that motivated discard(): after the 5th
+      // connectionReplaced in the window, BaileysConnection sleeps for the
+      // backoff. If the handler discards during that sleep (because a POST
+      // drove it into the recovery path and spawned a replacement), the
+      // post-sleep this.connect() must NOT bring up a second socket.
+      // We pin the window open with a deferred asyncSleep so the discard
+      // happens strictly inside the sleep, not after it.
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;
       const conflictClosePayload = {
@@ -221,22 +243,51 @@ describe("BaileysConnection", () => {
         },
       };
 
-      // Cross the backoff threshold.
-      for (let i = 0; i < 5; i++) {
+      // First 4 closes set up the threshold. Each schedules a
+      // fire-and-forget this.connect(); drain those before snapshotting.
+      for (let i = 0; i < 4; i++) {
         await handler(conflictClosePayload);
       }
-      // The fifth close triggered asyncSleep(30_000); since asyncSleep is
-      // mocked to resolve immediately, we cannot interleave the discard with
-      // the sleep in real time — instead, count makeWASocket calls before
-      // and after, then discard and run another close cycle.
-      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
-        .default as ReturnType<typeof mock>;
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+      const sleepMock = asyncSleep as ReturnType<typeof mock>;
+      // Settle any pending fire-and-forget reconnects so callsBefore is
+      // stable. Poll until two consecutive ticks show no growth.
+      let prev = -1;
+      while (prev !== makeSocket.mock.calls.length) {
+        prev = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // Arm the 5th close to park on asyncSleep until we release it.
+      let releaseSleep: () => void = () => {};
+      const sleepDeferred = new Promise<void>((res) => {
+        releaseSleep = res;
+      });
+      const sleepCallsBefore = sleepMock.mock.calls.length;
+      sleepMock.mockImplementationOnce(() => sleepDeferred);
+
+      const fifthClose = handler(conflictClosePayload);
+      // Yield until handleConnectionUpdate has entered the deferred sleep.
+      while (sleepMock.mock.calls.length === sleepCallsBefore) {
+        await new Promise((r) => setImmediate(r));
+      }
+
       const callsBefore = makeSocket.mock.calls.length;
 
+      // Discard strictly inside the backoff window.
       connection.discard();
-      await handler(conflictClosePayload);
 
-      // After discard, no new socket may be created on the post-backoff path.
+      releaseSleep();
+      await fifthClose;
+      // Drain the fire-and-forget this.connect() the handler queued.
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // Post-backoff this.connect() must have honored isDiscarded.
       expect(makeSocket.mock.calls.length).toBe(callsBefore);
     });
   });

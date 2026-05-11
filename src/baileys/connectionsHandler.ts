@@ -72,14 +72,23 @@ export class BaileysConnectionsHandler {
     }
   }
 
-  // Reserves the inFlightOps slot for `phoneNumber` synchronously and runs
-  // `fn` inside it. Serializes concurrent connect/logout calls for the same
-  // number so we never have two parallel sockets with the same identity
-  // (which the WhatsApp server kicks with conflict/replaced).
+  // Drains any in-flight op for `phoneNumber`, reserves a fresh slot
+  // synchronously, and runs `fn` inside it. Serializes concurrent
+  // connect/logout calls for the same number so we never have two parallel
+  // sockets with the same identity (which the WhatsApp server kicks with
+  // conflict/replaced). The internal drain is defense-in-depth so callers
+  // can't accidentally bypass the lock by skipping a prior drain.
   private async withInFlightOp<T>(
     phoneNumber: string,
     fn: () => Promise<T>,
   ): Promise<T> {
+    // Loop because multiple callers may have been parked on the same slot;
+    // when one resolves, all wake — only the first to assign synchronously
+    // below wins the slot. Single-threaded JS makes this safe: nothing can
+    // run between the while-exit and the synchronous slot assignment.
+    while (this.inFlightOps[phoneNumber]) {
+      await this.inFlightOps[phoneNumber].catch(() => {});
+    }
     let resolveSlot: () => void = () => {};
     const slot = new Promise<void>((res) => {
       resolveSlot = res;
@@ -428,12 +437,9 @@ export class BaileysConnectionsHandler {
   }
 
   async logout(phoneNumber: string) {
-    // Park behind any in-flight connect/logout for this number so we don't
-    // race a freshly spawned socket (e.g. from reconnectFromAuthStore on
-    // boot) that hasn't registered itself in `connections` yet.
-    while (this.inFlightOps[phoneNumber]) {
-      await this.inFlightOps[phoneNumber].catch(() => {});
-    }
+    // `withInFlightOp` drains any pending connect/logout for the same
+    // number before reserving its slot, so a logout that arrives while
+    // a connect is mid-spawn parks until the spawn settles.
     await this.withInFlightOp(phoneNumber, async () => {
       await this.getConnection(phoneNumber).logout();
       delete this.connections[phoneNumber];
