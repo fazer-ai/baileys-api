@@ -353,6 +353,12 @@ export class BaileysConnection {
   }
 
   async logout() {
+    // Mark as discarded up front so any close event the socket emits during
+    // the logout flow (e.g. a connectionReplaced from another device while
+    // we're awaiting the WhatsApp logout RPC) is treated as terminal by
+    // handleConnectionUpdate and does not schedule a reconnect that would
+    // resurrect the socket while logout is still in flight.
+    this.isDiscarded = true;
     try {
       await this.safeSocket().logout();
     } catch (error) {

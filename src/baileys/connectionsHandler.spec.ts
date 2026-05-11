@@ -220,6 +220,41 @@ describe("BaileysConnectionsHandler", () => {
         handler.sendPresenceUpdate("+5521888", { type: "available" }),
       ).not.toThrow();
     });
+
+    it("reuses an already-active entry instead of tearing it down", async () => {
+      // If reconnectFromAuthStore runs while a connection is already live
+      // (re-entrant call, future admin trigger, etc.), it must not discard
+      // the existing socket and spawn a replacement — the active socket
+      // would race the new one on the same identity.
+      await handler.connect("+5511999", {
+        webhookUrl: "https://h.com",
+        webhookVerifyToken: "t",
+      });
+      const original = mockConnectionInstances.get("+5511999");
+      mockConnect.mockClear();
+      mockDiscard.mockClear();
+
+      (
+        getRedisSavedAuthStateIds as ReturnType<typeof mock>
+      ).mockResolvedValueOnce([
+        {
+          id: "+5511999",
+          metadata: {
+            webhookUrl: "https://h.com",
+            webhookVerifyToken: "t",
+          },
+        },
+      ]);
+
+      await handler.reconnectFromAuthStore();
+
+      // No spawn, no discard — the active connection was reused via
+      // sendPresenceUpdate("available").
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(mockDiscard).not.toHaveBeenCalled();
+      expect(mockConnectionInstances.get("+5511999")).toBe(original);
+      expect(mockSendPresenceUpdate).toHaveBeenCalledWith("available");
+    });
   });
 
   describe("#connect", () => {

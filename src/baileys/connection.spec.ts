@@ -136,6 +136,55 @@ describe("BaileysConnection", () => {
       expect(mockSocket.logout).toHaveBeenCalledTimes(1);
       expect(redis.del).toHaveBeenCalled();
     });
+
+    it("marks the connection discarded before the logout RPC so a mid-logout close event cannot resurrect the socket", async () => {
+      // Park `socket.logout()` on a deferred promise. While the logout RPC
+      // is in flight, fire a non-loggedOut close (e.g. another device
+      // grabbed the session) and assert that handleConnectionUpdate does
+      // NOT try to reconnect — i.e. makeWASocket is not invoked.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+
+      let releaseLogout: () => void = () => {};
+      const logoutDeferred = new Promise<void>((res) => {
+        releaseLogout = res;
+      });
+      mockSocket.logout.mockImplementationOnce(() => logoutDeferred);
+
+      const logoutPromise = connection.logout();
+      // Yield until logout is parked on the deferred RPC.
+      while (mockSocket.logout.mock.calls.length === 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      const callsBefore = makeSocket.mock.calls.length;
+
+      // Simulate a connectionReplaced close arriving mid-logout.
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: {
+              statusCode: 440,
+              payload: {
+                statusCode: 440,
+                error: "Unknown",
+                message: "Stream Errored (conflict)",
+              },
+            },
+            message: "Stream Errored (conflict)",
+          },
+        },
+      });
+
+      releaseLogout();
+      await logoutPromise;
+
+      // The mid-logout close must NOT have triggered a reconnect.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+    });
   });
 
   describe("#discard", () => {

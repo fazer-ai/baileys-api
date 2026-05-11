@@ -63,7 +63,12 @@ export class BaileysConnectionsHandler {
       await Promise.allSettled(
         chunk.map(async ({ id, metadata }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
-          await this.spawnConnection(id, {
+          // Go through `connect` (not `spawnConnection` directly) so any
+          // existing entry under this number is reused via sendPresenceUpdate
+          // instead of torn down. Today this only runs on boot when
+          // `connections` is empty, but the indirection makes the call safe
+          // against any future caller that runs it after startup.
+          await this.connect(id, {
             isReconnect: true,
             ...metadata,
           });
