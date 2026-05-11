@@ -32,6 +32,7 @@ type ConnectionFactory = (
 
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
+  private inFlightConnects: Record<string, Promise<void>> = {};
   private createConnection: ConnectionFactory;
 
   constructor(createConnection?: ConnectionFactory) {
@@ -62,25 +63,66 @@ export class BaileysConnectionsHandler {
       await Promise.allSettled(
         chunk.map(async ({ id, metadata }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
-          const connection = this.createConnection(id, {
-            onConnectionClose: () => {
-              delete this.connections[id];
-              logger.debug(
-                "Now tracking %d connections",
-                Object.keys(this.connections).length,
-              );
-            },
+          await this.spawnConnection(id, {
             isReconnect: true,
             ...metadata,
           });
-          this.connections[id] = connection;
-          await connection.connect();
         }),
       );
     }
   }
 
+  // Reserves the inFlightConnects slot for `phoneNumber` synchronously and
+  // creates/connects a BaileysConnection. Serializes concurrent connect calls
+  // for the same number so we never have two parallel sockets with the same
+  // identity (which the WhatsApp server kicks with conflict/replaced).
+  private async spawnConnection(
+    phoneNumber: string,
+    options: BaileysConnectionOptions,
+  ) {
+    let resolveSlot: () => void = () => {};
+    const slot = new Promise<void>((res) => {
+      resolveSlot = res;
+    });
+    this.inFlightConnects[phoneNumber] = slot;
+
+    try {
+      const connection = this.createConnection(phoneNumber, {
+        ...options,
+        onConnectionClose: () => {
+          // Only clear the slot if it still points at this connection — a
+          // newer connection may have replaced this one (e.g. via the
+          // BaileysNotConnectedError recovery path in `connect`).
+          if (this.connections[phoneNumber] === connection) {
+            delete this.connections[phoneNumber];
+          }
+          logger.debug(
+            "Now tracking %d connections",
+            Object.keys(this.connections).length,
+          );
+          options.onConnectionClose?.();
+        },
+      });
+      this.connections[phoneNumber] = connection;
+      await connection.connect();
+    } finally {
+      if (this.inFlightConnects[phoneNumber] === slot) {
+        delete this.inFlightConnects[phoneNumber];
+      }
+      resolveSlot();
+    }
+  }
+
   async connect(phoneNumber: string, options: BaileysConnectionOptions) {
+    // Drain any in-flight connects for this number before deciding what to do.
+    // Loops because multiple callers may have been parked here; each one that
+    // wakes must re-check the slot. Without this, two concurrent callers can
+    // both pass the check and create parallel BaileysConnections with the
+    // same identity, causing conflict/replaced loops on the WhatsApp side.
+    while (this.inFlightConnects[phoneNumber]) {
+      await this.inFlightConnects[phoneNumber].catch(() => {});
+    }
+
     if (this.connections[phoneNumber]) {
       this.connections[phoneNumber].updateOptions(options);
       try {
@@ -99,19 +141,7 @@ export class BaileysConnectionsHandler {
       }
     }
 
-    const connection = this.createConnection(phoneNumber, {
-      ...options,
-      onConnectionClose: () => {
-        delete this.connections[phoneNumber];
-        options.onConnectionClose?.();
-      },
-    });
-    await connection.connect();
-    this.connections[phoneNumber] = connection;
-    logger.debug(
-      "Now tracking %d connections",
-      Object.keys(this.connections).length,
-    );
+    await this.spawnConnection(phoneNumber, options);
   }
 
   async verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {
