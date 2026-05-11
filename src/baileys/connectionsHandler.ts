@@ -114,34 +114,45 @@ export class BaileysConnectionsHandler {
   }
 
   async connect(phoneNumber: string, options: BaileysConnectionOptions) {
-    // Drain any in-flight connects for this number before deciding what to do.
-    // Loops because multiple callers may have been parked here; each one that
-    // wakes must re-check the slot. Without this, two concurrent callers can
-    // both pass the check and create parallel BaileysConnections with the
-    // same identity, causing conflict/replaced loops on the WhatsApp side.
-    while (this.inFlightConnects[phoneNumber]) {
-      await this.inFlightConnects[phoneNumber].catch(() => {});
-    }
+    // Loops because every decision must be re-validated after an await:
+    //   1. Drain any in-flight connect for this number (multiple callers can
+    //      have parked on the same slot).
+    //   2. If a connection is registered, try to reuse it via
+    //      sendPresenceUpdate. If that throws BaileysNotConnectedError, the
+    //      socket died — evict only if it is still the entry we observed,
+    //      then restart the decision instead of unconditionally spawning a
+    //      replacement (two callers hitting the same stale connection would
+    //      otherwise both spawn parallel sockets with the same identity).
+    //   3. Otherwise spawn a new connection.
+    for (;;) {
+      while (this.inFlightConnects[phoneNumber]) {
+        await this.inFlightConnects[phoneNumber].catch(() => {});
+      }
 
-    if (this.connections[phoneNumber]) {
-      this.connections[phoneNumber].updateOptions(options);
+      const existing = this.connections[phoneNumber];
+      if (!existing) {
+        await this.spawnConnection(phoneNumber, options);
+        return;
+      }
+
+      existing.updateOptions(options);
       try {
         // NOTE: This triggers a `connection.update` event.
-        await this.connections[phoneNumber].sendPresenceUpdate("available");
+        await existing.sendPresenceUpdate("available");
         return;
       } catch (error) {
         if (!(error instanceof BaileysNotConnectedError)) {
           throw error;
         }
-        delete this.connections[phoneNumber];
+        if (this.connections[phoneNumber] === existing) {
+          delete this.connections[phoneNumber];
+        }
         logger.debug(
           "Handled inconsistent connection state for %s",
           phoneNumber,
         );
       }
     }
-
-    await this.spawnConnection(phoneNumber, options);
   }
 
   async verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {

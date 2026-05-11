@@ -376,6 +376,49 @@ describe("BaileysConnectionsHandler", () => {
       expect(mockSendPresenceUpdate).toHaveBeenCalledWith("available");
     });
 
+    it("re-validates state after BaileysNotConnectedError instead of spawning unconditionally", async () => {
+      // Two concurrent callers can both reach `sendPresenceUpdate` on the same
+      // stale connection, both receive BaileysNotConnectedError, and both
+      // unconditionally call spawnConnection. The second caller must re-check
+      // the in-flight slot after the recovery branch, otherwise we end up with
+      // two parallel replacement sockets — the exact bug the lock is meant to
+      // prevent, just shifted to the recovery path.
+      await handler.connect("+5511999", defaultOptions);
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+
+      let rejectSpu1: (e: unknown) => void = () => {};
+      let rejectSpu2: (e: unknown) => void = () => {};
+      mockSendPresenceUpdate.mockImplementationOnce(
+        () =>
+          new Promise((_, rej) => {
+            rejectSpu1 = rej;
+          }),
+      );
+      mockSendPresenceUpdate.mockImplementationOnce(
+        () =>
+          new Promise((_, rej) => {
+            rejectSpu2 = rej;
+          }),
+      );
+
+      const first = handler.connect("+5511999", defaultOptions);
+      const second = handler.connect("+5511999", defaultOptions);
+
+      // Let both callers park on `await sendPresenceUpdate`.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // Both fail at once with the stale-socket error.
+      rejectSpu1(new BaileysNotConnectedError());
+      rejectSpu2(new BaileysNotConnectedError());
+
+      await first;
+      await second;
+
+      // 1 initial + 1 replacement spawn — NOT 3 (initial + 2 parallel replacements).
+      expect(mockConnect).toHaveBeenCalledTimes(2);
+    });
+
     it("does not let an old connection's onConnectionClose evict a replacement", async () => {
       // After the inconsistent-state recovery path (BaileysNotConnectedError),
       // a new connection takes the slot. If the OLD connection later fires
