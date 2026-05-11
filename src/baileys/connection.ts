@@ -230,7 +230,26 @@ export class BaileysConnection {
       autoPresenceSubscribe: this.autoPresenceSubscribe,
       apiKeyHash: this._apiKeyHash,
     });
+    // Re-check after each await — discard() may have run while we were
+    // loading auth state or fetching the version. Without this, the
+    // discarded instance would still call makeWASocket() and race the
+    // replacement on the same identity.
+    if (this.isDiscarded) {
+      return;
+    }
     this.clearAuthState = state.keys.clear;
+
+    const version = await fetchBaileysClientVersion().catch((error) => {
+      logger.error(
+        "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      return undefined;
+    });
+    if (this.isDiscarded) {
+      return;
+    }
 
     const socketOptions: UserFacingSocketConfig = {
       auth: {
@@ -242,14 +261,7 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
-      version: await fetchBaileysClientVersion().catch((error) => {
-        logger.error(
-          "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
-          this.phoneNumber,
-          errorToString(error),
-        );
-        return undefined;
-      }),
+      version,
     };
 
     try {
@@ -372,6 +384,11 @@ export class BaileysConnection {
       this.clearOnlinePresenceTimeout = null;
     }
     try {
+      // Drop listeners first so the synchronous `connection.update {close}`
+      // that `end()` emits doesn't reach handleConnectionUpdate at all.
+      // The flag guards a second line of defense, but unsubscribing keeps
+      // the handler graph clean even if a stray event slips through.
+      this.socket?.ev.removeAllListeners("connection.update");
       this.socket?.end(undefined);
     } catch (error) {
       logger.warn(
@@ -669,6 +686,14 @@ export class BaileysConnection {
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
+    // A discarded connection must be inert. `socket.end()` fires a final
+    // connection.update before the listeners are torn down; without this
+    // guard the handler would dispatch `reconnecting` webhooks and even
+    // attempt a reconnect on a connection the handler already replaced.
+    if (this.isDiscarded) {
+      return;
+    }
+
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
 
     // NOTE: Reconnection flow
@@ -727,9 +752,6 @@ export class BaileysConnection {
           }
         }
 
-        if (this.isDiscarded) {
-          return;
-        }
         this.connect();
         return;
       }

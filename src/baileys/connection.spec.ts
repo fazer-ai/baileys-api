@@ -150,6 +150,50 @@ describe("BaileysConnection", () => {
       expect(makeSocket.mock.calls.length).toBe(callsBefore);
     });
 
+    it("makes handleConnectionUpdate a no-op so no reconnecting webhook fires after discard", async () => {
+      // `socket.end()` emits a final connection.update {close} synchronously.
+      // Without the early guard in handleConnectionUpdate, the handler would
+      // dispatch a `reconnecting` webhook for a connection that is gone.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      fetchCalls.length = 0;
+
+      connection.discard();
+
+      // Simulate the close event that end() emits.
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+
+      const reconnectingHits = fetchCalls.filter((c) =>
+        c.body?.includes('"connection":"reconnecting"'),
+      );
+      expect(reconnectingHits.length).toBe(0);
+    });
+
+    it("re-checks isDiscarded after each await in connect()", async () => {
+      // discard() may run while connect() is awaiting useRedisAuthState or
+      // the version fetch. Without per-await guards, the stale instance
+      // would still call makeWASocket and race the replacement.
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+
+      // Make useRedisAuthState (mocked via redis hash data) settle quickly
+      // and trip the discard between its resolution and makeWASocket.
+      const connectPromise = connection.connect();
+      // Let the first await (useRedisAuthState) settle, then discard before
+      // makeWASocket runs.
+      await new Promise((r) => setImmediate(r));
+      connection.discard();
+      const callsBefore = makeSocket.mock.calls.length;
+      await connectPromise;
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+    });
+
     it("aborts the post-backoff reconnect after connectionReplaced", async () => {
       // Reproduces the race that survived the in-flight lock: after
       // connectionReplaced threshold, BaileysConnection sleeps for the

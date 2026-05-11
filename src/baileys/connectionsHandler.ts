@@ -72,21 +72,43 @@ export class BaileysConnectionsHandler {
     }
   }
 
-  // Reserves the inFlightOps slot for `phoneNumber` synchronously and
-  // creates/connects a BaileysConnection. Serializes concurrent connect calls
-  // for the same number so we never have two parallel sockets with the same
-  // identity (which the WhatsApp server kicks with conflict/replaced).
-  private async spawnConnection(
+  // Reserves the inFlightOps slot for `phoneNumber` synchronously and runs
+  // `fn` inside it. Serializes concurrent connect/logout calls for the same
+  // number so we never have two parallel sockets with the same identity
+  // (which the WhatsApp server kicks with conflict/replaced).
+  private async withInFlightOp<T>(
     phoneNumber: string,
-    options: BaileysConnectionOptions,
-  ) {
+    fn: () => Promise<T>,
+  ): Promise<T> {
     let resolveSlot: () => void = () => {};
     const slot = new Promise<void>((res) => {
       resolveSlot = res;
     });
     this.inFlightOps[phoneNumber] = slot;
-
     try {
+      return await fn();
+    } finally {
+      if (this.inFlightOps[phoneNumber] === slot) {
+        delete this.inFlightOps[phoneNumber];
+      }
+      resolveSlot();
+    }
+  }
+
+  private async spawnConnection(
+    phoneNumber: string,
+    options: BaileysConnectionOptions,
+  ) {
+    await this.withInFlightOp(phoneNumber, async () => {
+      // If another connection is already registered for this number, discard
+      // it before overwriting. Otherwise its socket would stay alive,
+      // unreachable from `connections` but still racing on our identity.
+      // Guards a re-entrant reconnectFromAuthStore or any future caller
+      // that ends up spawning twice for the same number.
+      const previous = this.connections[phoneNumber];
+      if (previous) {
+        previous.discard();
+      }
       const connection = this.createConnection(phoneNumber, {
         ...options,
         onConnectionClose: () => {
@@ -105,12 +127,7 @@ export class BaileysConnectionsHandler {
       });
       this.connections[phoneNumber] = connection;
       await connection.connect();
-    } finally {
-      if (this.inFlightOps[phoneNumber] === slot) {
-        delete this.inFlightOps[phoneNumber];
-      }
-      resolveSlot();
-    }
+    });
   }
 
   async connect(phoneNumber: string, options: BaileysConnectionOptions) {
@@ -417,34 +434,22 @@ export class BaileysConnectionsHandler {
     while (this.inFlightOps[phoneNumber]) {
       await this.inFlightOps[phoneNumber].catch(() => {});
     }
-
-    let resolveSlot: () => void = () => {};
-    const slot = new Promise<void>((res) => {
-      resolveSlot = res;
-    });
-    this.inFlightOps[phoneNumber] = slot;
-    try {
+    await this.withInFlightOp(phoneNumber, async () => {
       await this.getConnection(phoneNumber).logout();
       delete this.connections[phoneNumber];
       logger.debug(
         "Now tracking %d connections",
         Object.keys(this.connections).length,
       );
-    } finally {
-      if (this.inFlightOps[phoneNumber] === slot) {
-        delete this.inFlightOps[phoneNumber];
-      }
-      resolveSlot();
-    }
+    });
   }
 
   async logoutAll() {
-    // Wait out any in-flight connect/logout so a connection that hasn't been
-    // registered yet (e.g. mid-spawn from reconnectFromAuthStore) is not
-    // left orphaned with a live socket after we clear `connections`.
-    const inFlight = Object.values(this.inFlightOps);
-    if (inFlight.length > 0) {
-      await Promise.allSettled(inFlight);
+    // Drain in-flight ops in a loop, not a single snapshot — a spawn that
+    // started after our first await would otherwise survive the bulk logout
+    // with a live socket, leaving an orphan authenticated with our identity.
+    while (Object.keys(this.inFlightOps).length > 0) {
+      await Promise.allSettled(Object.values(this.inFlightOps));
     }
     const connections = Object.values(this.connections);
     await Promise.allSettled(connections.map((c) => c.logout()));
