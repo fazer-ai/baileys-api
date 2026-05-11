@@ -125,6 +125,7 @@ export class BaileysConnection {
     null;
   private reconnectCount = 0;
   private connectionReplacedTimestamps: number[] = [];
+  private isDiscarded = false;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -215,7 +216,7 @@ export class BaileysConnection {
   }
 
   async connect() {
-    if (this.socket) {
+    if (this.isDiscarded || this.socket) {
       return;
     }
 
@@ -229,7 +230,26 @@ export class BaileysConnection {
       autoPresenceSubscribe: this.autoPresenceSubscribe,
       apiKeyHash: this._apiKeyHash,
     });
+    // Re-check after each await — discard() may have run while we were
+    // loading auth state or fetching the version. Without this, the
+    // discarded instance would still call makeWASocket() and race the
+    // replacement on the same identity.
+    if (this.isDiscarded) {
+      return;
+    }
     this.clearAuthState = state.keys.clear;
+
+    const version = await fetchBaileysClientVersion().catch((error) => {
+      logger.error(
+        "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      return undefined;
+    });
+    if (this.isDiscarded) {
+      return;
+    }
 
     const socketOptions: UserFacingSocketConfig = {
       auth: {
@@ -241,14 +261,7 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
-      version: await fetchBaileysClientVersion().catch((error) => {
-        logger.error(
-          "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
-          this.phoneNumber,
-          errorToString(error),
-        );
-        return undefined;
-      }),
+      version,
     };
 
     try {
@@ -340,6 +353,12 @@ export class BaileysConnection {
   }
 
   async logout() {
+    // Mark as discarded up front so any close event the socket emits during
+    // the logout flow (e.g. a connectionReplaced from another device while
+    // we're awaiting the WhatsApp logout RPC) is treated as terminal by
+    // handleConnectionUpdate and does not schedule a reconnect that would
+    // resurrect the socket while logout is still in flight.
+    this.isDiscarded = true;
     try {
       await this.safeSocket().logout();
     } catch (error) {
@@ -350,6 +369,41 @@ export class BaileysConnection {
       );
     }
     await this.close();
+  }
+
+  // Atomically disowns this connection so it cannot resurrect itself.
+  // Used by the handler when a stale connection is being replaced (e.g.
+  // recovery path from BaileysNotConnectedError, or a stuck reconnect
+  // backoff). Does NOT clear the Redis auth state — the replacement will
+  // reuse the same identity — and does NOT fire onConnectionClose — the
+  // handler driving the discard already owns the replacement, and a late
+  // callback would only race with it.
+  discard() {
+    if (this.isDiscarded) {
+      return;
+    }
+    this.isDiscarded = true;
+    this.onConnectionClose = null;
+    this.stopGroupActivityFlush();
+    if (this.clearOnlinePresenceTimeout) {
+      clearTimeout(this.clearOnlinePresenceTimeout);
+      this.clearOnlinePresenceTimeout = null;
+    }
+    try {
+      // Drop listeners first so the synchronous `connection.update {close}`
+      // that `end()` emits doesn't reach handleConnectionUpdate at all.
+      // The flag guards a second line of defense, but unsubscribing keeps
+      // the handler graph clean even if a stray event slips through.
+      this.socket?.ev.removeAllListeners("connection.update");
+      this.socket?.end(undefined);
+    } catch (error) {
+      logger.warn(
+        "[%s] [discard] error while ending socket: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
+    this.socket = null;
   }
 
   async sendMessage(
@@ -638,6 +692,14 @@ export class BaileysConnection {
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
+    // A discarded connection must be inert. `socket.end()` fires a final
+    // connection.update before the listeners are torn down; without this
+    // guard the handler would dispatch `reconnecting` webhooks and even
+    // attempt a reconnect on a connection the handler already replaced.
+    if (this.isDiscarded) {
+      return;
+    }
+
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
 
     // NOTE: Reconnection flow
