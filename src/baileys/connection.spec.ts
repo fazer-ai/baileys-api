@@ -968,6 +968,209 @@ describe("BaileysConnection", () => {
 
         expect(fetchCalls.length).toBe(0);
       });
+
+      describe("history contact enrichment", () => {
+        const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+        beforeEach(async () => {
+          connection = new BaileysConnection("+5511999999999", {
+            ...defaultOptions,
+            historyImportDays: 30,
+          });
+          await connection.connect();
+          fetchCalls.length = 0;
+          mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
+        });
+
+        it("stamps pushName from data.contacts when the message has none", async () => {
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+          await handler({
+            chats: [],
+            contacts: [
+              {
+                id: "12345@lid",
+                name: "João Padaria",
+                notify: "João",
+              },
+            ],
+            messages: [
+              {
+                key: { id: "h-1", remoteJid: "12345@lid", fromMe: false },
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "Olá" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          expect(fetchCalls.length).toBe(1);
+          const body = JSON.parse(fetchCalls[0].body);
+          expect(body.data.messages[0].pushName).toBe("João Padaria");
+        });
+
+        it("preserves an existing pushName on the message", async () => {
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+          await handler({
+            chats: [],
+            contacts: [{ id: "12345@lid", name: "Should Not Win" }],
+            messages: [
+              {
+                key: { id: "h-1", remoteJid: "12345@lid", fromMe: false },
+                pushName: "Existing Name",
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "Olá" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          const body = JSON.parse(fetchCalls[0].body);
+          expect(body.data.messages[0].pushName).toBe("Existing Name");
+        });
+
+        it("falls back to notify then verifiedName when name is missing", async () => {
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+          await handler({
+            chats: [],
+            contacts: [
+              { id: "111@lid", notify: "notifyName" },
+              { id: "222@lid", verifiedName: "verifiedName" },
+            ],
+            messages: [
+              {
+                key: { id: "h-1", remoteJid: "111@lid", fromMe: false },
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "1" },
+              },
+              {
+                key: { id: "h-2", remoteJid: "222@lid", fromMe: false },
+                messageTimestamp: nowSeconds() - 2 * 86_400,
+                message: { conversation: "2" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          const body = JSON.parse(fetchCalls[0].body);
+          const byId = new Map(
+            body.data.messages.map(
+              (m: { key: { id: string }; pushName?: string }) => [
+                m.key.id,
+                m.pushName,
+              ],
+            ),
+          );
+          expect(byId.get("h-1")).toBe("notifyName");
+          expect(byId.get("h-2")).toBe("verifiedName");
+        });
+
+        it("stamps remoteJidAlt from the contact's phoneNumber when remoteJid is @lid", async () => {
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+          await handler({
+            chats: [],
+            contacts: [
+              {
+                id: "12345@lid",
+                phoneNumber: "5511987654321@s.whatsapp.net",
+              },
+            ],
+            messages: [
+              {
+                key: { id: "h-1", remoteJid: "12345@lid", fromMe: false },
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "Olá" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          const body = JSON.parse(fetchCalls[0].body);
+          expect(body.data.messages[0].key.remoteJidAlt).toBe(
+            "5511987654321@s.whatsapp.net",
+          );
+          expect(body.data.messages[0].key.addressingMode).toBe("lid");
+        });
+
+        it("falls back to signalRepository.lidMapping when contacts don't have a phone", async () => {
+          mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+            "5511987654321@s.whatsapp.net",
+          );
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+
+          await handler({
+            chats: [],
+            contacts: [{ id: "12345@lid", name: "Sem fone" }],
+            messages: [
+              {
+                key: { id: "h-1", remoteJid: "12345@lid", fromMe: false },
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "Olá" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          expect(
+            mockSocket.signalRepository.lidMapping.getPNForLID,
+          ).toHaveBeenCalledWith("12345@lid");
+          const body = JSON.parse(fetchCalls[0].body);
+          expect(body.data.messages[0].key.remoteJidAlt).toBe(
+            "5511987654321@s.whatsapp.net",
+          );
+        });
+
+        it("leaves remoteJidAlt unset when no phone can be resolved", async () => {
+          mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+            null,
+          );
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+
+          await handler({
+            chats: [],
+            contacts: [],
+            messages: [
+              {
+                key: { id: "h-1", remoteJid: "12345@lid", fromMe: false },
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "Olá" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          const body = JSON.parse(fetchCalls[0].body);
+          expect(body.data.messages[0].key.remoteJidAlt).toBeUndefined();
+        });
+
+        it("skips enrichment for group messages", async () => {
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+          await handler({
+            chats: [],
+            contacts: [{ id: "12345@lid", name: "Group Member" }],
+            messages: [
+              {
+                key: {
+                  id: "h-1",
+                  remoteJid: "group@g.us",
+                  participant: "12345@lid",
+                  fromMe: false,
+                },
+                messageTimestamp: nowSeconds() - 3 * 86_400,
+                message: { conversation: "Group hi" },
+              },
+            ],
+            isLatest: true,
+          });
+
+          const body = JSON.parse(fetchCalls[0].body);
+          // Group enrichment is out of scope for v1, so no contact lookup is
+          // performed against the participant. pushName stays absent.
+          expect(body.data.messages[0].pushName).toBeUndefined();
+          expect(
+            mockSocket.signalRepository.lidMapping.getPNForLID,
+          ).not.toHaveBeenCalled();
+        });
+      });
     });
   });
 

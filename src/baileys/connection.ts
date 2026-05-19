@@ -6,6 +6,7 @@ import makeWASocket, {
   Browsers,
   type ChatModification,
   type ConnectionState,
+  type Contact,
   DisconnectReason,
   isJidGroup,
   type MessageReceiptType,
@@ -916,6 +917,12 @@ export class BaileysConnection {
   // consumer (Chatwoot) gets a stream of events that look identical in shape
   // to live messages, with a single flag telling its ingest pipeline to
   // suppress live-only side effects.
+  //
+  // Each message is enriched from the `data.contacts` lookup so the consumer
+  // ends up with a name (instead of just the LID id) and the phone-number JID
+  // (instead of a contact stuck on @lid forever). For LIDs that the contact
+  // payload doesn't resolve, we fall back to the local Signal lid mapping —
+  // it's an in-memory cache, no network hop.
   private async dispatchHistoryImportBatches(
     data: BaileysEventMap["messaging-history.set"],
   ) {
@@ -952,21 +959,25 @@ export class BaileysConnection {
       return;
     }
 
+    const contactsLookup = this.buildHistoryContactsLookup(data.contacts);
+    const enrichedMessages = await Promise.all(
+      filtered.map(({ msg }) => this.enrichHistoryMessage(msg, contactsLookup)),
+    );
+
     const BATCH_SIZE = 200;
-    const batches: Array<typeof filtered> = [];
-    for (let i = 0; i < filtered.length; i += BATCH_SIZE) {
-      batches.push(filtered.slice(i, i + BATCH_SIZE));
+    const batches: WAMessage[][] = [];
+    for (let i = 0; i < enrichedMessages.length; i += BATCH_SIZE) {
+      batches.push(enrichedMessages.slice(i, i + BATCH_SIZE));
     }
 
     logger.info(
       "[%s] [dispatchHistoryImportBatches] dispatching %d messages in %d batches",
       this.phoneNumber,
-      filtered.length,
+      enrichedMessages.length,
       batches.length,
     );
 
     for (let index = 0; index < batches.length; index++) {
-      const batch = batches[index];
       await this.sendToWebhook({
         event: "messages.upsert",
         importMode: true,
@@ -977,10 +988,100 @@ export class BaileysConnection {
         },
         data: {
           type: "notify",
-          messages: batch.map((entry) => entry.msg),
+          messages: batches[index],
         } as BaileysEventMap["messages.upsert"],
       });
     }
+  }
+
+  // Builds a JID → Contact map from the `data.contacts` array Baileys ships
+  // alongside the history messages. Index by every JID-shaped field on the
+  // contact so a message's `remoteJid` matches regardless of whether it's the
+  // primary @lid, the @s.whatsapp.net alt, or the raw id field.
+  private buildHistoryContactsLookup(
+    contacts: Contact[] | undefined,
+  ): Map<string, Contact> {
+    const lookup = new Map<string, Contact>();
+    if (!contacts) return lookup;
+
+    for (const contact of contacts) {
+      if (contact.id) lookup.set(contact.id, contact);
+      if (contact.lid) lookup.set(contact.lid, contact);
+      if (contact.phoneNumber) lookup.set(contact.phoneNumber, contact);
+    }
+    return lookup;
+  }
+
+  private async enrichHistoryMessage(
+    msg: WAMessage,
+    contactsLookup: Map<string, Contact>,
+  ): Promise<WAMessage> {
+    const remoteJid = msg.key?.remoteJid;
+    if (!remoteJid) return msg;
+    // Group enrichment uses per-participant fields and is deliberately out
+    // of scope for this v1: the participant JIDs would need the same
+    // treatment as the remoteJid, plus group metadata is fetched lazily by
+    // Chatwoot via the group-metadata endpoint anyway.
+    if (remoteJid.endsWith("@g.us")) return msg;
+
+    const contact = contactsLookup.get(remoteJid);
+    const enriched: WAMessage = {
+      ...msg,
+      key: { ...msg.key } as WAMessageKey,
+    };
+
+    if (!enriched.pushName) {
+      const name = contact?.name || contact?.notify || contact?.verifiedName;
+      if (name) enriched.pushName = name;
+    }
+
+    if (!enriched.key.remoteJidAlt && remoteJid.endsWith("@lid")) {
+      const phoneJid = await this.resolveLidToPhoneJid(remoteJid, contact);
+      if (phoneJid) {
+        enriched.key.remoteJidAlt = phoneJid;
+        // Without `addressingMode`, the Chatwoot consumer falls back to
+        // `remoteJid` for phone extraction, which is the @lid we're trying
+        // to override. Stamping the hint here lets the downstream pn↔lid
+        // steering pick `remoteJidAlt` correctly.
+        if (!enriched.key.addressingMode) {
+          enriched.key.addressingMode = "lid";
+        }
+      }
+    }
+
+    return enriched;
+  }
+
+  // Prefer the phone JID Baileys already shipped in the contact payload —
+  // it's the cheapest and the most reliable source. Only fall back to the
+  // local Signal lid mapping when the payload didn't have one; that cache
+  // is in-memory, so failures here are non-fatal noise we log and skip.
+  private async resolveLidToPhoneJid(
+    lidJid: string,
+    contact: Contact | undefined,
+  ): Promise<string | null> {
+    if (contact?.phoneNumber?.endsWith("@s.whatsapp.net")) {
+      return contact.phoneNumber;
+    }
+
+    try {
+      const resolved = await this.resolveToPN(lidJid);
+      if (
+        resolved &&
+        resolved !== lidJid &&
+        resolved.endsWith("@s.whatsapp.net")
+      ) {
+        return resolved;
+      }
+    } catch (error) {
+      logger.warn(
+        "[%s] [resolveLidToPhoneJid] Failed to resolve %s: %s",
+        this.phoneNumber,
+        lidJid,
+        errorToString(error),
+      );
+    }
+    return null;
   }
 
   private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {
