@@ -118,6 +118,14 @@ export class BaileysConnection {
   private isReconnect: boolean;
   private includeMedia: boolean;
   private syncFullHistory: boolean;
+  // Number of days of history to backfill via `messaging-history.set`. When
+  // > 0 the handler filters/sorts/batches the event into `messages.upsert`
+  // webhooks tagged `importMode: true`. 0 disables the backfill path.
+  private historyImportDays: number;
+  // Lower-bound timestamp computed from `historyImportDays` at the time the
+  // connection opens, so concurrent `messaging-history.set` events use the
+  // same cutoff and a slow event chain doesn't slide the window forward.
+  private historyImportCutoffSeconds: number | null = null;
   private onConnectionClose: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
@@ -146,7 +154,12 @@ export class BaileysConnection {
     this.isReconnect = !!options.isReconnect;
     // TODO(v2): Change default to false.
     this.includeMedia = options.includeMedia ?? true;
-    this.syncFullHistory = options.syncFullHistory ?? false;
+    this.historyImportDays = Math.max(0, options.historyImportDays ?? 0);
+    // Force-enable `syncFullHistory` when a backfill was requested: without
+    // it Baileys won't ask WhatsApp for enough history for the cutoff to
+    // matter, so a 30-day request would silently land only ~recent chats.
+    this.syncFullHistory =
+      options.syncFullHistory ?? this.historyImportDays > 0;
     this.groupsEnabled = options.groupsEnabled ?? true;
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? null;
@@ -180,7 +193,9 @@ export class BaileysConnection {
     this.webhookUrl = options.webhookUrl;
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.includeMedia = options.includeMedia ?? true;
-    this.syncFullHistory = options.syncFullHistory ?? false;
+    this.historyImportDays = Math.max(0, options.historyImportDays ?? 0);
+    this.syncFullHistory =
+      options.syncFullHistory ?? this.historyImportDays > 0;
 
     const prevGroupsEnabled = this.groupsEnabled;
     this.groupsEnabled = options.groupsEnabled ?? true;
@@ -208,6 +223,7 @@ export class BaileysConnection {
         webhookVerifyToken: this.webhookVerifyToken,
         includeMedia: this.includeMedia,
         syncFullHistory: this.syncFullHistory,
+        historyImportDays: this.historyImportDays,
         groupsEnabled: this.groupsEnabled,
         autoPresenceSubscribe: this.autoPresenceSubscribe,
         apiKeyHash: this._apiKeyHash,
@@ -220,12 +236,20 @@ export class BaileysConnection {
       return;
     }
 
+    // Snapshot the cutoff once per connect so subsequent
+    // `messaging-history.set` events use a stable lower bound.
+    this.historyImportCutoffSeconds =
+      this.historyImportDays > 0
+        ? Math.floor(Date.now() / 1000) - this.historyImportDays * 86_400
+        : null;
+
     const { state, saveCreds } = await useRedisAuthState(this.phoneNumber, {
       clientName: this.clientName,
       webhookUrl: this.webhookUrl,
       webhookVerifyToken: this.webhookVerifyToken,
       includeMedia: this.includeMedia,
       syncFullHistory: this.syncFullHistory,
+      historyImportDays: this.historyImportDays,
       groupsEnabled: this.groupsEnabled,
       autoPresenceSubscribe: this.autoPresenceSubscribe,
       apiKeyHash: this._apiKeyHash,
@@ -868,9 +892,14 @@ export class BaileysConnection {
     });
   }
 
-  private handleMessagingHistorySet(
+  private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
+    if (this.historyImportDays > 0) {
+      await this.dispatchHistoryImportBatches(data);
+      return;
+    }
+
     if (!this.syncFullHistory) {
       return;
     }
@@ -880,6 +909,78 @@ export class BaileysConnection {
     // await downloadMediaFromMessages(data.messages);
 
     this.sendToWebhook({ event: "messaging-history.set", data });
+  }
+
+  // Repackages the (potentially huge) `messaging-history.set` payload into a
+  // series of `messages.upsert` webhooks tagged `importMode: true`. The
+  // consumer (Chatwoot) gets a stream of events that look identical in shape
+  // to live messages, with a single flag telling its ingest pipeline to
+  // suppress live-only side effects.
+  private async dispatchHistoryImportBatches(
+    data: BaileysEventMap["messaging-history.set"],
+  ) {
+    const cutoffSeconds = this.historyImportCutoffSeconds;
+    if (cutoffSeconds === null) {
+      return;
+    }
+
+    // Ignore messages outside the requested window and any rows missing a
+    // timestamp (Baileys occasionally emits messages with no
+    // messageTimestamp; we can't place them on a timeline, so drop them).
+    const filtered = data.messages
+      .map((msg) => {
+        const ts = Number(msg.messageTimestamp);
+        return Number.isFinite(ts) && ts > 0 ? { msg, ts } : null;
+      })
+      .filter(
+        (entry): entry is { msg: (typeof data.messages)[number]; ts: number } =>
+          entry !== null,
+      )
+      .filter(({ ts }) => ts >= cutoffSeconds)
+      // Chronological order matters downstream: Chatwoot uses the first
+      // message in a conversation to seed `last_activity_at` and uses the
+      // subsequent messages to set ordering. Out-of-order ingestion lands
+      // the conversation card with the wrong preview.
+      .sort((a, b) => a.ts - b.ts);
+
+    if (filtered.length === 0) {
+      logger.info(
+        "[%s] [dispatchHistoryImportBatches] no messages within %d-day window",
+        this.phoneNumber,
+        this.historyImportDays,
+      );
+      return;
+    }
+
+    const BATCH_SIZE = 200;
+    const batches: Array<typeof filtered> = [];
+    for (let i = 0; i < filtered.length; i += BATCH_SIZE) {
+      batches.push(filtered.slice(i, i + BATCH_SIZE));
+    }
+
+    logger.info(
+      "[%s] [dispatchHistoryImportBatches] dispatching %d messages in %d batches",
+      this.phoneNumber,
+      filtered.length,
+      batches.length,
+    );
+
+    for (let index = 0; index < batches.length; index++) {
+      const batch = batches[index];
+      await this.sendToWebhook({
+        event: "messages.upsert",
+        importMode: true,
+        importBatch: {
+          index,
+          total: batches.length,
+          phase: "history",
+        },
+        data: {
+          type: "notify",
+          messages: batch.map((entry) => entry.msg),
+        } as BaileysEventMap["messages.upsert"],
+      });
+    }
   }
 
   private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {

@@ -93,6 +93,15 @@ const connectionsController = new Elysia({
             default: false,
           }),
         ),
+        historyImportDays: t.Optional(
+          t.Number({
+            minimum: 0,
+            maximum: 365,
+            description:
+              "When > 0, the `messaging-history.set` event from Baileys is filtered to messages within the last N days, sorted chronologically and split into `messages.upsert` webhooks tagged `importMode: true`. Targeted at downstream consumers that want to backfill historical chats through their normal incoming-message pipeline. Implicitly forces `syncFullHistory` on so WhatsApp actually ships enough history to filter.",
+            default: 0,
+          }),
+        ),
         groupsEnabled: t.Optional(
           t.Boolean({
             description:
