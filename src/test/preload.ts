@@ -273,7 +273,11 @@ mock.module("@whiskeysockets/baileys", () => ({
     return _latestMockSocket;
   }),
   Browsers: { windows: (name: string) => ["Windows", name, "10"] },
-  DisconnectReason: { loggedOut: 401, badSession: 500 },
+  DisconnectReason: {
+    loggedOut: 401,
+    badSession: 500,
+    connectionReplaced: 440,
+  },
   makeCacheableSignalKeyStore: mock((keys: any) => keys),
   fetchLatestWaWebVersion: mock(async () => ({ version: [2, 2400, 0] })),
   isJidGroup: (jid: string) => jid?.endsWith("@g.us") ?? false,

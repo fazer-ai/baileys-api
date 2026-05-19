@@ -36,6 +36,14 @@ import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 import redis from "@/lib/redis";
 
+// `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
+// so default behavior is a normal reconnect. When the same disconnect repeats
+// rapidly it indicates another session is competing for this slot and the tight
+// retry only feeds the loop, so after the threshold we add a backoff.
+const CONNECTION_REPLACED_LOOP_WINDOW_MS = 30_000;
+const CONNECTION_REPLACED_LOOP_THRESHOLD = 5;
+const CONNECTION_REPLACED_BACKOFF_MS = 30_000;
+
 export class BaileysNotConnectedError extends Error {
   constructor() {
     super("Phone number not connected");
@@ -70,8 +78,10 @@ export class BaileysConnection {
     "connection.update",
     "creds.update",
     "messaging-history.set",
+    "messaging-history.status",
     "chats.upsert",
     "chats.update",
+    "chats.lock",
     "lid-mapping.update",
     "chats.delete",
     "presence.update",
@@ -83,10 +93,12 @@ export class BaileysConnection {
     "messages.upsert",
     "messages.reaction",
     "message-receipt.update",
+    "message-capping.update",
     "groups.upsert",
     "groups.update",
     "group-participants.update",
     "group.join-request",
+    "group.member-tag.update",
     "blocklist.set",
     "blocklist.update",
     "call",
@@ -96,6 +108,7 @@ export class BaileysConnection {
     "newsletter.view",
     "newsletter-participants.update",
     "newsletter-settings.update",
+    "settings.update",
   ];
 
   private phoneNumber: string;
@@ -119,6 +132,8 @@ export class BaileysConnection {
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
     null;
   private reconnectCount = 0;
+  private connectionReplacedTimestamps: number[] = [];
+  private isDiscarded = false;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -217,7 +232,7 @@ export class BaileysConnection {
   }
 
   async connect() {
-    if (this.socket) {
+    if (this.isDiscarded || this.socket) {
       return;
     }
 
@@ -239,7 +254,26 @@ export class BaileysConnection {
       autoPresenceSubscribe: this.autoPresenceSubscribe,
       apiKeyHash: this._apiKeyHash,
     });
+    // Re-check after each await — discard() may have run while we were
+    // loading auth state or fetching the version. Without this, the
+    // discarded instance would still call makeWASocket() and race the
+    // replacement on the same identity.
+    if (this.isDiscarded) {
+      return;
+    }
     this.clearAuthState = state.keys.clear;
+
+    const version = await fetchBaileysClientVersion().catch((error) => {
+      logger.error(
+        "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      return undefined;
+    });
+    if (this.isDiscarded) {
+      return;
+    }
 
     const socketOptions: UserFacingSocketConfig = {
       auth: {
@@ -251,14 +285,7 @@ export class BaileysConnection {
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
-      version: await fetchBaileysClientVersion().catch((error) => {
-        logger.error(
-          "[%s] [fetchBaileysVersion] Failed to fetch latest WhatsApp Web version, falling back to internal version. %s",
-          this.phoneNumber,
-          errorToString(error),
-        );
-        return undefined;
-      }),
+      version,
     };
 
     try {
@@ -345,10 +372,17 @@ export class BaileysConnection {
     this.clearAuthState = null;
     this.socket = null;
     this.reconnectCount = 0;
+    this.connectionReplacedTimestamps = [];
     this.onConnectionClose?.();
   }
 
   async logout() {
+    // Mark as discarded up front so any close event the socket emits during
+    // the logout flow (e.g. a connectionReplaced from another device while
+    // we're awaiting the WhatsApp logout RPC) is treated as terminal by
+    // handleConnectionUpdate and does not schedule a reconnect that would
+    // resurrect the socket while logout is still in flight.
+    this.isDiscarded = true;
     try {
       await this.safeSocket().logout();
     } catch (error) {
@@ -359,6 +393,41 @@ export class BaileysConnection {
       );
     }
     await this.close();
+  }
+
+  // Atomically disowns this connection so it cannot resurrect itself.
+  // Used by the handler when a stale connection is being replaced (e.g.
+  // recovery path from BaileysNotConnectedError, or a stuck reconnect
+  // backoff). Does NOT clear the Redis auth state — the replacement will
+  // reuse the same identity — and does NOT fire onConnectionClose — the
+  // handler driving the discard already owns the replacement, and a late
+  // callback would only race with it.
+  discard() {
+    if (this.isDiscarded) {
+      return;
+    }
+    this.isDiscarded = true;
+    this.onConnectionClose = null;
+    this.stopGroupActivityFlush();
+    if (this.clearOnlinePresenceTimeout) {
+      clearTimeout(this.clearOnlinePresenceTimeout);
+      this.clearOnlinePresenceTimeout = null;
+    }
+    try {
+      // Drop listeners first so the synchronous `connection.update {close}`
+      // that `end()` emits doesn't reach handleConnectionUpdate at all.
+      // The flag guards a second line of defense, but unsubscribing keeps
+      // the handler graph clean even if a stray event slips through.
+      this.socket?.ev.removeAllListeners("connection.update");
+      this.socket?.end(undefined);
+    } catch (error) {
+      logger.warn(
+        "[%s] [discard] error while ending socket: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
+    this.socket = null;
   }
 
   async sendMessage(
@@ -647,6 +716,14 @@ export class BaileysConnection {
   }
 
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
+    // A discarded connection must be inert. `socket.end()` fires a final
+    // connection.update before the listeners are torn down; without this
+    // guard the handler would dispatch `reconnecting` webhooks and even
+    // attempt a reconnect on a connection the handler already replaced.
+    if (this.isDiscarded) {
+      return;
+    }
+
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
 
     // NOTE: Reconnection flow
@@ -690,6 +767,21 @@ export class BaileysConnection {
         await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
         this.socket = null;
+
+        if (statusCode === DisconnectReason.connectionReplaced) {
+          const recentCount = this.trackConnectionReplaced();
+          if (recentCount >= CONNECTION_REPLACED_LOOP_THRESHOLD) {
+            logger.warn(
+              "[%s] [handleConnectionUpdate] connectionReplaced loop detected (%d events in %dms window), backing off %dms before reconnect",
+              this.phoneNumber,
+              recentCount,
+              CONNECTION_REPLACED_LOOP_WINDOW_MS,
+              CONNECTION_REPLACED_BACKOFF_MS,
+            );
+            await asyncSleep(CONNECTION_REPLACED_BACKOFF_MS);
+          }
+        }
+
         this.connect();
         return;
       }
@@ -960,6 +1052,16 @@ export class BaileysConnection {
       event: "connection.update",
       data: { connection: "reconnecting" as WAConnectionState },
     });
+  }
+
+  private trackConnectionReplaced(): number {
+    const now = Date.now();
+    this.connectionReplacedTimestamps =
+      this.connectionReplacedTimestamps.filter(
+        (ts) => now - ts <= CONNECTION_REPLACED_LOOP_WINDOW_MS,
+      );
+    this.connectionReplacedTimestamps.push(now);
+    return this.connectionReplacedTimestamps.length;
   }
 
   private startGroupActivityFlush() {
