@@ -9,9 +9,6 @@ on:
     types: [released]
   workflow_dispatch:
 
-env:
-  GITHUB_REPO: ghcr.io/${{ github.repository }}
-
 jobs:
   build:
     strategy:
@@ -50,6 +47,11 @@ jobs:
         run: |
           SANITIZED_REF=$(echo "$GIT_REF" | sed 's/\//-/g')
           echo "SANITIZED_REF=${SANITIZED_REF}" >> $GITHUB_ENV
+          # GHCR rejects uppercase characters in image refs; lowercase
+          # `github.repository` so forks under orgs with capitalised names
+          # (e.g. Tech-Auris) can publish.
+          REPO_LOWER=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "GITHUB_REPO=${REPO_LOWER}" >> $GITHUB_ENV
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -119,16 +121,17 @@ jobs:
           GIT_REF: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
           SANITIZED_REF=$(echo "$GIT_REF" | sed 's/\//-/g')
+          REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           docker buildx imagetools create \
-            -t ghcr.io/${{ github.repository }}:${SANITIZED_REF} \
-            -t ghcr.io/${{ github.repository }}:latest \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+            -t ${REPO}:${SANITIZED_REF} \
+            -t ${REPO}:latest \
+            $(printf "${REPO}@sha256:%s " *)
 
       - name: Inspect image
         env:
           GIT_REF: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
           SANITIZED_REF=$(echo "$GIT_REF" | sed 's/\//-/g')
-          REPO="ghcr.io/${{ github.repository }}"
+          REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           docker buildx imagetools inspect ${REPO}:${SANITIZED_REF}
           docker buildx imagetools inspect ${REPO}:latest
