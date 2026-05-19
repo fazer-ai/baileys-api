@@ -524,6 +524,175 @@ describe("BaileysConnection", () => {
         expect(body.event).toBe("group-participants.update");
       });
     });
+
+    describe("messaging-history.set", () => {
+      it("does nothing when neither syncFullHistory nor historyImportDays is set", async () => {
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [
+            {
+              key: { id: "h-1", remoteJid: "user@s.whatsapp.net" },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+              message: { conversation: "hi" },
+            },
+          ],
+          isLatest: true,
+        });
+
+        expect(fetchCalls.length).toBe(0);
+      });
+
+      it("forwards the raw event when only syncFullHistory is on", async () => {
+        connection = new BaileysConnection("+5511999999999", {
+          ...defaultOptions,
+          syncFullHistory: true,
+        });
+        await connection.connect();
+        fetchCalls.length = 0;
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [
+            {
+              key: { id: "h-1", remoteJid: "user@s.whatsapp.net" },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+              message: { conversation: "hi" },
+            },
+          ],
+          isLatest: true,
+        });
+
+        expect(fetchCalls.length).toBe(1);
+        const body = JSON.parse(fetchCalls[0].body);
+        expect(body.event).toBe("messaging-history.set");
+        expect(body.importMode).toBeUndefined();
+      });
+
+      it("repackages history into batched messages.upsert webhooks tagged importMode", async () => {
+        connection = new BaileysConnection("+5511999999999", {
+          ...defaultOptions,
+          historyImportDays: 30,
+        });
+        await connection.connect();
+        fetchCalls.length = 0;
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        // Build 450 messages so we land 3 batches of 200 / 200 / 50.
+        const messages = Array.from({ length: 450 }, (_, i) => ({
+          key: { id: `h-${i}`, remoteJid: "user@s.whatsapp.net" },
+          // Stagger by minute, all within the 30-day window.
+          messageTimestamp: nowSeconds - i * 60,
+          message: { conversation: `msg ${i}` },
+        }));
+
+        await handler({
+          chats: [],
+          contacts: [],
+          messages,
+          isLatest: true,
+        });
+
+        expect(fetchCalls.length).toBe(3);
+        const bodies = fetchCalls.map((c) => JSON.parse(c.body));
+        for (const body of bodies) {
+          expect(body.event).toBe("messages.upsert");
+          expect(body.importMode).toBe(true);
+          expect(body.importBatch.phase).toBe("history");
+          expect(body.data.type).toBe("notify");
+        }
+        expect(bodies[0].importBatch).toEqual({
+          index: 0,
+          total: 3,
+          phase: "history",
+        });
+        expect(bodies[2].importBatch.index).toBe(2);
+        expect(bodies[0].data.messages.length).toBe(200);
+        expect(bodies[2].data.messages.length).toBe(50);
+
+        // Chronological order: oldest first across the whole stream.
+        const flat = bodies.flatMap(
+          (b) => b.data.messages as Array<{ messageTimestamp: number }>,
+        );
+        for (let i = 1; i < flat.length; i++) {
+          expect(flat[i].messageTimestamp).toBeGreaterThanOrEqual(
+            flat[i - 1].messageTimestamp,
+          );
+        }
+      });
+
+      it("drops messages outside the historyImportDays window", async () => {
+        connection = new BaileysConnection("+5511999999999", {
+          ...defaultOptions,
+          historyImportDays: 7,
+        });
+        await connection.connect();
+        fetchCalls.length = 0;
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [
+            // Within the 7-day window
+            {
+              key: { id: "in-1", remoteJid: "u@s.whatsapp.net" },
+              messageTimestamp: nowSeconds - 3 * 86_400,
+              message: { conversation: "fresh" },
+            },
+            // Outside the window
+            {
+              key: { id: "out-1", remoteJid: "u@s.whatsapp.net" },
+              messageTimestamp: nowSeconds - 30 * 86_400,
+              message: { conversation: "old" },
+            },
+            // Missing timestamp — must be dropped
+            {
+              key: { id: "no-ts", remoteJid: "u@s.whatsapp.net" },
+              messageTimestamp: 0,
+              message: { conversation: "noisy" },
+            },
+          ],
+          isLatest: true,
+        });
+
+        expect(fetchCalls.length).toBe(1);
+        const body = JSON.parse(fetchCalls[0].body);
+        expect(body.data.messages.length).toBe(1);
+        expect(body.data.messages[0].key.id).toBe("in-1");
+      });
+
+      it("no-ops when nothing is within the window", async () => {
+        connection = new BaileysConnection("+5511999999999", {
+          ...defaultOptions,
+          historyImportDays: 1,
+        });
+        await connection.connect();
+        fetchCalls.length = 0;
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [
+            {
+              key: { id: "old", remoteJid: "u@s.whatsapp.net" },
+              messageTimestamp: nowSeconds - 10 * 86_400,
+              message: { conversation: "old" },
+            },
+          ],
+          isLatest: true,
+        });
+
+        expect(fetchCalls.length).toBe(0);
+      });
+    });
   });
 
   describe("#presenceSubscribe", () => {
