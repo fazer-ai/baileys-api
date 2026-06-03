@@ -129,6 +129,8 @@ function extractHeaderMediaMessage(message: proto.IMessage): {
     message.buttonsMessage,
   ];
 
+  // Rich headers only carry image, video, or document attachments; audio and
+  // stickers don't appear in these header positions, so they're omitted here.
   const headerMapping: [string, MediaType][] = [
     ["imageMessage", "image"],
     ["videoMessage", "video"],
@@ -136,8 +138,8 @@ function extractHeaderMediaMessage(message: proto.IMessage): {
   ];
 
   // A non-null header container doesn't guarantee it carries media, so scan
-  // every candidate instead of committing to the first non-null one — the
-  // media may live in a later container.
+  // every candidate instead of committing to the first non-null one. The media
+  // may live in a later container.
   for (const header of headers) {
     if (!header) {
       continue;
