@@ -258,6 +258,33 @@ describe("downloadMediaFromMessages", () => {
     );
   });
 
+  it("prefers later header media when earlier header has no media", async () => {
+    const messages = [
+      {
+        key: { id: "msg-mixed-header" },
+        message: {
+          templateMessage: {
+            // Earlier container is present but carries no media...
+            hydratedFourRowTemplate: { hydratedContentText: "no media here" },
+            // ...while a later container does.
+            interactiveMessageTemplate: {
+              header: {
+                imageMessage: { url: "https://example.com/later.jpg" },
+              },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/later.jpg" }),
+      "image",
+    );
+  });
+
   it("returns null for a text-only template message", async () => {
     const result = await downloadMediaFromMessages([
       {
