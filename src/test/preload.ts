@@ -53,20 +53,24 @@ const mockRedis = {
     },
   ),
   multi: mock(() => {
-    multiCommands.length = 0;
+    // Each multi() invocation owns its own command buffer. A shared module-level
+    // buffer races when concurrent/interleaved multi() calls reset it mid-flight
+    // (e.g. one pipeline's execAsPipeline awaiting while another multi() zeroes
+    // the buffer), silently dropping the queued commands.
+    const commands: Array<{ op: string; args: any[] }> = [];
     return {
       hSet: (key: string, field: string, value: string) => {
-        multiCommands.push({ op: "hSet", args: [key, field, value] });
+        commands.push({ op: "hSet", args: [key, field, value] });
       },
       hDel: (key: string, field: string) => {
-        multiCommands.push({ op: "hDel", args: [key, field] });
+        commands.push({ op: "hDel", args: [key, field] });
       },
       hGet: (key: string, field: string) => {
-        multiCommands.push({ op: "hGet", args: [key, field] });
+        commands.push({ op: "hGet", args: [key, field] });
       },
       execAsPipeline: mock(async () => {
         const results: any[] = [];
-        for (const cmd of multiCommands) {
+        for (const cmd of commands) {
           if (cmd.op === "hSet") {
             const [key, field, value] = cmd.args;
             if (!hashData.has(key)) hashData.set(key, new Map());
