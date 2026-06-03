@@ -1,4 +1,12 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  spyOn,
+} from "bun:test";
 
 // Logger and asyncSleep are mocked in preload.ts
 
@@ -117,17 +125,27 @@ class MockBaileysConnection {
   presenceSubscribe = mockPresenceSubscribe;
 }
 
-mock.module("@/baileys/redisAuthState", () => ({
-  getRedisSavedAuthStateIds: mock(async () => []),
-}));
-
 import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import { getRedisSavedAuthStateIds } from "@/baileys/redisAuthState";
+import * as redisAuthState from "@/baileys/redisAuthState";
 import redis from "@/lib/redis";
 import { BaileysConnectionsHandler } from "./connectionsHandler";
+
+// Spy on getRedisSavedAuthStateIds rather than mock.module-ing the whole module:
+// bun's mock.module is process-global and leaks into redisAuthState.spec.ts
+// (which tests the real implementation), making that suite intermittently
+// exercise this stub instead and fail depending on file evaluation order. A spy
+// is scoped to this file and restored afterwards.
+const getRedisSavedAuthStateIds = spyOn(
+  redisAuthState,
+  "getRedisSavedAuthStateIds",
+).mockResolvedValue([]);
+
+afterAll(() => {
+  getRedisSavedAuthStateIds.mockRestore();
+});
 
 describe("BaileysConnectionsHandler", () => {
   let handler: BaileysConnectionsHandler;
