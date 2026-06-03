@@ -172,6 +172,134 @@ describe("downloadMediaFromMessages", () => {
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("extracts media from a template message header", async () => {
+    const messages = [
+      {
+        key: { id: "msg-tpl-doc" },
+        message: {
+          templateMessage: {
+            hydratedTemplate: {
+              hydratedContentText: "Your invoice",
+              documentMessage: { url: "https://example.com/invoice.pdf" },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/invoice.pdf" }),
+      "document",
+    );
+  });
+
+  it("extracts media from an interactive message header", async () => {
+    const messages = [
+      {
+        key: { id: "msg-interactive-img" },
+        message: {
+          interactiveMessage: {
+            header: { imageMessage: { url: "https://example.com/img" } },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/img" }),
+      "image",
+    );
+  });
+
+  it("extracts media from a buttons message header", async () => {
+    const messages = [
+      {
+        key: { id: "msg-buttons-vid" },
+        message: {
+          buttonsMessage: {
+            contentText: "Choose",
+            videoMessage: { url: "https://example.com/vid" },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/vid" }),
+      "video",
+    );
+  });
+
+  it("extracts media from an interactive template header (nested WABA shape)", async () => {
+    const messages = [
+      {
+        key: { id: "msg-interactive-tpl-vid" },
+        message: {
+          templateMessage: {
+            interactiveMessageTemplate: {
+              header: { videoMessage: { url: "https://example.com/vid.enc" } },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/vid.enc" }),
+      "video",
+    );
+  });
+
+  it("prefers later header media when earlier header has no media", async () => {
+    const messages = [
+      {
+        key: { id: "msg-mixed-header" },
+        message: {
+          templateMessage: {
+            // Earlier container is present but carries no media...
+            hydratedFourRowTemplate: { hydratedContentText: "no media here" },
+            // ...while a later container does.
+            interactiveMessageTemplate: {
+              header: {
+                imageMessage: { url: "https://example.com/later.jpg" },
+              },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/later.jpg" }),
+      "image",
+    );
+  });
+
+  it("returns null for a text-only template message", async () => {
+    const result = await downloadMediaFromMessages([
+      {
+        key: { id: "msg-tpl-text" },
+        message: {
+          templateMessage: {
+            hydratedTemplate: { hydratedContentText: "no media here" },
+          },
+        },
+      } as any,
+    ]);
+    expect(result).toBeNull();
+    expect(downloadContentFromMessage).not.toHaveBeenCalled();
+  });
+
   it("processes multiple messages concurrently in chunks", async () => {
     // Create 5 messages to test chunking (CONCURRENCY = 3)
     const messages = Array.from({ length: 5 }, (_, i) => ({

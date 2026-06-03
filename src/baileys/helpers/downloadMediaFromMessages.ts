@@ -105,7 +105,54 @@ function extractMediaMessage(message: proto.IMessage): {
     }
   }
 
-  return { mediaMessage: null, mediaType: null };
+  return (
+    extractHeaderMediaMessage(message) ?? {
+      mediaMessage: null,
+      mediaType: null,
+    }
+  );
+}
+
+// "Rich" messages (template / interactive / buttons) can carry a media header
+// nested inside their payload instead of at the top level, e.g. an invoice PDF
+// in a template header. Surface it so it is downloaded and served like any
+// other attachment.
+function extractHeaderMediaMessage(message: proto.IMessage): {
+  mediaMessage: MediaMessage;
+  mediaType: MediaType;
+} | null {
+  const headers = [
+    message.templateMessage?.hydratedFourRowTemplate,
+    message.templateMessage?.hydratedTemplate,
+    message.interactiveMessage?.header,
+    message.templateMessage?.interactiveMessageTemplate?.header,
+    message.buttonsMessage,
+  ];
+
+  // Rich headers only carry image, video, or document attachments; audio and
+  // stickers don't appear in these header positions, so they're omitted here.
+  const headerMapping: [string, MediaType][] = [
+    ["imageMessage", "image"],
+    ["videoMessage", "video"],
+    ["documentMessage", "document"],
+  ];
+
+  // A non-null header container doesn't guarantee it carries media, so scan
+  // every candidate instead of committing to the first non-null one. The media
+  // may live in a later container.
+  for (const header of headers) {
+    if (!header) {
+      continue;
+    }
+    for (const [field, type] of headerMapping) {
+      const node = (header as Record<string, unknown>)[field];
+      if (node) {
+        return { mediaMessage: node as MediaMessage, mediaType: type };
+      }
+    }
+  }
+
+  return null;
 }
 
 async function streamToBuffer(stream: AsyncIterable<Buffer>): Promise<Buffer> {
