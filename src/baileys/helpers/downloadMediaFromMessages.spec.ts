@@ -172,6 +172,90 @@ describe("downloadMediaFromMessages", () => {
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("extracts media from a template message header", async () => {
+    const messages = [
+      {
+        key: { id: "msg-tpl-doc" },
+        message: {
+          templateMessage: {
+            hydratedTemplate: {
+              hydratedContentText: "Your invoice",
+              documentMessage: { url: "https://example.com/invoice.pdf" },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("extracts media from an interactive message header", async () => {
+    const messages = [
+      {
+        key: { id: "msg-interactive-img" },
+        message: {
+          interactiveMessage: {
+            header: { imageMessage: { url: "https://example.com/img" } },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("extracts media from a buttons message header", async () => {
+    const messages = [
+      {
+        key: { id: "msg-buttons-vid" },
+        message: {
+          buttonsMessage: {
+            contentText: "Choose",
+            videoMessage: { url: "https://example.com/vid" },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("extracts media from an interactive template header (nested WABA shape)", async () => {
+    const messages = [
+      {
+        key: { id: "msg-interactive-tpl-vid" },
+        message: {
+          templateMessage: {
+            interactiveMessageTemplate: {
+              header: { videoMessage: { url: "https://example.com/vid.enc" } },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null for a text-only template message", async () => {
+    const result = await downloadMediaFromMessages([
+      {
+        key: { id: "msg-tpl-text" },
+        message: {
+          templateMessage: {
+            hydratedTemplate: { hydratedContentText: "no media here" },
+          },
+        },
+      } as any,
+    ]);
+    expect(result).toBeNull();
+  });
+
   it("processes multiple messages concurrently in chunks", async () => {
     // Create 5 messages to test chunking (CONCURRENCY = 3)
     const messages = Array.from({ length: 5 }, (_, i) => ({
