@@ -189,6 +189,10 @@ describe("downloadMediaFromMessages", () => {
 
     await downloadMediaFromMessages(messages);
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/invoice.pdf" }),
+      "document",
+    );
   });
 
   it("extracts media from an interactive message header", async () => {
@@ -205,6 +209,10 @@ describe("downloadMediaFromMessages", () => {
 
     await downloadMediaFromMessages(messages);
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/img" }),
+      "image",
+    );
   });
 
   it("extracts media from a buttons message header", async () => {
@@ -222,6 +230,10 @@ describe("downloadMediaFromMessages", () => {
 
     await downloadMediaFromMessages(messages);
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/vid" }),
+      "video",
+    );
   });
 
   it("extracts media from an interactive template header (nested WABA shape)", async () => {
@@ -240,6 +252,10 @@ describe("downloadMediaFromMessages", () => {
 
     await downloadMediaFromMessages(messages);
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/vid.enc" }),
+      "video",
+    );
   });
 
   it("returns null for a text-only template message", async () => {
@@ -254,6 +270,7 @@ describe("downloadMediaFromMessages", () => {
       } as any,
     ]);
     expect(result).toBeNull();
+    expect(downloadContentFromMessage).not.toHaveBeenCalled();
   });
 
   it("processes multiple messages concurrently in chunks", async () => {
