@@ -30,6 +30,8 @@ import type {
   BaileysConnectionWebhookPayload,
   MessageKeyWithId,
 } from "@/baileys/types";
+import { instanceId } from "@/cluster/identity";
+import { getLease } from "@/cluster/leaseStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
@@ -126,6 +128,7 @@ export class BaileysConnection {
   private reconnectCount = 0;
   private connectionReplacedTimestamps: number[] = [];
   private isDiscarded = false;
+  private _inFlightWebhooks = 0;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -154,6 +157,10 @@ export class BaileysConnection {
 
   get apiKeyHash(): string | null {
     return this._apiKeyHash;
+  }
+
+  get inFlightWebhooks(): number {
+    return this._inFlightWebhooks;
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -747,6 +754,17 @@ export class BaileysConnection {
         message !== "QR refs attempts ended";
 
       if (shouldReconnect) {
+        // Distributed fence: a conflict/replaced kick may mean another
+        // instance legitimately took this identity over (its lease says so).
+        // Yield instead of stealing the connection back — the in-memory
+        // backoff below only throttles that fight, it doesn't end it.
+        if (
+          statusCode === DisconnectReason.connectionReplaced &&
+          (await this.shouldYieldToLeaseOwner())
+        ) {
+          this.abort();
+          return;
+        }
         logger.debug(
           "[%s] [handleConnectionUpdate] Reconnecting (lastDisconnect=%o)",
           this.phoneNumber,
@@ -969,6 +987,33 @@ export class BaileysConnection {
     });
   }
 
+  // True only when the lease verifiably belongs to another instance. On any
+  // doubt (no lease system state, Redis unreachable) we keep the
+  // single-instance behavior — reconnect with backoff — because wrongly
+  // yielding here silently kills a healthy connection.
+  private async shouldYieldToLeaseOwner(): Promise<boolean> {
+    try {
+      const lease = await getLease(this.phoneNumber);
+      if (lease && lease.owner !== instanceId) {
+        logger.info(
+          "[%s] [shouldYieldToLeaseOwner] lease is owned by %s (epoch %d), yielding",
+          this.phoneNumber,
+          lease.owner,
+          lease.epoch,
+        );
+        return true;
+      }
+      return false;
+    } catch (error) {
+      logger.warn(
+        "[%s] [shouldYieldToLeaseOwner] could not verify lease, keeping reconnect behavior: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      return false;
+    }
+  }
+
   private trackConnectionReplaced(): number {
     const now = Date.now();
     this.connectionReplacedTimestamps =
@@ -1019,7 +1064,24 @@ export class BaileysConnection {
     this.flushGroupActivity();
   }
 
+  // Counts deliveries (including their retry windows) still running in this
+  // process's memory. Graceful shutdown waits on this before exiting so a
+  // handoff doesn't drop events that WhatsApp already considers delivered.
   private async sendToWebhook(
+    payload: BaileysConnectionWebhookPayload,
+    options?: {
+      awaitResponse?: boolean;
+    },
+  ) {
+    this._inFlightWebhooks += 1;
+    try {
+      return await this.deliverToWebhook(payload, options);
+    } finally {
+      this._inFlightWebhooks -= 1;
+    }
+  }
+
+  private async deliverToWebhook(
     payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;

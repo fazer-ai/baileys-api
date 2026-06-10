@@ -1,0 +1,380 @@
+import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
+import {
+  getRedisSavedAuthStateIds,
+  isRedisAuthStatePaired,
+} from "@/baileys/redisAuthState";
+import type { BaileysConnectionOptions } from "@/baileys/types";
+import * as registry from "@/cluster/instanceRegistry";
+import * as leaseStore from "@/cluster/leaseStore";
+import config from "@/config";
+import { asyncSleep } from "@/helpers/asyncSleep";
+import { errorToString } from "@/helpers/errorToString";
+import logger from "@/lib/logger";
+
+type StoredMetadata = Omit<
+  BaileysConnectionOptions,
+  "phoneNumber" | "onConnectionClose"
+>;
+
+export interface CoordinatorOptions {
+  claimIntervalMs: number;
+  claimJitterMs: number;
+  leaseRenewIntervalMs: number;
+  heartbeatIntervalMs: number;
+  reconnectConcurrency: number;
+  unclaimedGraceMs: number;
+  shutdownTimeoutMs: number;
+}
+
+// Owns the distributed side of connection lifecycle: which phone numbers this
+// instance is allowed to hold a socket for. The in-memory serialization of
+// connect/logout stays in BaileysConnectionsHandler (inFlightOps); this class
+// arbitrates BETWEEN instances via Redis leases.
+//
+// Loops (all started by start(), stopped by shutdown()):
+// - claim loop: scans saved auth states and claims unleased phones, capped at
+//   a fair share of the cluster so a cold-booting instance doesn't steal
+//   everything before its peers come up.
+// - renewal loop: extends the leases of locally-held connections and
+//   self-fences when a lease turns out to be owned elsewhere.
+// - heartbeat loop: registers this instance (address, load, draining) so
+//   peers can compute fair share and the proxy can route.
+export class ClusterCoordinator {
+  private handler: BaileysConnectionsHandler;
+  private options: CoordinatorOptions;
+  private running = false;
+  private draining = false;
+  // Set when Redis is unreachable; pauses claims (our view of the cluster is
+  // stale) without fencing the sockets we already hold.
+  private redisDegraded = false;
+  private claimTimer: ReturnType<typeof setTimeout> | null = null;
+  private renewTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  // Monotonic timestamps of when each phone was first observed without a
+  // lease. Drives the orphan override: the fair-share cap must never leave a
+  // phone unowned forever (e.g. rounding when phones % instances != 0).
+  private firstSeenUnleasedAt = new Map<string, number>();
+
+  constructor(
+    handler: BaileysConnectionsHandler,
+    options?: Partial<CoordinatorOptions>,
+  ) {
+    this.handler = handler;
+    this.options = {
+      claimIntervalMs: config.cluster.claimIntervalMs,
+      claimJitterMs: config.cluster.claimJitterMs,
+      leaseRenewIntervalMs: config.cluster.leaseRenewIntervalMs,
+      heartbeatIntervalMs: config.cluster.heartbeatIntervalMs,
+      reconnectConcurrency: config.cluster.reconnectConcurrency,
+      unclaimedGraceMs: config.cluster.unclaimedGraceMs,
+      shutdownTimeoutMs: config.cluster.shutdownTimeoutMs,
+      ...options,
+    };
+  }
+
+  // Monotonic clock. Lease safety windows must not stretch or shrink with
+  // NTP steps, so Date.now() is off-limits here.
+  private now() {
+    return performance.now();
+  }
+
+  start() {
+    if (this.running) {
+      return;
+    }
+    this.running = true;
+    void this.runHeartbeat();
+    this.scheduleHeartbeat();
+    this.scheduleRenew();
+    // Random initial delay de-synchronizes cold-boot claims across replicas
+    // so SET NX splits the phones instead of the fastest booter taking all.
+    const initialDelay = Math.floor(Math.random() * this.options.claimJitterMs);
+    this.claimTimer = setTimeout(() => {
+      void this.claimTick();
+    }, initialDelay);
+  }
+
+  private scheduleClaim() {
+    if (!this.running) {
+      return;
+    }
+    const jitter = Math.floor(Math.random() * this.options.claimJitterMs);
+    this.claimTimer = setTimeout(() => {
+      void this.claimTick();
+    }, this.options.claimIntervalMs + jitter);
+  }
+
+  private async claimTick() {
+    try {
+      await this.runClaimCycle();
+    } catch (error) {
+      logger.error(
+        "[coordinator] claim cycle failed: %s",
+        errorToString(error),
+      );
+    }
+    this.scheduleClaim();
+  }
+
+  private scheduleRenew() {
+    if (!this.running) {
+      return;
+    }
+    this.renewTimer = setTimeout(async () => {
+      try {
+        await this.runRenewCycle();
+      } catch (error) {
+        logger.error(
+          "[coordinator] renew cycle failed: %s",
+          errorToString(error),
+        );
+      }
+      this.scheduleRenew();
+    }, this.options.leaseRenewIntervalMs);
+  }
+
+  private scheduleHeartbeat() {
+    if (!this.running) {
+      return;
+    }
+    this.heartbeatTimer = setTimeout(async () => {
+      await this.runHeartbeat();
+      this.scheduleHeartbeat();
+    }, this.options.heartbeatIntervalMs);
+  }
+
+  async runHeartbeat() {
+    try {
+      await registry.heartbeat({
+        connectionCount: this.handler.size,
+        draining: this.draining,
+      });
+    } catch (error) {
+      logger.warn("[coordinator] heartbeat failed: %s", errorToString(error));
+    }
+  }
+
+  // One pass over the saved auth states: claim what is unleased, bounded by
+  // fair share, then reconnect the claims with limited concurrency.
+  async runClaimCycle() {
+    if (this.draining || this.redisDegraded) {
+      return;
+    }
+
+    const saved = await getRedisSavedAuthStateIds<StoredMetadata>();
+    const savedIds = new Set(saved.map(({ id }) => id));
+    for (const phone of this.firstSeenUnleasedAt.keys()) {
+      if (!savedIds.has(phone) || this.handler.hasConnection(phone)) {
+        this.firstSeenUnleasedAt.delete(phone);
+      }
+    }
+    if (saved.length === 0) {
+      return;
+    }
+
+    const instances = await registry.listLiveInstances().catch(() => []);
+    const liveCount = Math.max(
+      instances.filter((instance) => !instance.draining).length,
+      1,
+    );
+    const fairShare = Math.ceil(saved.length / liveCount);
+    const now = this.now();
+
+    const candidates = shuffle(
+      saved.filter(({ id }) => !this.handler.hasConnection(id)),
+    );
+    const claimed: Array<{ id: string; metadata: StoredMetadata }> = [];
+
+    for (const { id, metadata } of candidates) {
+      try {
+        const lease = await leaseStore.getLease(id);
+        if (lease) {
+          this.firstSeenUnleasedAt.delete(id);
+          continue;
+        }
+        if (!this.firstSeenUnleasedAt.has(id)) {
+          this.firstSeenUnleasedAt.set(id, now);
+        }
+        const firstSeen = this.firstSeenUnleasedAt.get(id) ?? now;
+        const orphaned = now - firstSeen >= this.options.unclaimedGraceMs;
+        if (this.handler.size + claimed.length >= fairShare && !orphaned) {
+          continue;
+        }
+        if (await leaseStore.isOnOwnReleaseCooldown(id)) {
+          continue;
+        }
+        // A phone that never finished pairing has no session to resume; a QR
+        // flow must be restarted by an explicit POST /connections, on
+        // whichever instance receives it.
+        if (!(await isRedisAuthStatePaired(id))) {
+          continue;
+        }
+        if (!(await leaseStore.acquireLease(id))) {
+          continue;
+        }
+        this.firstSeenUnleasedAt.delete(id);
+        claimed.push({ id, metadata });
+      } catch (error) {
+        logger.warn(
+          "[coordinator] claim check failed for %s: %s",
+          id,
+          errorToString(error),
+        );
+      }
+    }
+
+    if (claimed.length === 0) {
+      return;
+    }
+
+    logger.info(
+      "[coordinator] claimed %d connection(s): %o",
+      claimed.length,
+      claimed.map(({ id }) => id),
+    );
+
+    const { reconnectConcurrency } = this.options;
+    for (let i = 0; i < claimed.length; i += reconnectConcurrency) {
+      const chunk = claimed.slice(i, i + reconnectConcurrency);
+      await Promise.allSettled(
+        chunk.map(async ({ id, metadata }) => {
+          await asyncSleep(Math.floor(Math.random() * 100));
+          try {
+            await this.handler.connect(id, {
+              isReconnect: true,
+              ...metadata,
+            });
+          } catch (error) {
+            logger.error(
+              "[coordinator] reconnect failed for %s, releasing lease: %s",
+              id,
+              errorToString(error),
+            );
+            // Don't sit on a lease we can't service — let a peer try.
+            await leaseStore.releaseLease(id).catch(() => {});
+          }
+        }),
+      );
+    }
+  }
+
+  async runRenewCycle() {
+    for (const phone of this.handler.getActivePhoneNumbers()) {
+      try {
+        const result = await leaseStore.renewLease(phone);
+        if (result === "renewed") {
+          this.redisDegraded = false;
+          continue;
+        }
+        if (result === "missing") {
+          // The key vanished (TTL elapsed while we were degraded, or a Redis
+          // failover dropped it). Re-assert immediately: competitors only
+          // claim phones they have observed unleased, so the sitting owner
+          // wins this race in practice — no socket churn.
+          if (await leaseStore.acquireLease(phone)) {
+            this.redisDegraded = false;
+            continue;
+          }
+        }
+        logger.warn(
+          "[coordinator] lease for %s is owned elsewhere, discarding local socket",
+          phone,
+        );
+        await this.handler.discardConnection(phone);
+      } catch (error) {
+        // Redis unreachable is NOT loss of ownership. If we can't reach
+        // Redis, competitors most likely can't either; and if someone does
+        // take over, the WhatsApp server kicks this socket with
+        // conflict/replaced and the lease gate yields then. Mass self-fencing
+        // here would turn a Redis blip into a self-inflicted full outage.
+        this.redisDegraded = true;
+        logger.warn(
+          "[coordinator] lease renewal failed, keeping sockets and pausing claims: %s",
+          errorToString(error),
+        );
+        return;
+      }
+    }
+  }
+
+  // Explicit user intent (POST /connections) — takes the identity over even
+  // if a lease exists. In standalone this matches today's single-instance
+  // semantics (the request is authoritative); the worker-role conflict
+  // handling (409 to a live owner) sits in the controller layer.
+  async connectWithLease(
+    phoneNumber: string,
+    options: BaileysConnectionOptions,
+  ) {
+    await leaseStore.forceAcquireLease(phoneNumber);
+    await this.handler.connect(phoneNumber, options);
+  }
+
+  async logoutWithLease(phoneNumber: string) {
+    try {
+      await this.handler.logout(phoneNumber);
+    } finally {
+      await leaseStore.releaseLease(phoneNumber).catch(() => {});
+    }
+  }
+
+  // Graceful handoff: announce draining (peers stop counting us toward fair
+  // share), close each socket BEFORE releasing its lease (the next owner must
+  // never overlap with a still-open socket), then give in-flight webhooks a
+  // bounded window to drain.
+  async shutdown() {
+    if (this.draining) {
+      return;
+    }
+    this.draining = true;
+    this.running = false;
+    if (this.claimTimer) {
+      clearTimeout(this.claimTimer);
+    }
+    if (this.renewTimer) {
+      clearTimeout(this.renewTimer);
+    }
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+    }
+
+    await this.runHeartbeat();
+
+    const phones = this.handler.getActivePhoneNumbers();
+    if (phones.length > 0) {
+      logger.info(
+        "[coordinator] releasing %d connection(s) for handoff",
+        phones.length,
+      );
+    }
+    for (const phone of phones) {
+      try {
+        await this.handler.discardConnection(phone);
+        await leaseStore.releaseLease(phone);
+      } catch (error) {
+        logger.warn(
+          "[coordinator] handoff failed for %s: %s",
+          phone,
+          errorToString(error),
+        );
+      }
+    }
+
+    const deadline = this.now() + this.options.shutdownTimeoutMs;
+    while (this.handler.inFlightWebhookCount() > 0 && this.now() < deadline) {
+      await asyncSleep(250);
+    }
+
+    await registry.deregister().catch((error) => {
+      logger.warn("[coordinator] deregister failed: %s", errorToString(error));
+    });
+  }
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const result = [...items];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}

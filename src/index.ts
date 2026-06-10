@@ -1,5 +1,5 @@
 import app from "@/app";
-import baileys from "@/baileys";
+import coordinator from "@/cluster";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
@@ -43,19 +43,32 @@ app.listen(config.port, () => {
     mediaCleanup.start();
   }
 
-  initializeRedis().then(() =>
-    baileys.reconnectFromAuthStore().catch((error) => {
-      logger.error(
-        "Failed to reconnect from auth store: %s",
-        errorToString(error),
-      );
-    }),
-  );
+  initializeRedis().then(() => coordinator.start());
 });
 
-const shutdown = (signal: string) => {
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
   logger.info(`Received ${signal}, shutting down gracefully...`);
   mediaCleanup.stop();
+
+  // Hard stop in case the handoff wedges (e.g. Redis unreachable mid-drain) —
+  // better to exit and let lease TTLs run the failover than to hang past the
+  // orchestrator's kill timeout with sockets half-closed.
+  const hardStop = setTimeout(() => {
+    logger.error("Graceful shutdown timed out, exiting");
+    process.exit(0);
+  }, config.cluster.shutdownTimeoutMs + 5_000);
+  hardStop.unref();
+
+  try {
+    await coordinator.shutdown();
+  } catch (error) {
+    logger.error("Error during shutdown: %s", errorToString(error));
+  }
   process.exit(0);
 };
 

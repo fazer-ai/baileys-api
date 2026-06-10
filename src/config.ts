@@ -24,6 +24,19 @@ const {
   MEDIA_CLEANUP_INTERVAL_MS,
   MEDIA_MAX_AGE_HOURS,
   BAILEYS_LISTEN_TO_EVENTS,
+  ROLE,
+  INSTANCE_ID,
+  WORKER_BASE_URL,
+  CLUSTER_LEASE_TTL_MS,
+  CLUSTER_LEASE_RENEW_INTERVAL_MS,
+  CLUSTER_CLAIM_INTERVAL_MS,
+  CLUSTER_CLAIM_JITTER_MS,
+  CLUSTER_RECONNECT_CONCURRENCY,
+  CLUSTER_UNCLAIMED_GRACE_MS,
+  CLUSTER_RELEASE_COOLDOWN_MS,
+  CLUSTER_HEARTBEAT_INTERVAL_MS,
+  CLUSTER_INSTANCE_TTL_MS,
+  CLUSTER_SHUTDOWN_TIMEOUT_MS,
 } = process.env;
 
 const config = {
@@ -84,11 +97,45 @@ const config = {
     },
   },
   corsOrigin: CORS_ORIGIN || "localhost",
+  cluster: {
+    role: (ROLE || "standalone") as "standalone" | "worker" | "proxy",
+    instanceId: INSTANCE_ID || undefined,
+    workerBaseUrl: WORKER_BASE_URL || undefined,
+    leaseTtlMs: Number(CLUSTER_LEASE_TTL_MS) || 30_000,
+    leaseRenewIntervalMs: Number(CLUSTER_LEASE_RENEW_INTERVAL_MS) || 10_000,
+    claimIntervalMs: Number(CLUSTER_CLAIM_INTERVAL_MS) || 5_000,
+    claimJitterMs: Number(CLUSTER_CLAIM_JITTER_MS) || 2_000,
+    reconnectConcurrency: Number(CLUSTER_RECONNECT_CONCURRENCY) || 5,
+    unclaimedGraceMs: Number(CLUSTER_UNCLAIMED_GRACE_MS) || 30_000,
+    releaseCooldownMs: Number(CLUSTER_RELEASE_COOLDOWN_MS) || 60_000,
+    heartbeatIntervalMs: Number(CLUSTER_HEARTBEAT_INTERVAL_MS) || 5_000,
+    instanceTtlMs: Number(CLUSTER_INSTANCE_TTL_MS) || 15_000,
+    shutdownTimeoutMs: Number(CLUSTER_SHUTDOWN_TIMEOUT_MS) || 30_000,
+  },
   media: {
     cleanupEnabled: MEDIA_CLEANUP_ENABLED === "true",
     cleanupIntervalMs: Number(MEDIA_CLEANUP_INTERVAL_MS) || 60 * 60 * 1000, // 1 hour
     maxAgeHours: Number(MEDIA_MAX_AGE_HOURS) || 24, // 24 hours
   },
 };
+
+if (!["standalone", "worker", "proxy"].includes(config.cluster.role)) {
+  throw new Error(
+    `Invalid ROLE "${config.cluster.role}" — expected standalone, worker or proxy`,
+  );
+}
+// A renewal must fit comfortably inside the lease TTL (and a heartbeat inside
+// the instance TTL), otherwise a single slow round-trip expires the lease and
+// causes spurious failovers.
+if (config.cluster.leaseRenewIntervalMs > config.cluster.leaseTtlMs / 2) {
+  throw new Error(
+    "CLUSTER_LEASE_RENEW_INTERVAL_MS must be at most half of CLUSTER_LEASE_TTL_MS",
+  );
+}
+if (config.cluster.heartbeatIntervalMs > config.cluster.instanceTtlMs / 2) {
+  throw new Error(
+    "CLUSTER_HEARTBEAT_INTERVAL_MS must be at most half of CLUSTER_INSTANCE_TTL_MS",
+  );
+}
 
 export default config;
