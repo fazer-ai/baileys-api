@@ -81,6 +81,10 @@ export async function useRedisAuthState(
   const creds: AuthenticationCreds =
     (await readData("authState", "creds")) || initAuthCreds();
 
+  // Plain hSet, not fencedAuthWrite: metadata (webhookUrl, clientName, ...)
+  // is connection configuration, not Signal protocol state — a concurrent
+  // write cannot corrupt the crypto ratchet, and the most recent request
+  // should win regardless of which instance handled it.
   await redis.hSet(
     createKey("authState"),
     "metadata",

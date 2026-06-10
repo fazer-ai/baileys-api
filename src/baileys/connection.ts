@@ -263,11 +263,18 @@ export class BaileysConnection {
     // epoch so the client can discard late events from a previous owner.
     this.leaseEpoch =
       (await getLease(this.phoneNumber).catch(() => null))?.epoch ?? null;
+    if (this.isDiscarded) {
+      return;
+    }
 
     // A discarded connection must never write Signal state again — its
     // identity may already be live on another instance (or on a local
-    // replacement). The Redis-side owner fence covers other processes; this
-    // guard covers late writes from this very socket.
+    // replacement). This entry guard is a best-effort fast path; the
+    // authoritative fence is the Redis-side write-if-owner script, which
+    // rejects any write once the lease moves to a new owner. A write already
+    // in flight when discard() lands can only commit while no successor holds
+    // the lease, i.e. it is the closing socket's final state flush — exactly
+    // what the next owner should resume from.
     const guardedKeys: AuthenticationState["keys"] = {
       ...state.keys,
       set: async (data) => {

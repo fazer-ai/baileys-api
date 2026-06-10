@@ -6,6 +6,7 @@ import {
   it,
   mock,
   setSystemTime,
+  spyOn,
 } from "bun:test";
 
 // Track fetch calls for webhook tests
@@ -263,6 +264,39 @@ describe("BaileysConnection", () => {
       // After resuming, the post-fetch isDiscarded guard must bail before
       // makeWASocket runs.
       expect(makeSocket.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("bails out of connect() when discarded while pinning the lease epoch", async () => {
+      // Same race as above, one await later: discard() lands while connect()
+      // is parked on the getLease call that pins leaseEpoch. The post-lease
+      // guard must bail before makeWASocket.
+      const leaseStore = await import("@/cluster/leaseStore");
+      const getLeaseSpy = spyOn(leaseStore, "getLease");
+      let releaseLease: () => void = () => {};
+      const leaseDeferred = new Promise<null>((res) => {
+        releaseLease = () => res(null);
+      });
+      getLeaseSpy.mockImplementationOnce(() => leaseDeferred as Promise<null>);
+
+      try {
+        const baileys = (await import("@whiskeysockets/baileys")) as any;
+        const makeSocket = baileys.default as ReturnType<typeof mock>;
+        const callsBefore = makeSocket.mock.calls.length;
+
+        const connectPromise = connection.connect();
+        while (getLeaseSpy.mock.calls.length === 0) {
+          await new Promise((r) => setImmediate(r));
+        }
+        expect(makeSocket.mock.calls.length).toBe(callsBefore);
+
+        connection.discard();
+        releaseLease();
+        await connectPromise;
+
+        expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      } finally {
+        getLeaseSpy.mockRestore();
+      }
     });
 
     it("aborts the post-backoff reconnect after connectionReplaced", async () => {
