@@ -321,13 +321,13 @@ export class BaileysConnection {
     };
 
     const handledEvents: EventHandlers = {
-      "creds.update": async () => {
+      "creds.update": this.withErrorHandling("saveCreds", async () => {
         // See guardedKeys: a discarded socket must not persist creds.
         if (this.isDiscarded) {
           return;
         }
         await saveCreds();
-      },
+      }),
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
         this.handleConnectionUpdate,

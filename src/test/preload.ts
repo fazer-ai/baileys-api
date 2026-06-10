@@ -80,13 +80,27 @@ const mockRedis = {
         const [owner, ...pairs] = args;
         const rawLease = stringData.get(leaseKey);
         if (rawLease && JSON.parse(rawLease).owner !== owner) return 0;
-        if (!hashData.has(hashKey)) hashData.set(hashKey, new Map());
-        const hash = hashData.get(hashKey)!;
+        // Mirror real Redis: HDEL never materializes a hash, and a hash whose
+        // last field is deleted disappears (redis.keys must not see it).
         for (let i = 0; i < pairs.length - 1; i += 2) {
-          if (pairs[i + 1] === "@@DEL@@") hash.delete(pairs[i]);
-          else hash.set(pairs[i], pairs[i + 1]);
+          if (pairs[i + 1] === "@@DEL@@") {
+            const hash = hashData.get(hashKey);
+            hash?.delete(pairs[i]);
+            if (hash?.size === 0) hashData.delete(hashKey);
+            continue;
+          }
+          if (!hashData.has(hashKey)) hashData.set(hashKey, new Map());
+          hashData.get(hashKey)!.set(pairs[i], pairs[i + 1]);
         }
         return 1;
+      }
+
+      // clear-if-owner: KEYS=[hash, lease], ARGV=[owner]
+      if (script.includes("clear-if-owner")) {
+        const [hashKey, leaseKey] = keys;
+        const rawLease = stringData.get(leaseKey);
+        if (rawLease && JSON.parse(rawLease).owner !== args[0]) return 0;
+        return hashData.delete(hashKey) ? 1 : 0;
       }
 
       // lease renew: KEYS=[lease], ARGV=[owner, ttlMs] → 1 | 0 | -1
