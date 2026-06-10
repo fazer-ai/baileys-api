@@ -57,10 +57,7 @@ const connectionsController = new Elysia({
       request.method === "POST" &&
       decodeURIComponent(path) === `/connections/${phoneNumber}`;
     if (!isConnectTakeover) {
-      const owner = await resolveMisdirectedRequest(
-        phoneNumber,
-        baileys.hasConnection(phoneNumber),
-      );
+      const owner = await resolveMisdirectedRequest(phoneNumber);
       if (owner) {
         set.status = 421;
         set.headers["x-baileys-owner"] = owner;

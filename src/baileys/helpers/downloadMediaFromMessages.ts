@@ -74,9 +74,11 @@ export async function downloadMediaFromMessages(
 
         // The file lives on this instance's local disk; record who has it so
         // a proxy can route GET /media/:messageId here. With cleanup enabled
-        // the TTL matches the disk window (after that the file is gone
-        // anyway); with cleanup disabled the file is retained indefinitely,
-        // so the routing key must persist too.
+        // the TTL covers the disk window padded by one sweep interval — a
+        // file only leaves the disk when the NEXT cleanup pass runs, so the
+        // routing key must outlive maxAgeHours by up to that long. With
+        // cleanup disabled the file is retained indefinitely, so the routing
+        // key must persist too.
         try {
           await redis.set(
             mediaOwnerKey(key.id),
@@ -85,7 +87,9 @@ export async function downloadMediaFromMessages(
               ? {
                   expiration: {
                     type: "EX",
-                    value: config.media.maxAgeHours * 3600,
+                    value:
+                      config.media.maxAgeHours * 3600 +
+                      Math.ceil(config.media.cleanupIntervalMs / 1000),
                   },
                 }
               : undefined,

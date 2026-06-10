@@ -95,18 +95,17 @@ export async function useRedisAuthState(
   const creds: AuthenticationCreds =
     (await readData("authState", "creds")) || initAuthCreds();
 
-  // Plain hSet, not fencedAuthWrite: metadata (webhookUrl, clientName, ...)
-  // is connection configuration, not Signal protocol state — a concurrent
-  // write cannot corrupt the crypto ratchet, and the most recent request
-  // should win regardless of which instance handled it. Skipped entirely when
-  // no metadata was given: JSON.stringify(undefined) is undefined, which is
-  // not a valid hSet value (and would clobber the stored copy anyway).
+  // Fenced like the Signal keys, but for a different reason: metadata
+  // (webhookUrl, verify token, apiKeyHash) is also written by automatic
+  // reconnects, and a zombie socket re-entering connect() after losing its
+  // lease would replay stale config over a newer client-driven update on the
+  // new owner. The fence makes that replay a no-op; client requests always
+  // reach the lease owner (proxy routing / standalone self-ownership), so
+  // legitimate updates are never rejected. Skipped entirely when no metadata
+  // was given: JSON.stringify(undefined) is undefined, which is not a valid
+  // hash value (and would clobber the stored copy anyway).
   if (metadata !== undefined) {
-    await redis.hSet(
-      createKey("authState"),
-      "metadata",
-      JSON.stringify(metadata),
-    );
+    await fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
   }
 
   return {
