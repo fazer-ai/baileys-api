@@ -427,6 +427,26 @@ describe("BaileysConnection", () => {
 
       expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
     });
+
+    it("keeps the reconnect behavior when the lease read fails", async () => {
+      // A Redis outage must not self-fence a healthy socket: an unverifiable
+      // lease falls back to the plain reconnect/backoff path.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      (redis.get as any).mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
   });
 
   describe("reconnect loop abort", () => {

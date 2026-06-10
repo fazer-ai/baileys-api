@@ -62,6 +62,7 @@ const mockRedis = {
     return stringData.has(key) || hashData.has(key) ? 1 : 0;
   }),
   pExpire: mock(async (_key: string, _ttlMs: number) => 1),
+  ping: mock(async () => "PONG"),
   // Lua scripts are not emulated — specs that exercise script-backed paths
   // (lease renew/release) install their own implementations via spyOn.
   eval: mock(async (_script: string, _options?: unknown) => 1),
