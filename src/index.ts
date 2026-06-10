@@ -43,7 +43,14 @@ app.listen(config.port, () => {
     mediaCleanup.start();
   }
 
-  initializeRedis().then(() => coordinator.start());
+  // A node that serves HTTP without Redis (and therefore without coordinator
+  // loops) would hold sockets it can never lease — fail fast instead.
+  initializeRedis()
+    .then(() => coordinator.start())
+    .catch((error) => {
+      logger.error("Redis initialization failed: %s", errorToString(error));
+      process.exit(1);
+    });
 });
 
 let shuttingDown = false;

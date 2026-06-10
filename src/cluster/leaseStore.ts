@@ -39,12 +39,15 @@ return 1
 `;
 
 // Compare-and-delete so a late release (e.g. a slow shutdown) cannot drop a
-// lease that has already moved to a new owner.
+// lease that has already moved on. Owner alone is not enough: the same
+// instance can re-acquire the phone (new epoch) while an older release is
+// still in flight, so the epoch must match too.
 const RELEASE_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
 if not raw then return 0 end
 local lease = cjson.decode(raw)
 if lease.owner ~= ARGV[1] then return 0 end
+if tostring(lease.epoch) ~= ARGV[2] then return 0 end
 redis.call('DEL', KEYS[1])
 return 1
 `;
@@ -96,10 +99,13 @@ export async function renewLease(phoneNumber: string): Promise<RenewResult> {
   return "lost";
 }
 
-export async function releaseLease(phoneNumber: string): Promise<boolean> {
+export async function releaseLease(
+  phoneNumber: string,
+  expectedEpoch: number,
+): Promise<boolean> {
   const result = await redis.eval(RELEASE_SCRIPT, {
     keys: [clusterKeys.lease(phoneNumber)],
-    arguments: [instanceId],
+    arguments: [instanceId, String(expectedEpoch)],
   });
   return result === 1;
 }

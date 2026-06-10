@@ -275,7 +275,8 @@ describe("ClusterCoordinator", () => {
 
       await coordinator.runClaimCycle();
 
-      expect(releaseLease).toHaveBeenCalledWith("+5511999");
+      // Released under the epoch acquired in this same cycle.
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
     });
   });
 
@@ -430,26 +431,54 @@ describe("ClusterCoordinator", () => {
   });
 
   describe("#logoutWithLease", () => {
-    it("logs out and releases the lease", async () => {
+    it("logs out and releases the lease under the epoch acquired at connect", async () => {
       const handler = makeHandlerMock();
-      handler.connections.add("+5511999");
       const coordinator = makeCoordinator(handler);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 8 });
+      await coordinator.connectWithLease("+5511999", {
+        webhookUrl: "https://h.com",
+        webhookVerifyToken: "t",
+      });
 
       await coordinator.logoutWithLease("+5511999");
 
       expect(handler.logout).toHaveBeenCalledWith("+5511999");
-      expect(releaseLease).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 8);
+    });
+
+    it("falls back to the stored lease epoch when none is tracked locally", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(handler.logout).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 5);
+    });
+
+    it("skips the release when the lease belongs to another instance", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      getLease.mockResolvedValue({ owner: "other-instance", epoch: 5 });
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(releaseLease).not.toHaveBeenCalled();
     });
 
     it("releases the lease even when logout throws", async () => {
       const handler = makeHandlerMock();
       handler.logout.mockRejectedValueOnce(new Error("not connected"));
       const coordinator = makeCoordinator(handler);
+      getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
 
       await expect(coordinator.logoutWithLease("+5511999")).rejects.toThrow(
         "not connected",
       );
-      expect(releaseLease).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 5);
     });
   });
 
@@ -463,6 +492,10 @@ describe("ClusterCoordinator", () => {
         handler.connections.delete(phone);
         order.push(`discard:${phone}`);
       });
+      getLease.mockImplementation(async () => ({
+        owner: "test-instance",
+        epoch: 1,
+      }));
       releaseLease.mockImplementation(async (phone: string) => {
         order.push(`release:${phone}`);
         return true;

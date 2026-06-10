@@ -1,6 +1,8 @@
 import { instanceId, workerBaseUrl } from "@/cluster/identity";
 import { clusterKeys } from "@/cluster/keys";
 import config from "@/config";
+import { errorToString } from "@/helpers/errorToString";
+import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 
 export interface InstanceInfo {
@@ -39,9 +41,24 @@ export async function listLiveInstances(): Promise<InstanceInfo[]> {
     return [];
   }
   const values = await Promise.all(keys.map((key) => redis.get(key)));
-  return values
-    .filter((value): value is string => Boolean(value))
-    .map((value) => JSON.parse(value) as InstanceInfo);
+  const instances: InstanceInfo[] = [];
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    // One malformed entry must not collapse the whole liveness view — that
+    // would distort fair share and trigger avoidable claim churn.
+    try {
+      instances.push(JSON.parse(value) as InstanceInfo);
+    } catch (error) {
+      logger.warn(
+        "[registry] skipping malformed instance entry %s: %s",
+        value,
+        errorToString(error),
+      );
+    }
+  }
+  return instances;
 }
 
 export async function isInstanceAlive(id: string): Promise<boolean> {
