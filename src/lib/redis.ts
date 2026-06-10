@@ -22,4 +22,10 @@ export async function initializeRedis() {
   return redis;
 }
 
+// A client in subscribe mode cannot run regular commands, so pub/sub
+// consumers (the proxy's route-cache invalidation) need their own connection.
+export function createSubscriberClient() {
+  return redis.duplicate();
+}
+
 export default redis;

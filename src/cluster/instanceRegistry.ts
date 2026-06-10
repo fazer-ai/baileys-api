@@ -48,6 +48,33 @@ export async function isInstanceAlive(id: string): Promise<boolean> {
   return (await redis.exists(clusterKeys.instance(id))) === 1;
 }
 
+export async function getInstance(id: string): Promise<InstanceInfo | null> {
+  const value = await redis.get(clusterKeys.instance(id));
+  return value ? (JSON.parse(value) as InstanceInfo) : null;
+}
+
 export async function deregister(): Promise<void> {
   await redis.del(clusterKeys.instance(instanceId));
+}
+
+export interface OwnershipChangedEvent {
+  type: "ownership.changed";
+  phoneNumber: string;
+  instanceId: string;
+}
+
+// Best-effort hint for proxies to drop their cached route for this phone.
+// Correctness does not depend on it — the route cache TTL and the workers'
+// 421 responses are the backstops — so failures are swallowed.
+export async function publishOwnershipChanged(
+  phoneNumber: string,
+): Promise<void> {
+  const event: OwnershipChangedEvent = {
+    type: "ownership.changed",
+    phoneNumber,
+    instanceId,
+  };
+  await redis
+    .publish(clusterKeys.eventsChannel, JSON.stringify(event))
+    .catch(() => {});
 }

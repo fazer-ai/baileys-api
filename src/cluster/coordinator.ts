@@ -227,6 +227,7 @@ export class ClusterCoordinator {
           continue;
         }
         this.firstSeenUnleasedAt.delete(id);
+        void registry.publishOwnershipChanged(id);
         claimed.push({ id, metadata });
       } catch (error) {
         logger.warn(
@@ -333,6 +334,7 @@ export class ClusterCoordinator {
       }
     }
     await leaseStore.forceAcquireLease(phoneNumber);
+    void registry.publishOwnershipChanged(phoneNumber);
     await this.handler.connect(phoneNumber, options);
   }
 
@@ -345,6 +347,7 @@ export class ClusterCoordinator {
       await this.handler.logout(phoneNumber);
     } finally {
       await leaseStore.releaseLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
     }
   }
 
@@ -381,6 +384,7 @@ export class ClusterCoordinator {
       try {
         await this.handler.discardConnection(phone);
         await leaseStore.releaseLease(phone);
+        void registry.publishOwnershipChanged(phone);
       } catch (error) {
         logger.warn(
           "[coordinator] handoff failed for %s: %s",

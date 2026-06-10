@@ -37,6 +37,8 @@ const {
   CLUSTER_HEARTBEAT_INTERVAL_MS,
   CLUSTER_INSTANCE_TTL_MS,
   CLUSTER_SHUTDOWN_TIMEOUT_MS,
+  PROXY_ROUTE_CACHE_TTL_MS,
+  PROXY_REQUEST_TIMEOUT_MS,
 } = process.env;
 
 const config = {
@@ -111,6 +113,13 @@ const config = {
     heartbeatIntervalMs: Number(CLUSTER_HEARTBEAT_INTERVAL_MS) || 5_000,
     instanceTtlMs: Number(CLUSTER_INSTANCE_TTL_MS) || 15_000,
     shutdownTimeoutMs: Number(CLUSTER_SHUTDOWN_TIMEOUT_MS) || 30_000,
+  },
+  proxy: {
+    routeCacheTtlMs: Number(PROXY_ROUTE_CACHE_TTL_MS) || 5_000,
+    // Above the worst-case worker operation: POST /connections (client
+    // version fetch + socket handshake) and send-message with audio
+    // preprocessing.
+    requestTimeoutMs: Number(PROXY_REQUEST_TIMEOUT_MS) || 75_000,
   },
   media: {
     cleanupEnabled: MEDIA_CLEANUP_ENABLED === "true",

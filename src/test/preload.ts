@@ -146,7 +146,19 @@ const mockRedis = {
   }),
 };
 
-mock.module("@/lib/redis", () => ({ default: mockRedis }));
+const mockSubscriberClient = {
+  on: mock(() => {}),
+  connect: mock(async () => {}),
+  subscribe: mock(async () => {}),
+  unsubscribe: mock(async () => {}),
+  quit: mock(async () => {}),
+};
+
+mock.module("@/lib/redis", () => ({
+  default: mockRedis,
+  initializeRedis: mock(async () => mockRedis),
+  createSubscriberClient: mock(() => mockSubscriberClient),
+}));
 
 // ===== @/lib/logger =====
 // Real deepSanitizeObject implementation (pure function, safe to use in tests)
@@ -257,6 +269,10 @@ mock.module("@/config", () => ({
       heartbeatIntervalMs: 5_000,
       instanceTtlMs: 15_000,
       shutdownTimeoutMs: 30_000,
+    },
+    proxy: {
+      routeCacheTtlMs: 50,
+      requestTimeoutMs: 1_000,
     },
   },
 }));

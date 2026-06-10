@@ -4,7 +4,11 @@ import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
+import proxyApp from "@/proxy/app";
+import { startRouteCacheInvalidation } from "@/proxy/routeCache";
 import { MediaCleanupService } from "@/services/mediaCleanup";
+
+const isProxy = config.cluster.role === "proxy";
 
 process.on("uncaughtException", (error) => {
   logger.error(
@@ -26,9 +30,10 @@ const mediaCleanup = new MediaCleanupService({
   intervalMs: config.media.cleanupIntervalMs,
 });
 
-app.listen(config.port, () => {
+const server = isProxy ? proxyApp : app;
+server.listen(config.port, () => {
   logger.info(
-    `${config.packageInfo.name}@${config.packageInfo.version} running on ${app.server?.hostname}:${app.server?.port}`,
+    `${config.packageInfo.name}@${config.packageInfo.version} (${config.cluster.role}) running on ${server.server?.hostname}:${server.server?.port}`,
   );
   logger.info(
     "Loaded config %s",
@@ -38,6 +43,20 @@ app.listen(config.port, () => {
       2,
     ),
   );
+
+  if (isProxy) {
+    // The proxy holds no sockets and no media; it only needs Redis (route
+    // resolution) and the pub/sub invalidation feed.
+    initializeRedis().then(() =>
+      startRouteCacheInvalidation().catch((error) => {
+        logger.error(
+          "Failed to start route cache invalidation: %s",
+          errorToString(error),
+        );
+      }),
+    );
+    return;
+  }
 
   if (config.media.cleanupEnabled) {
     mediaCleanup.start();
@@ -53,6 +72,10 @@ const shutdown = async (signal: string) => {
   }
   shuttingDown = true;
   logger.info(`Received ${signal}, shutting down gracefully...`);
+  if (isProxy) {
+    // Stateless: nothing to hand off.
+    process.exit(0);
+  }
   mediaCleanup.stop();
 
   // Hard stop in case the handoff wedges (e.g. Redis unreachable mid-drain) —
