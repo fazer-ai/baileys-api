@@ -26,11 +26,14 @@ describe("resolveMisdirectedRequest", () => {
   });
 
   it("returns the owner when the lease belongs to another live instance", async () => {
+    // The lease is authoritative even if this worker still holds a socket:
+    // during a handoff the new owner force-acquires before the previous
+    // owner self-fences, and serving from the zombie socket would hide the
+    // split-brain from the proxy. There is no local-socket short-circuit.
     getLease.mockResolvedValue({ owner: "peer-instance", epoch: 5 });
 
-    expect(await resolveMisdirectedRequest("+5511999", false)).toBe(
-      "peer-instance",
-    );
+    expect(await resolveMisdirectedRequest("+5511999")).toBe("peer-instance");
+    expect(getLease).toHaveBeenCalled();
   });
 
   it("serves locally when the lease owner is dead", async () => {
@@ -40,36 +43,29 @@ describe("resolveMisdirectedRequest", () => {
     getLease.mockResolvedValue({ owner: "peer-instance", epoch: 5 });
     isInstanceAlive.mockResolvedValue(false);
 
-    expect(await resolveMisdirectedRequest("+5511999", false)).toBeNull();
-  });
-
-  it("serves locally when this instance holds the connection", async () => {
-    // The socket and the lease live together; a local connection wins even
-    // without consulting Redis.
-    expect(await resolveMisdirectedRequest("+5511999", true)).toBeNull();
-    expect(getLease).not.toHaveBeenCalled();
+    expect(await resolveMisdirectedRequest("+5511999")).toBeNull();
   });
 
   it("serves locally when the lease is its own", async () => {
     getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
-    expect(await resolveMisdirectedRequest("+5511999", false)).toBeNull();
+    expect(await resolveMisdirectedRequest("+5511999")).toBeNull();
   });
 
   it("serves locally when there is no lease", async () => {
-    expect(await resolveMisdirectedRequest("+5511999", false)).toBeNull();
+    expect(await resolveMisdirectedRequest("+5511999")).toBeNull();
   });
 
   it("serves locally when the lease cannot be read", async () => {
     // Bouncing 421s with no routable owner would loop at the proxy; local
     // not-connected handling degrades better.
     getLease.mockRejectedValue(new Error("redis down"));
-    expect(await resolveMisdirectedRequest("+5511999", false)).toBeNull();
+    expect(await resolveMisdirectedRequest("+5511999")).toBeNull();
   });
 
   it("never misdirects outside worker role", async () => {
     config.cluster.role = "standalone";
     getLease.mockResolvedValue({ owner: "peer-instance", epoch: 5 });
 
-    expect(await resolveMisdirectedRequest("+5511999", false)).toBeNull();
+    expect(await resolveMisdirectedRequest("+5511999")).toBeNull();
   });
 });

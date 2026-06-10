@@ -56,6 +56,28 @@ describe("useRedisAuthState", () => {
     expect(stored).toBe(JSON.stringify(metadata));
   });
 
+  it("rejects metadata writes when the lease is owned by another instance", async () => {
+    // A zombie socket auto-reconnecting after losing its lease must not
+    // replay stale config (webhookUrl, apiKeyHash) over a newer
+    // client-driven update written through the new owner.
+    const mockStringData = (redis as any).__stringData as Map<string, string>;
+    const key = "@baileys-api:connections:meta-fenced-phone:authState";
+    mockRedisData.set(
+      key,
+      new Map([["metadata", JSON.stringify({ webhookUrl: "current" })]]),
+    );
+    mockStringData.set(
+      "@baileys-api:cluster:lease:meta-fenced-phone",
+      JSON.stringify({ owner: "someone-else", epoch: 2 }),
+    );
+
+    await useRedisAuthState("meta-fenced-phone", { webhookUrl: "stale" });
+
+    expect(mockRedisData.get(key)?.get("metadata")).toBe(
+      JSON.stringify({ webhookUrl: "current" }),
+    );
+  });
+
   describe("state.keys.get", () => {
     it("retrieves existing signal keys", async () => {
       const key = "@baileys-api:connections:keys-phone:authState";
