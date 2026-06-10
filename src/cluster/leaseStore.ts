@@ -124,3 +124,22 @@ export async function isOnOwnReleaseCooldown(
   const value = await redis.get(clusterKeys.cooldown(phoneNumber));
   return value === instanceId;
 }
+
+// Directed handoff tombstone: a rebalance release names its intended next
+// owner so the releaser's own claim loop (the lowest-latency claimant) does
+// not just take the phone right back. When the tombstone expires the phone
+// falls back to an open claim — nobody is left waiting on a dead target.
+export async function setHandoffTarget(
+  phoneNumber: string,
+  targetInstanceId: string,
+): Promise<void> {
+  await redis.set(clusterKeys.handoff(phoneNumber), targetInstanceId, {
+    expiration: { type: "PX", value: config.cluster.leaseTtlMs },
+  });
+}
+
+export async function getHandoffTarget(
+  phoneNumber: string,
+): Promise<string | null> {
+  return await redis.get(clusterKeys.handoff(phoneNumber));
+}

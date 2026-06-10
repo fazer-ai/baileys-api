@@ -38,6 +38,9 @@ export interface CoordinatorOptions {
   reconnectConcurrency: number;
   unclaimedGraceMs: number;
   shutdownTimeoutMs: number;
+  rebalanceEnabled: boolean;
+  rebalanceReleaseIntervalMs: number;
+  rebalanceTolerance: number;
 }
 
 // Owns the distributed side of connection lifecycle: which phone numbers this
@@ -68,6 +71,15 @@ export class ClusterCoordinator {
   // lease. Drives the orphan override: the fair-share cap must never leave a
   // phone unowned forever (e.g. rounding when phones % instances != 0).
   private firstSeenUnleasedAt = new Map<string, number>();
+  // Claim recency per locally-held phone: rebalance releases the most
+  // recently claimed connection, minimizing churn on long-stable ones.
+  private claimedAt = new Map<string, number>();
+  // Circuit breaker inputs for rebalance: never rebalance on top of an
+  // in-progress failover storm.
+  private lastClaimAt = 0;
+  // -Infinity, not 0: performance.now() starts near zero at process boot and
+  // a 0 sentinel would silently rate-limit the first release away.
+  private lastRebalanceReleaseAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     handler: BaileysConnectionsHandler,
@@ -82,6 +94,9 @@ export class ClusterCoordinator {
       reconnectConcurrency: config.cluster.reconnectConcurrency,
       unclaimedGraceMs: config.cluster.unclaimedGraceMs,
       shutdownTimeoutMs: config.cluster.shutdownTimeoutMs,
+      rebalanceEnabled: config.cluster.rebalanceEnabled,
+      rebalanceReleaseIntervalMs: config.cluster.rebalanceReleaseIntervalMs,
+      rebalanceTolerance: config.cluster.rebalanceTolerance,
       ...options,
     };
   }
@@ -124,6 +139,14 @@ export class ClusterCoordinator {
     } catch (error) {
       logger.error(
         "[coordinator] claim cycle failed: %s",
+        errorToString(error),
+      );
+    }
+    try {
+      await this.runRebalanceCycle();
+    } catch (error) {
+      logger.error(
+        "[coordinator] rebalance cycle failed: %s",
         errorToString(error),
       );
     }
@@ -211,10 +234,24 @@ export class ClusterCoordinator {
         }
         const firstSeen = this.firstSeenUnleasedAt.get(id) ?? now;
         const orphaned = now - firstSeen >= this.options.unclaimedGraceMs;
-        if (this.handler.size + claimed.length >= fairShare && !orphaned) {
+
+        // A directed handoff (rebalance) names its intended next owner:
+        // respect it while the tombstone lives. The named target bypasses
+        // the fair-share cap — it was chosen BECAUSE it is underloaded.
+        const handoffTarget = await leaseStore.getHandoffTarget(id);
+        if (handoffTarget && handoffTarget !== instanceId) {
           continue;
         }
-        if (await leaseStore.isOnOwnReleaseCooldown(id)) {
+        const directedAtMe = handoffTarget === instanceId;
+
+        if (
+          !directedAtMe &&
+          this.handler.size + claimed.length >= fairShare &&
+          !orphaned
+        ) {
+          continue;
+        }
+        if (!directedAtMe && (await leaseStore.isOnOwnReleaseCooldown(id))) {
           continue;
         }
         // A phone that never finished pairing has no session to resume; a QR
@@ -227,6 +264,8 @@ export class ClusterCoordinator {
           continue;
         }
         this.firstSeenUnleasedAt.delete(id);
+        this.claimedAt.set(id, now);
+        this.lastClaimAt = now;
         void registry.publishOwnershipChanged(id);
         claimed.push({ id, metadata });
       } catch (error) {
@@ -271,6 +310,100 @@ export class ClusterCoordinator {
         }),
       );
     }
+  }
+
+  // Sheds load one phone at a time when this instance holds more than its
+  // fair share — e.g. a 1→2 migration where the older instance booted first
+  // and claimed everything. Conservative by design: rate-limited, hysteresis
+  // via tolerance, directed tombstone + release cooldown against ping-pong,
+  // and a circuit breaker that defers to in-progress failovers.
+  async runRebalanceCycle() {
+    if (
+      !this.options.rebalanceEnabled ||
+      this.draining ||
+      this.redisDegraded
+    ) {
+      return;
+    }
+    const now = this.now();
+    if (
+      now - this.lastRebalanceReleaseAt <
+      this.options.rebalanceReleaseIntervalMs
+    ) {
+      return;
+    }
+    // Failover storm in progress (we just claimed orphans): the cluster is
+    // not in a steady state, load numbers are moving — don't migrate on top.
+    if (this.lastClaimAt > 0 && now - this.lastClaimAt < this.options.unclaimedGraceMs) {
+      return;
+    }
+
+    const instances = await registry.listLiveInstances().catch(() => []);
+    const peers = instances.filter(
+      (instance) => instance.instanceId !== instanceId && !instance.draining,
+    );
+    if (peers.length === 0) {
+      return;
+    }
+    const liveCount = peers.length + 1;
+
+    const saved = await getRedisSavedAuthStateIds<StoredMetadata>();
+    const fairShare = Math.ceil(saved.length / liveCount);
+    const myCount = this.handler.size;
+    if (myCount <= fairShare + this.options.rebalanceTolerance) {
+      return;
+    }
+
+    const target = peers.reduce((best, candidate) =>
+      candidate.connectionCount < best.connectionCount ? candidate : best,
+    );
+    // Moving must actually improve balance, not shift the excess around.
+    if (target.connectionCount >= myCount - 1) {
+      return;
+    }
+
+    const victim = await this.pickRebalanceVictim();
+    if (!victim) {
+      return;
+    }
+
+    logger.info(
+      "[coordinator] rebalancing %s to %s (%d held, fair share %d)",
+      victim,
+      target.instanceId,
+      myCount,
+      fairShare,
+    );
+
+    // Order matters: socket closed BEFORE the lease is released, so the next
+    // owner can never overlap a still-open socket — a rebalance migration
+    // must never produce a 440.
+    await this.handler.discardConnection(victim);
+    this.claimedAt.delete(victim);
+    await leaseStore.setReleaseCooldown(victim);
+    await leaseStore.setHandoffTarget(victim, target.instanceId);
+    await leaseStore.releaseLease(victim);
+    void registry.publishOwnershipChanged(victim);
+    this.lastRebalanceReleaseAt = now;
+  }
+
+  // Most recently claimed paired connection. Recent claims are the cheapest
+  // to move (least accumulated session warmth); pending-QR connections are
+  // never moved — the user is mid-pairing on THIS instance's QR code.
+  private async pickRebalanceVictim(): Promise<string | null> {
+    const phones = [...this.handler.getActivePhoneNumbers()].sort(
+      (a, b) => (this.claimedAt.get(b) ?? 0) - (this.claimedAt.get(a) ?? 0),
+    );
+    for (const phone of phones) {
+      try {
+        if (await isRedisAuthStatePaired(phone)) {
+          return phone;
+        }
+      } catch {
+        // Unreadable state — skip rather than risk moving a pairing flow.
+      }
+    }
+    return null;
   }
 
   async runRenewCycle() {
@@ -334,6 +467,7 @@ export class ClusterCoordinator {
       }
     }
     await leaseStore.forceAcquireLease(phoneNumber);
+    this.claimedAt.set(phoneNumber, this.now());
     void registry.publishOwnershipChanged(phoneNumber);
     await this.handler.connect(phoneNumber, options);
   }
