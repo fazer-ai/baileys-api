@@ -429,6 +429,68 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("lease epoch on connection.update", () => {
+    const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
+
+    it("stamps connection.update payloads with the epoch pinned at connect", async () => {
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "test-instance", epoch: 7 }),
+      );
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+
+      while (!fetchCalls.some((c) => c.body?.includes('"epoch":7'))) {
+        await new Promise((r) => setImmediate(r));
+      }
+    });
+
+    it("omits the epoch when no lease exists", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+
+      while (
+        !fetchCalls.some((c) => c.body?.includes('"connection":"reconnecting"'))
+      ) {
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(fetchCalls.some((c) => c.body?.includes('"epoch"'))).toBe(false);
+    });
+  });
+
+  describe("post-discard auth write guard", () => {
+    const authKey = "@baileys-api:connections:+5511999999999:authState";
+
+    it("persists creds while active", async () => {
+      await connection.connect();
+      const credsHandler = mockEventHandlers.get("creds.update")!;
+
+      await credsHandler(undefined as never);
+
+      const hash = (redis as any).__hashData.get(authKey);
+      expect(hash?.get("creds")).toBeDefined();
+    });
+
+    it("stops persisting creds after discard", async () => {
+      // A discarded socket may belong to an identity that is already live
+      // elsewhere; its late creds.update must not clobber the shared state.
+      await connection.connect();
+      const credsHandler = mockEventHandlers.get("creds.update")!;
+
+      connection.discard();
+      await credsHandler(undefined as never);
+
+      const hash = (redis as any).__hashData.get(authKey);
+      expect(hash?.get("creds")).toBeUndefined();
+    });
+  });
+
   describe("reconnect loop abort", () => {
     // Each `isNewLogin` connection.update routes through handleReconnecting
     // and bumps reconnectCount. Past the threshold (>10) the connection must

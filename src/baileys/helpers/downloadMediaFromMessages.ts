@@ -7,8 +7,12 @@ import {
 } from "@whiskeysockets/baileys";
 import { file } from "bun";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
+import { instanceId } from "@/cluster/identity";
+import { mediaOwnerKey } from "@/cluster/keys";
+import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
+import redis from "@/lib/redis";
 
 type MediaMessage =
   | proto.Message.IImageMessage
@@ -65,6 +69,24 @@ export async function downloadMediaFromMessages(
         }
 
         await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
+
+        // The file lives on this instance's local disk; record who has it so
+        // a proxy can route GET /media/:messageId here. TTL matches the disk
+        // cleanup window — after that the file is gone anyway.
+        await redis
+          .set(mediaOwnerKey(key.id), instanceId, {
+            expiration: {
+              type: "EX",
+              value: config.media.maxAgeHours * 3600,
+            },
+          })
+          .catch((error) => {
+            logger.warn(
+              "Failed to record media owner for %s: %s",
+              key.id,
+              errorToString(error),
+            );
+          });
       }),
     );
 

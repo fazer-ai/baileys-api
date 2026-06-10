@@ -129,6 +129,7 @@ export class BaileysConnection {
   private connectionReplacedTimestamps: number[] = [];
   private isDiscarded = false;
   private _inFlightWebhooks = 0;
+  private leaseEpoch: number | null = null;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -258,10 +259,29 @@ export class BaileysConnection {
       return;
     }
 
+    // Pinned at connect time: every connection.update webhook carries this
+    // epoch so the client can discard late events from a previous owner.
+    this.leaseEpoch =
+      (await getLease(this.phoneNumber).catch(() => null))?.epoch ?? null;
+
+    // A discarded connection must never write Signal state again — its
+    // identity may already be live on another instance (or on a local
+    // replacement). The Redis-side owner fence covers other processes; this
+    // guard covers late writes from this very socket.
+    const guardedKeys: AuthenticationState["keys"] = {
+      ...state.keys,
+      set: async (data) => {
+        if (this.isDiscarded) {
+          return;
+        }
+        await state.keys.set(data);
+      },
+    };
+
     const socketOptions: UserFacingSocketConfig = {
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(guardedKeys, logger),
       },
       markOnlineOnConnect: false,
       logger: baileysLogger,
@@ -294,7 +314,13 @@ export class BaileysConnection {
     };
 
     const handledEvents: EventHandlers = {
-      "creds.update": saveCreds,
+      "creds.update": async () => {
+        // See guardedKeys: a discarded socket must not persist creds.
+        if (this.isDiscarded) {
+          return;
+        }
+        await saveCreds();
+      },
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
         this.handleConnectionUpdate,
@@ -1073,9 +1099,23 @@ export class BaileysConnection {
       awaitResponse?: boolean;
     },
   ) {
+    // connection.update events carry the lease epoch so the client can
+    // discard late events from a previous owner (last-writer-wins on the
+    // chatwoot side would otherwise let a stale "reconnecting" overwrite the
+    // new owner's "open").
+    let enriched = payload;
+    if (payload.event === "connection.update" && this.leaseEpoch !== null) {
+      enriched = {
+        ...payload,
+        data: {
+          ...(payload.data as Record<string, unknown>),
+          epoch: this.leaseEpoch,
+        } as BaileysConnectionWebhookPayload["data"],
+      };
+    }
     this._inFlightWebhooks += 1;
     try {
-      return await this.deliverToWebhook(payload, options);
+      return await this.deliverToWebhook(enriched, options);
     } finally {
       this._inFlightWebhooks -= 1;
     }

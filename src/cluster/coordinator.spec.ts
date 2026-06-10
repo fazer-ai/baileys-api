@@ -11,7 +11,11 @@ import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import * as redisAuthState from "@/baileys/redisAuthState";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
-import { ClusterCoordinator } from "./coordinator";
+import config from "@/config";
+import {
+  BaileysConnectionOwnedElsewhereError,
+  ClusterCoordinator,
+} from "./coordinator";
 
 // Spies (not mock.module) — bun's mock.module is process-global and leaks
 // into the spec files that test the real implementations.
@@ -23,6 +27,7 @@ const isRedisAuthStatePaired = spyOn(redisAuthState, "isRedisAuthStatePaired");
 const listLiveInstances = spyOn(registry, "listLiveInstances");
 const heartbeat = spyOn(registry, "heartbeat");
 const deregister = spyOn(registry, "deregister");
+const isInstanceAlive = spyOn(registry, "isInstanceAlive");
 const acquireLease = spyOn(leaseStore, "acquireLease");
 const forceAcquireLease = spyOn(leaseStore, "forceAcquireLease");
 const renewLease = spyOn(leaseStore, "renewLease");
@@ -36,6 +41,7 @@ afterAll(() => {
   listLiveInstances.mockRestore();
   heartbeat.mockRestore();
   deregister.mockRestore();
+  isInstanceAlive.mockRestore();
   acquireLease.mockRestore();
   forceAcquireLease.mockRestore();
   renewLease.mockRestore();
@@ -99,6 +105,7 @@ describe("ClusterCoordinator", () => {
     listLiveInstances.mockReset();
     heartbeat.mockReset();
     deregister.mockReset();
+    isInstanceAlive.mockReset();
     acquireLease.mockReset();
     forceAcquireLease.mockReset();
     renewLease.mockReset();
@@ -111,6 +118,7 @@ describe("ClusterCoordinator", () => {
     listLiveInstances.mockResolvedValue([instanceEntry("test-instance")]);
     heartbeat.mockResolvedValue(undefined);
     deregister.mockResolvedValue(undefined);
+    isInstanceAlive.mockResolvedValue(false);
     acquireLease.mockImplementation(async () => ({
       owner: "test-instance",
       epoch: 1,
@@ -354,6 +362,70 @@ describe("ClusterCoordinator", () => {
 
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
       expect(handler.connect).toHaveBeenCalledWith("+5511999", options);
+    });
+
+    describe("in worker role", () => {
+      // config is the shared preload mock — restore the role even if a test
+      // throws, or every spec file that runs after this one sees "worker".
+      const withWorkerRole = async (fn: () => Promise<void>) => {
+        config.cluster.role = "worker";
+        try {
+          await fn();
+        } finally {
+          config.cluster.role = "standalone";
+        }
+      };
+
+      it("refuses to steal a lease held by a live instance", async () => {
+        await withWorkerRole(async () => {
+          const handler = makeHandlerMock();
+          const coordinator = makeCoordinator(handler);
+          getLease.mockResolvedValue({ owner: "peer-instance", epoch: 3 });
+          isInstanceAlive.mockResolvedValue(true);
+
+          await expect(
+            coordinator.connectWithLease("+5511999", {
+              webhookUrl: "https://h.com",
+              webhookVerifyToken: "t",
+            }),
+          ).rejects.toThrow(BaileysConnectionOwnedElsewhereError);
+
+          expect(forceAcquireLease).not.toHaveBeenCalled();
+          expect(handler.connect).not.toHaveBeenCalled();
+        });
+      });
+
+      it("force-takes a lease whose owner is dead", async () => {
+        await withWorkerRole(async () => {
+          const handler = makeHandlerMock();
+          const coordinator = makeCoordinator(handler);
+          getLease.mockResolvedValue({ owner: "dead-instance", epoch: 3 });
+          isInstanceAlive.mockResolvedValue(false);
+
+          await coordinator.connectWithLease("+5511999", {
+            webhookUrl: "https://h.com",
+            webhookVerifyToken: "t",
+          });
+
+          expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
+          expect(handler.connect).toHaveBeenCalled();
+        });
+      });
+
+      it("proceeds when it already owns the lease", async () => {
+        await withWorkerRole(async () => {
+          const handler = makeHandlerMock();
+          const coordinator = makeCoordinator(handler);
+          getLease.mockResolvedValue({ owner: "test-instance", epoch: 3 });
+
+          await coordinator.connectWithLease("+5511999", {
+            webhookUrl: "https://h.com",
+            webhookVerifyToken: "t",
+          });
+
+          expect(handler.connect).toHaveBeenCalled();
+        });
+      });
     });
   });
 

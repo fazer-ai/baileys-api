@@ -4,6 +4,7 @@ import {
   isRedisAuthStatePaired,
 } from "@/baileys/redisAuthState";
 import type { BaileysConnectionOptions } from "@/baileys/types";
+import { instanceId } from "@/cluster/identity";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
 import config from "@/config";
@@ -15,6 +16,19 @@ type StoredMetadata = Omit<
   BaileysConnectionOptions,
   "phoneNumber" | "onConnectionClose"
 >;
+
+// A POST /connections reached a worker while another LIVE instance owns the
+// phone. The controller surfaces this as 409 + x-baileys-owner so the proxy
+// can re-route the request to the owner instead of force-stealing the
+// identity out from under a healthy socket.
+export class BaileysConnectionOwnedElsewhereError extends Error {
+  readonly ownerInstanceId: string;
+
+  constructor(ownerInstanceId: string) {
+    super(`Connection is owned by live instance ${ownerInstanceId}`);
+    this.ownerInstanceId = ownerInstanceId;
+  }
+}
 
 export interface CoordinatorOptions {
   claimIntervalMs: number;
@@ -299,14 +313,31 @@ export class ClusterCoordinator {
 
   // Explicit user intent (POST /connections) — takes the identity over even
   // if a lease exists. In standalone this matches today's single-instance
-  // semantics (the request is authoritative); the worker-role conflict
-  // handling (409 to a live owner) sits in the controller layer.
+  // semantics (the request is authoritative). In worker role, a lease held
+  // by another LIVE instance is not stolen: the caller gets
+  // BaileysConnectionOwnedElsewhereError and the proxy re-routes the request
+  // to the owner. A dead owner's lease is force-taken immediately instead of
+  // waiting for the TTL.
   async connectWithLease(
     phoneNumber: string,
     options: BaileysConnectionOptions,
   ) {
+    if (config.cluster.role === "worker") {
+      const lease = await leaseStore.getLease(phoneNumber);
+      if (
+        lease &&
+        lease.owner !== instanceId &&
+        (await registry.isInstanceAlive(lease.owner))
+      ) {
+        throw new BaileysConnectionOwnedElsewhereError(lease.owner);
+      }
+    }
     await leaseStore.forceAcquireLease(phoneNumber);
     await this.handler.connect(phoneNumber, options);
+  }
+
+  get isDraining(): boolean {
+    return this.draining;
   }
 
   async logoutWithLease(phoneNumber: string) {

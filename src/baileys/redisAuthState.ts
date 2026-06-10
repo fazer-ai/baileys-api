@@ -6,9 +6,59 @@ import {
   proto,
   type SignalDataTypeMap,
 } from "@whiskeysockets/baileys";
+import { instanceId } from "@/cluster/identity";
+import { clusterKeys } from "@/cluster/keys";
+import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 
 const redisKeyPrefix = "@baileys-api:connections";
+
+// Sentinel for field deletion inside a fenced batch. JSON.stringify output is
+// always quoted, so a bare token can never collide with a real value.
+const DELETE_SENTINEL = "@@DEL@@";
+
+// Owner-fenced hash write. During a split-brain window two instances can hold
+// sockets for the same identity; last-writer-wins on Signal session keys
+// regresses the ratchet and produces undecryptable messages ("Bad MAC" /
+// "waiting for this message"). The fence makes the zombie's writes no-ops:
+// only the lease owner mutates the auth state. A missing lease does NOT block
+// the write — there is no competing owner to protect, and rejecting would
+// lose ratchet updates during the window between lease expiry and re-assert.
+const WRITE_IF_OWNER_SCRIPT = `
+local raw = redis.call('GET', KEYS[2])
+if raw then
+  local lease = cjson.decode(raw)
+  if lease.owner ~= ARGV[1] then return 0 end
+end
+for i = 2, #ARGV - 1, 2 do
+  if ARGV[i + 1] == '${DELETE_SENTINEL}' then
+    redis.call('HDEL', KEYS[1], ARGV[i])
+  else
+    redis.call('HSET', KEYS[1], ARGV[i], ARGV[i + 1])
+  end
+end
+return 1
+`;
+
+// `pairs` alternates field, value (value = DELETE_SENTINEL deletes the field).
+// Returns false when the write was fenced off (lease owned by someone else).
+async function fencedAuthWrite(id: string, pairs: string[]): Promise<boolean> {
+  if (pairs.length === 0) {
+    return true;
+  }
+  const result = await redis.eval(WRITE_IF_OWNER_SCRIPT, {
+    keys: [`${redisKeyPrefix}:${id}:authState`, clusterKeys.lease(id)],
+    arguments: [instanceId, ...pairs],
+  });
+  if (result !== 1) {
+    logger.warn(
+      "[%s] [fencedAuthWrite] write rejected — lease is owned by another instance",
+      id,
+    );
+    return false;
+  }
+  return true;
+}
 
 // NOTE: Inspired by https://github.com/hbinduni/baileys-redis-auth
 export async function useRedisAuthState(
@@ -20,12 +70,8 @@ export async function useRedisAuthState(
 }> {
   const createKey = (key: string) => `${redisKeyPrefix}:${id}:${key}`;
 
-  const writeData = (key: string, field: string, data: unknown) =>
-    redis.hSet(
-      createKey(key),
-      field,
-      JSON.stringify(data, BufferJSON.replacer),
-    );
+  const writeData = (_key: string, field: string, data: unknown) =>
+    fencedAuthWrite(id, [field, JSON.stringify(data, BufferJSON.replacer)]);
 
   const readData = async (key: string, field: string) => {
     const data = await redis.hGet(createKey(key), field);
@@ -60,23 +106,20 @@ export async function useRedisAuthState(
         },
         set: async (data) => {
           type DataKey = keyof typeof data;
-          const multi = redis.multi();
+          const pairs: string[] = [];
           for (const category in data) {
-            for (const id in data[category as DataKey]) {
-              const field = `${category}-${id}`;
-              const value = data[category as DataKey]?.[id];
-              if (value) {
-                multi.hSet(
-                  createKey("authState"),
-                  field,
-                  JSON.stringify(value, BufferJSON.replacer),
-                );
-              } else {
-                multi.hDel(createKey("authState"), field);
-              }
+            for (const dataId in data[category as DataKey]) {
+              const field = `${category}-${dataId}`;
+              const value = data[category as DataKey]?.[dataId];
+              pairs.push(
+                field,
+                value
+                  ? JSON.stringify(value, BufferJSON.replacer)
+                  : DELETE_SENTINEL,
+              );
             }
           }
-          await multi.execAsPipeline();
+          await fencedAuthWrite(id, pairs);
         },
         clear: async () => {
           await redis.del(createKey("authState"));

@@ -62,9 +62,50 @@ const mockRedis = {
     return stringData.has(key) || hashData.has(key) ? 1 : 0;
   }),
   pExpire: mock(async (_key: string, _ttlMs: number) => 1),
-  // Lua scripts are not emulated — specs that exercise script-backed paths
-  // (lease renew/release) install their own implementations via spyOn.
-  eval: mock(async (_script: string, _options?: unknown) => 1),
+  // Emulates the known Lua scripts (dispatched by distinctive content) so the
+  // real redisAuthState/leaseStore code paths behave faithfully in tests.
+  // Specs can still pin outcomes with mockResolvedValueOnce.
+  eval: mock(
+    async (
+      script: string,
+      options?: { keys?: string[]; arguments?: string[] },
+    ) => {
+      const keys = options?.keys ?? [];
+      const args = options?.arguments ?? [];
+
+      // write-if-owner (auth state fencing): KEYS=[hash, lease], ARGV=[owner, ...pairs]
+      if (script.includes("HSET")) {
+        const [hashKey, leaseKey] = keys;
+        const [owner, ...pairs] = args;
+        const rawLease = stringData.get(leaseKey);
+        if (rawLease && JSON.parse(rawLease).owner !== owner) return 0;
+        if (!hashData.has(hashKey)) hashData.set(hashKey, new Map());
+        const hash = hashData.get(hashKey)!;
+        for (let i = 0; i < pairs.length - 1; i += 2) {
+          if (pairs[i + 1] === "@@DEL@@") hash.delete(pairs[i]);
+          else hash.set(pairs[i], pairs[i + 1]);
+        }
+        return 1;
+      }
+
+      // lease renew: KEYS=[lease], ARGV=[owner, ttlMs] → 1 | 0 | -1
+      if (script.includes("PEXPIRE")) {
+        const raw = stringData.get(keys[0]);
+        if (!raw) return -1;
+        return JSON.parse(raw).owner === args[0] ? 1 : 0;
+      }
+
+      // lease release (compare-and-delete): KEYS=[lease], ARGV=[owner]
+      if (script.includes("DEL")) {
+        const raw = stringData.get(keys[0]);
+        if (!raw || JSON.parse(raw).owner !== args[0]) return 0;
+        stringData.delete(keys[0]);
+        return 1;
+      }
+
+      return 1;
+    },
+  ),
   publish: mock(async (_channel: string, _message: string) => 0),
   multi: mock(() => {
     // Each multi() invocation owns its own command buffer. A shared module-level
@@ -196,6 +237,11 @@ mock.module("@/config", () => ({
     redis: {
       url: "redis://localhost:6379",
       password: "test-password",
+    },
+    media: {
+      cleanupEnabled: false,
+      cleanupIntervalMs: 60 * 60 * 1000,
+      maxAgeHours: 24,
     },
     cluster: {
       role: "standalone" as "standalone" | "worker" | "proxy",

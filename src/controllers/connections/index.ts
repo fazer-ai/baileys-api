@@ -5,6 +5,8 @@ import {
   BaileysNotConnectedError,
 } from "@/baileys/connection";
 import coordinator from "@/cluster";
+import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
+import { resolveMisdirectedRequest } from "@/cluster/workerRouting";
 import {
   buildEditableMessageContent,
   buildMessageContent,
@@ -37,31 +39,67 @@ const connectionsController = new Elysia({
   },
 })
   .use(authMiddleware)
-  .onBeforeHandle(async ({ params, apiKeyHash, set }) => {
+  .onBeforeHandle(async ({ params, apiKeyHash, set, request, path }) => {
     const phoneNumber = (params as { phoneNumber?: string })?.phoneNumber;
-    if (phoneNumber) {
-      try {
-        await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
-      } catch (e) {
-        if (e instanceof BaileysConnectionForbiddenError) {
-          set.status = 403;
-          return { error: "Forbidden", message: e.message };
-        }
-        throw e;
+    if (!phoneNumber) {
+      return;
+    }
+    try {
+      await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
+    } catch (e) {
+      if (e instanceof BaileysConnectionForbiddenError) {
+        set.status = 403;
+        return { error: "Forbidden", message: e.message };
+      }
+      throw e;
+    }
+
+    // Worker role: a request for a phone owned by another live instance is
+    // answered with 421 so the proxy invalidates its route cache and
+    // re-sends to the owner. POST /connections/:phone is exempt — it is an
+    // explicit takeover and resolves ownership in connectWithLease (409 when
+    // the owner is alive).
+    const isConnectTakeover =
+      request.method === "POST" &&
+      decodeURIComponent(path) === `/connections/${phoneNumber}`;
+    if (!isConnectTakeover) {
+      const owner = await resolveMisdirectedRequest(
+        phoneNumber,
+        baileys.hasConnection(phoneNumber),
+      );
+      if (owner) {
+        set.status = 421;
+        set.headers["x-baileys-owner"] = owner;
+        return {
+          error: "Misdirected Request",
+          message: "Connection is owned by another instance",
+        };
       }
     }
   })
   .post(
     "/:phoneNumber",
-    async ({ params, body, apiKeyHash }) => {
+    async ({ params, body, apiKeyHash, set }) => {
       const { phoneNumber } = params;
 
       // Goes through the coordinator so the connect is backed by a lease:
       // an explicit POST is authoritative and takes the identity over.
-      await coordinator.connectWithLease(phoneNumber, {
-        ...body,
-        apiKeyHash: apiKeyHash ?? undefined,
-      });
+      try {
+        await coordinator.connectWithLease(phoneNumber, {
+          ...body,
+          apiKeyHash: apiKeyHash ?? undefined,
+        });
+      } catch (e) {
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another live instance",
+          };
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,
