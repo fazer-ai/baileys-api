@@ -298,6 +298,10 @@ export class ClusterCoordinator {
             await this.handler.connect(id, {
               isReconnect: true,
               ...metadata,
+              // From this cycle's acquireLease — webhooks must carry the
+              // epoch of the claim that authorized this socket, never a
+              // re-read that could observe a successor's lease.
+              leaseEpoch: this.heldLeaseEpochs.get(id) ?? null,
             });
           } catch (error) {
             logger.error(
@@ -402,7 +406,10 @@ export class ClusterCoordinator {
     }
     const acquired = await leaseStore.forceAcquireLease(phoneNumber);
     this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
-    await this.handler.connect(phoneNumber, options);
+    await this.handler.connect(phoneNumber, {
+      ...options,
+      leaseEpoch: acquired.epoch,
+    });
   }
 
   get isDraining(): boolean {

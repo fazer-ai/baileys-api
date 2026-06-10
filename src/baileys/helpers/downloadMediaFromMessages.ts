@@ -1,3 +1,4 @@
+import { unlink } from "node:fs/promises";
 import path from "node:path";
 import {
   type BaileysEventMap,
@@ -68,15 +69,16 @@ export async function downloadMediaFromMessages(
           downloadedMedia[key.id] = fileBuffer.toString("base64");
         }
 
-        await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
+        const filePath = path.join(mediaDir, `${key.id}`);
+        await file(filePath).write(fileBuffer);
 
         // The file lives on this instance's local disk; record who has it so
         // a proxy can route GET /media/:messageId here. With cleanup enabled
         // the TTL matches the disk window (after that the file is gone
         // anyway); with cleanup disabled the file is retained indefinitely,
         // so the routing key must persist too.
-        await redis
-          .set(
+        try {
+          await redis.set(
             mediaOwnerKey(key.id),
             instanceId,
             config.media.cleanupEnabled
@@ -87,14 +89,23 @@ export async function downloadMediaFromMessages(
                   },
                 }
               : undefined,
-          )
-          .catch((error) => {
-            logger.warn(
-              "Failed to record media owner for %s: %s",
-              key.id,
-              errorToString(error),
-            );
-          });
+          );
+        } catch (error) {
+          if (config.cluster.role === "worker") {
+            // Behind a proxy the owner key is the only route to this file —
+            // without it the blob is unreachable garbage. Remove it and fail
+            // the download so the error is visible instead of silent.
+            await unlink(filePath).catch(() => {});
+            throw error;
+          }
+          // Standalone serves media straight from local disk; the key is
+          // only a routing hint, so keep the file and just log.
+          logger.warn(
+            "Failed to record media owner for %s: %s",
+            key.id,
+            errorToString(error),
+          );
+        }
       }),
     );
 

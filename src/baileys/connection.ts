@@ -154,6 +154,7 @@ export class BaileysConnection {
     this.groupsEnabled = options.groupsEnabled ?? true;
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? null;
+    this.leaseEpoch = options.leaseEpoch ?? null;
   }
 
   get apiKeyHash(): string | null {
@@ -202,6 +203,12 @@ export class BaileysConnection {
 
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
+    // A reused connection may have been re-leased under a newer epoch (e.g. a
+    // force-acquire on POST /connections); stale epochs would get the
+    // webhooks discarded by the client.
+    if (options.leaseEpoch !== undefined) {
+      this.leaseEpoch = options.leaseEpoch;
+    }
     await this.persistMetadata();
   }
 
@@ -255,14 +262,6 @@ export class BaileysConnection {
       );
       return undefined;
     });
-    if (this.isDiscarded) {
-      return;
-    }
-
-    // Pinned at connect time: every connection.update webhook carries this
-    // epoch so the client can discard late events from a previous owner.
-    this.leaseEpoch =
-      (await getLease(this.phoneNumber).catch(() => null))?.epoch ?? null;
     if (this.isDiscarded) {
       return;
     }

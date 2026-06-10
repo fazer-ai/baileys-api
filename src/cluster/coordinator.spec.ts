@@ -149,6 +149,8 @@ describe("ClusterCoordinator", () => {
       ];
       expect(options.isReconnect).toBe(true);
       expect(options.webhookUrl).toBe("https://h.com");
+      // Epoch of the acquireLease that authorized this reconnect.
+      expect(options.leaseEpoch).toBe(1);
     });
 
     it("does not touch phones it already holds a connection for", async () => {
@@ -416,7 +418,12 @@ describe("ClusterCoordinator", () => {
       await coordinator.connectWithLease("+5511999", options);
 
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
-      expect(handler.connect).toHaveBeenCalledWith("+5511999", options);
+      // The epoch from the force-acquire is threaded into the connection so
+      // its webhooks are stamped with the claim that authorized the socket.
+      expect(handler.connect).toHaveBeenCalledWith("+5511999", {
+        ...options,
+        leaseEpoch: 1,
+      });
     });
 
     describe("in worker role", () => {

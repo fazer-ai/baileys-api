@@ -15,11 +15,16 @@ import { afterEach, mock } from "bun:test";
 const hashData = new Map<string, Map<string, string>>();
 const stringData = new Map<string, string>();
 const multiCommands: Array<{ op: string; args: any[] }> = [];
+// TTL bookkeeping for SET: records the expiration option (or deletes the
+// entry for persistent writes) so specs can assert whether a key was written
+// with or without a TTL. Time is NOT simulated — keys never auto-expire.
+const expirations = new Map<string, { type: string; value: number }>();
 
 const mockRedis = {
   __hashData: hashData,
   __stringData: stringData,
   __multiCommands: multiCommands,
+  __expirations: expirations,
 
   hSet: mock(async (key: string, field: string, value: string) => {
     if (!hashData.has(key)) hashData.set(key, new Map());
@@ -45,11 +50,21 @@ const mockRedis = {
     async (
       key: string,
       value: string,
-      options?: { NX?: boolean; EX?: number; condition?: "NX" | "XX" },
+      options?: {
+        NX?: boolean;
+        EX?: number;
+        condition?: "NX" | "XX";
+        expiration?: { type: string; value: number };
+      },
     ) => {
       const nx = options?.NX || options?.condition === "NX";
       if (nx && stringData.has(key)) return null;
       stringData.set(key, value);
+      if (options?.expiration) {
+        expirations.set(key, options.expiration);
+      } else {
+        expirations.delete(key);
+      }
       return "OK";
     },
   ),
