@@ -310,6 +310,7 @@ mock.module("@/config", () => ({
     proxy: {
       routeCacheTtlMs: 50,
       requestTimeoutMs: 1_000,
+      maxBodyBytes: 1024 * 1024,
     },
   },
 }));

@@ -120,10 +120,9 @@ export async function forwardByPhone(
   phoneNumber: string,
   rawRequest: Request,
 ): Promise<Response> {
-  const request = await toForwardable(rawRequest);
   const isConnectPost =
-    request.method === "POST" &&
-    decodeURIComponent(new URL(request.url).pathname) ===
+    rawRequest.method === "POST" &&
+    decodeURIComponent(new URL(rawRequest.url).pathname) ===
       `/connections/${phoneNumber}`;
 
   const resolution = await resolvePhoneTarget(phoneNumber);
@@ -151,6 +150,9 @@ export async function forwardByPhone(
     return notFound("Phone number not connected");
   }
 
+  // Buffer only after routing succeeds: a request bound for a 404/503 must
+  // not have its body read (or rejected with 413) first.
+  const request = await toForwardable(rawRequest);
   const response = await sendToTarget(target, request, phoneNumber);
   if (response.status !== 421 && response.status !== 409) {
     return response;
@@ -222,6 +224,8 @@ export async function fanOutToAllInstances(
   rawRequest: Request,
 ): Promise<Response> {
   const instances = await listLiveInstances();
+  // Buffered after listing for the same reason as forwardByPhone: an empty
+  // worker pool should not cost a body read.
   const request = await toForwardable(rawRequest);
   const results = await Promise.allSettled(
     instances.map(async (instance: InstanceInfo) => {

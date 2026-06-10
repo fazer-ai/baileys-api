@@ -10,6 +10,7 @@ import {
 } from "bun:test";
 import * as instanceRegistry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
+import config from "@/config";
 import redis from "@/lib/redis";
 import { invalidateTarget } from "@/proxy/routeCache";
 import {
@@ -145,6 +146,26 @@ describe("proxy router", () => {
 
       expect(response.status).toBe(404);
       expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("rejects unroutable requests before buffering the body", async () => {
+      // An unowned phone with an oversized body must get the routing 404,
+      // not a 413 from a body that should never have been read.
+      const originalMaxBodyBytes = config.proxy.maxBodyBytes;
+      config.proxy.maxBodyBytes = 8;
+      try {
+        const response = await forwardByPhone(
+          PHONE,
+          makeRequest(
+            `/connections/${encodeURIComponent(PHONE)}/send-message`,
+            "POST",
+            "123456789",
+          ),
+        );
+        expect(response.status).toBe(404);
+      } finally {
+        config.proxy.maxBodyBytes = originalMaxBodyBytes;
+      }
     });
 
     it("places a new connection on the least loaded live worker", async () => {

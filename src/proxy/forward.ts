@@ -117,6 +117,9 @@ export async function forwardRequest(
     method: request.method,
     headers,
     body: request.body ?? undefined,
+    // Relay 3xx responses as-is instead of following them — the client must
+    // see exactly what the worker answered.
+    redirect: "manual",
     signal: AbortSignal.timeout(config.proxy.requestTimeoutMs),
   });
 }

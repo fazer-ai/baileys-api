@@ -63,9 +63,11 @@ describe("proxy forward", () => {
   describe("#forwardRequest", () => {
     it("strips hop-by-hop headers, including ones named by Connection", async () => {
       let forwardedHeaders: Headers | undefined;
+      let forwardedRedirect: RequestRedirect | undefined;
       globalThis.fetch = mock(
         async (_url: string | URL | Request, init?: RequestInit) => {
           forwardedHeaders = init?.headers as Headers;
+          forwardedRedirect = init?.redirect;
           return new Response("ok");
         },
       ) as unknown as typeof fetch;
@@ -88,6 +90,8 @@ describe("proxy forward", () => {
       expect(forwardedHeaders?.get("foo")).toBeNull();
       expect(forwardedHeaders?.get("bar")).toBeNull();
       expect(forwardedHeaders?.get("proxy-authorization")).toBeNull();
+      // 3xx responses are relayed as-is, never followed by the proxy.
+      expect(forwardedRedirect).toBe("manual");
     });
   });
 });
