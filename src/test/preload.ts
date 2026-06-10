@@ -441,6 +441,7 @@ mock.module("@whiskeysockets/baileys", () => ({
 afterEach(() => {
   hashData.clear();
   stringData.clear();
+  expirations.clear();
   multiCommands.length = 0;
   mockEventHandlers.clear();
 });
