@@ -229,12 +229,19 @@ export async function fanOutToAllInstances(
 ): Promise<Response> {
   const instances = await listLiveInstances();
   // Buffered after listing for the same reason as forwardByPhone: an empty
-  // worker pool should not cost a body read.
+  // worker pool should not cost a body read (nor a 413).
+  if (instances.length === 0) {
+    return Response.json({ results: [] });
+  }
   const request = await toForwardable(rawRequest);
   const results = await Promise.allSettled(
     instances.map(async (instance: InstanceInfo) => {
       const response = await forwardRequest(instance.baseUrl, request);
-      return { instanceId: instance.instanceId, status: response.status };
+      const status = response.status;
+      // Only the status is aggregated; discard the unread body to release
+      // the pooled connection.
+      await response.body?.cancel().catch(() => {});
+      return { instanceId: instance.instanceId, status };
     }),
   );
   return Response.json({
