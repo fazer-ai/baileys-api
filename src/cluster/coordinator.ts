@@ -325,6 +325,9 @@ export class ClusterCoordinator {
       // shutdown handoff cannot release them — do it here for the survivors.
       for (const { id } of claimed) {
         await this.releaseHeldLease(id).catch(() => {});
+        // The acquire above already announced this worker as owner; without
+        // a matching event, proxies would route here until TTL/421.
+        void registry.publishOwnershipChanged(id);
       }
       return;
     }
@@ -343,6 +346,7 @@ export class ClusterCoordinator {
           await asyncSleep(Math.floor(Math.random() * 100));
           if (this.draining) {
             await this.releaseHeldLease(id).catch(() => {});
+            void registry.publishOwnershipChanged(id);
             return;
           }
           // Superseded while queued: a connectWithLease for the same phone
@@ -368,6 +372,7 @@ export class ClusterCoordinator {
             );
             // Don't sit on a lease we can't service — let a peer try.
             await this.releaseHeldLease(id).catch(() => {});
+            void registry.publishOwnershipChanged(id);
           }
         }),
       );

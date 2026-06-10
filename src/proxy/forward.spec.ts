@@ -36,7 +36,7 @@ describe("proxy forward", () => {
         body: "123456789",
       });
 
-      expect(toForwardable(request)).rejects.toBeInstanceOf(
+      await expect(toForwardable(request)).rejects.toBeInstanceOf(
         PayloadTooLargeError,
       );
     });
@@ -54,7 +54,7 @@ describe("proxy forward", () => {
         }),
       });
 
-      expect(toForwardable(request)).rejects.toBeInstanceOf(
+      await expect(toForwardable(request)).rejects.toBeInstanceOf(
         PayloadTooLargeError,
       );
     });
