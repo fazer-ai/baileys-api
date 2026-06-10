@@ -438,7 +438,6 @@ export class ClusterCoordinator {
     // owner can never overlap a still-open socket — a rebalance migration
     // must never produce a 440.
     await this.handler.discardConnection(victim);
-    this.claimedAt.delete(victim);
     await leaseStore.setReleaseCooldown(victim);
     await leaseStore.setHandoffTarget(victim, target.instanceId);
     // Compare-and-delete on the epoch held since the claim: if ownership
@@ -446,7 +445,9 @@ export class ClusterCoordinator {
     // no-ops instead of dropping someone else's lease.
     await this.releaseHeldLease(victim);
     void registry.publishOwnershipChanged(victim);
-    this.lastRebalanceReleaseAt = now;
+    // Post-release clock, not the cycle-start one: the discard above can be
+    // slow, and the throttle window must start when the release lands.
+    this.lastRebalanceReleaseAt = this.now();
   }
 
   // Most recently claimed paired connection. Recent claims are the cheapest
@@ -508,6 +509,7 @@ export class ClusterCoordinator {
           phone,
         );
         this.heldLeaseEpochs.delete(phone);
+        this.claimedAt.delete(phone);
         // Socket cleanup failures are not Redis failures — swallowing them
         // here keeps them out of the redisDegraded catch below, which would
         // otherwise pause claims with Redis perfectly healthy.
@@ -591,6 +593,7 @@ export class ClusterCoordinator {
   // claimed before a process restart): if the lease meanwhile changed hands
   // or epochs, the scripted compare no-ops, which is the safe outcome.
   private async releaseHeldLease(phoneNumber: string) {
+    this.claimedAt.delete(phoneNumber);
     let epoch = this.heldLeaseEpochs.get(phoneNumber);
     this.heldLeaseEpochs.delete(phoneNumber);
     if (epoch === undefined) {
