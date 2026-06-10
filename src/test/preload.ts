@@ -62,6 +62,7 @@ const mockRedis = {
     return stringData.has(key) || hashData.has(key) ? 1 : 0;
   }),
   pExpire: mock(async (_key: string, _ttlMs: number) => 1),
+  ping: mock(async () => "PONG"),
   // Emulates the known Lua scripts (dispatched by distinctive content) so the
   // real redisAuthState/leaseStore code paths behave faithfully in tests.
   // Specs can still pin outcomes with mockResolvedValueOnce.
@@ -95,10 +96,13 @@ const mockRedis = {
         return JSON.parse(raw).owner === args[0] ? 1 : 0;
       }
 
-      // lease release (compare-and-delete): KEYS=[lease], ARGV=[owner]
+      // lease release (compare-and-delete): KEYS=[lease], ARGV=[owner, epoch]
       if (script.includes("DEL")) {
         const raw = stringData.get(keys[0]);
-        if (!raw || JSON.parse(raw).owner !== args[0]) return 0;
+        if (!raw) return 0;
+        const lease = JSON.parse(raw);
+        if (lease.owner !== args[0]) return 0;
+        if (args[1] !== undefined && String(lease.epoch) !== args[1]) return 0;
         stringData.delete(keys[0]);
         return 1;
       }

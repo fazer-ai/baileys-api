@@ -11,6 +11,7 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
+import redis from "@/lib/redis";
 
 type StoredMetadata = Omit<
   BaileysConnectionOptions,
@@ -194,7 +195,19 @@ export class ClusterCoordinator {
       return;
     }
 
-    const instances = await registry.listLiveInstances().catch(() => []);
+    let instances: registry.InstanceInfo[];
+    try {
+      instances = await registry.listLiveInstances();
+    } catch (error) {
+      // A failed registry read means our cluster view is stale. Treating it
+      // as "no peers" would let this node ignore the fair-share cap and grab
+      // everything — skip the cycle instead and retry on the next tick.
+      logger.warn(
+        "[coordinator] instance registry unavailable, skipping claim cycle: %s",
+        errorToString(error),
+      );
+      return;
+    }
     const liveCount = Math.max(
       instances.filter((instance) => !instance.draining).length,
       1,
@@ -208,6 +221,11 @@ export class ClusterCoordinator {
     const claimed: Array<{ id: string; metadata: StoredMetadata }> = [];
 
     for (const { id, metadata } of candidates) {
+      // SIGTERM can land mid-scan; stop acquiring work the shutdown handoff
+      // will never see (its phone snapshot is taken from live connections).
+      if (this.draining) {
+        break;
+      }
       try {
         const lease = await leaseStore.getLease(id);
         if (lease) {
@@ -251,6 +269,15 @@ export class ClusterCoordinator {
       return;
     }
 
+    if (this.draining) {
+      // Leases acquired in this scan never reached the handler, so the
+      // shutdown handoff cannot release them — do it here for the survivors.
+      for (const { id } of claimed) {
+        await this.releaseHeldLease(id).catch(() => {});
+      }
+      return;
+    }
+
     logger.info(
       "[coordinator] claimed %d connection(s): %o",
       claimed.length,
@@ -263,6 +290,10 @@ export class ClusterCoordinator {
       await Promise.allSettled(
         chunk.map(async ({ id, metadata }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
+          if (this.draining) {
+            await this.releaseHeldLease(id).catch(() => {});
+            return;
+          }
           try {
             await this.handler.connect(id, {
               isReconnect: true,
@@ -283,7 +314,22 @@ export class ClusterCoordinator {
   }
 
   async runRenewCycle() {
-    for (const phone of this.handler.getActivePhoneNumbers()) {
+    const phones = this.handler.getActivePhoneNumbers();
+    if (phones.length === 0) {
+      // An idle worker has no renewals to clear redisDegraded with, so a
+      // recovered Redis would otherwise leave claims paused forever — probe
+      // directly instead.
+      if (this.redisDegraded) {
+        try {
+          await redis.ping();
+          this.redisDegraded = false;
+        } catch {
+          // Still unreachable; claims stay paused.
+        }
+      }
+      return;
+    }
+    for (const phone of phones) {
       try {
         const result = await leaseStore.renewLease(phone);
         if (result === "renewed") {
