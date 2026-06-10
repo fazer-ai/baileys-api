@@ -6,7 +6,6 @@ import {
   it,
   mock,
   setSystemTime,
-  spyOn,
 } from "bun:test";
 
 // Track fetch calls for webhook tests
@@ -270,39 +269,6 @@ describe("BaileysConnection", () => {
       expect(makeSocket.mock.calls.length).toBe(callsBefore);
     });
 
-    it("bails out of connect() when discarded while pinning the lease epoch", async () => {
-      // Same race as above, one await later: discard() lands while connect()
-      // is parked on the getLease call that pins leaseEpoch. The post-lease
-      // guard must bail before makeWASocket.
-      const leaseStore = await import("@/cluster/leaseStore");
-      const getLeaseSpy = spyOn(leaseStore, "getLease");
-      let releaseLease: () => void = () => {};
-      const leaseDeferred = new Promise<null>((res) => {
-        releaseLease = () => res(null);
-      });
-      getLeaseSpy.mockImplementationOnce(() => leaseDeferred as Promise<null>);
-
-      try {
-        const baileys = (await import("@whiskeysockets/baileys")) as any;
-        const makeSocket = baileys.default as ReturnType<typeof mock>;
-        const callsBefore = makeSocket.mock.calls.length;
-
-        const connectPromise = connection.connect();
-        while (getLeaseSpy.mock.calls.length === 0) {
-          await new Promise((r) => setImmediate(r));
-        }
-        expect(makeSocket.mock.calls.length).toBe(callsBefore);
-
-        connection.discard();
-        releaseLease();
-        await connectPromise;
-
-        expect(makeSocket.mock.calls.length).toBe(callsBefore);
-      } finally {
-        getLeaseSpy.mockRestore();
-      }
-    });
-
     it("aborts the post-backoff reconnect after connectionReplaced", async () => {
       // The exact race that motivated discard(): after the 5th
       // connectionReplaced in the window, BaileysConnection sleeps for the
@@ -490,21 +456,22 @@ describe("BaileysConnection", () => {
   describe("lease epoch on connection.update", () => {
     const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
 
-    it("stamps connection.update payloads with the epoch pinned at connect", async () => {
-      (redis as any).__stringData.set(
-        leaseKey,
-        JSON.stringify({ owner: "test-instance", epoch: 7 }),
-      );
-      await connection.connect();
-      const handler = mockEventHandlers.get("connection.update")!;
-      fetchCalls.length = 0;
-
-      // The lease moves on after connect; the pinned epoch must not follow
-      // it — re-reading Redis per event would defeat the ordering guarantee.
+    it("stamps connection.update payloads with the epoch threaded in from the lease claim", async () => {
+      // The epoch comes exclusively from the coordinator's claim (options),
+      // never from a Redis read: a re-read mid-connect could observe a
+      // successor's lease and stamp the wrong epoch onto our webhooks. The
+      // store deliberately disagrees (epoch 9) to prove there is no re-read.
       (redis as any).__stringData.set(
         leaseKey,
         JSON.stringify({ owner: "test-instance", epoch: 9 }),
       );
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 7,
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      fetchCalls.length = 0;
 
       await handler({ isNewLogin: true });
 
@@ -512,9 +479,31 @@ describe("BaileysConnection", () => {
         await new Promise((r) => setImmediate(r));
       }
       expect(fetchCalls.some((c) => c.body?.includes('"epoch":9'))).toBe(false);
+      conn.discard();
     });
 
-    it("omits the epoch when no lease exists", async () => {
+    it("refreshes the pinned epoch when updateOptions carries a newer one", async () => {
+      // A reused connection re-leased under a newer epoch (force-acquire on
+      // POST /connections) must not keep stamping the old epoch — the client
+      // would discard its webhooks as stale.
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 7,
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      await conn.updateOptions({ ...defaultOptions, leaseEpoch: 9 });
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+
+      while (!fetchCalls.some((c) => c.body?.includes('"epoch":9'))) {
+        await new Promise((r) => setImmediate(r));
+      }
+      conn.discard();
+    });
+
+    it("omits the epoch when none was provided", async () => {
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;
       fetchCalls.length = 0;

@@ -98,12 +98,16 @@ export async function useRedisAuthState(
   // Plain hSet, not fencedAuthWrite: metadata (webhookUrl, clientName, ...)
   // is connection configuration, not Signal protocol state — a concurrent
   // write cannot corrupt the crypto ratchet, and the most recent request
-  // should win regardless of which instance handled it.
-  await redis.hSet(
-    createKey("authState"),
-    "metadata",
-    JSON.stringify(metadata),
-  );
+  // should win regardless of which instance handled it. Skipped entirely when
+  // no metadata was given: JSON.stringify(undefined) is undefined, which is
+  // not a valid hSet value (and would clobber the stored copy anyway).
+  if (metadata !== undefined) {
+    await redis.hSet(
+      createKey("authState"),
+      "metadata",
+      JSON.stringify(metadata),
+    );
+  }
 
   return {
     state: {

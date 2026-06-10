@@ -118,7 +118,9 @@ describe("useRedisAuthState", () => {
         },
       });
 
-      expect(mockRedisData.get(key)?.has("pre-key-1")).toBe(false);
+      // The mock mirrors real Redis: deleting the last field removes the
+      // hash itself, so the field is gone either way.
+      expect(mockRedisData.get(key)?.get("pre-key-1")).toBeUndefined();
     });
   });
 
