@@ -83,8 +83,16 @@ services:
 
   redis:
     image: "redis:8-alpine"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    # requirepass only when REDIS_PASSWORD is set, so the example runs both
+    # secured and unsecured without editing this file.
     command:
-      ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+      [
+        "sh",
+        "-c",
+        'redis-server --appendonly yes --appendfsync everysec $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}',
+      ]
     volumes:
       - "redis-data:/data"
     restart: always
