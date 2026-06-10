@@ -50,28 +50,23 @@ export async function startRouteCacheInvalidation() {
   });
   try {
     await subscriber.connect();
-    await subscriber.subscribe(
-      clusterKeys.eventsChannel,
-      (message: string) => {
-        try {
-          const event = JSON.parse(message) as OwnershipChangedEvent;
-          if (event.type === "ownership.changed") {
-            if (!event.phoneNumber) {
-              logger.warn(
-                "Ignoring ownership.changed event without phoneNumber",
-              );
-              return;
-            }
-            invalidateTarget(event.phoneNumber);
+    await subscriber.subscribe(clusterKeys.eventsChannel, (message: string) => {
+      try {
+        const event = JSON.parse(message) as OwnershipChangedEvent;
+        if (event.type === "ownership.changed") {
+          if (!event.phoneNumber) {
+            logger.warn("Ignoring ownership.changed event without phoneNumber");
+            return;
           }
-        } catch (error) {
-          logger.warn(
-            "Ignoring malformed cluster event: %s",
-            errorToString(error as Error),
-          );
+          invalidateTarget(event.phoneNumber);
         }
-      },
-    );
+      } catch (error) {
+        logger.warn(
+          "Ignoring malformed cluster event: %s",
+          errorToString(error as Error),
+        );
+      }
+    });
   } catch (error) {
     // A failed start must not poison the double-start guard, or a transient
     // blip would disable pub/sub invalidation for the process lifetime.
