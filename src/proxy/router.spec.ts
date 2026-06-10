@@ -10,6 +10,7 @@ import {
 } from "bun:test";
 import * as instanceRegistry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
+import config from "@/config";
 import redis from "@/lib/redis";
 import { invalidateTarget } from "@/proxy/routeCache";
 import {
@@ -30,6 +31,11 @@ afterAll(() => {
 
 const PHONE = "+5511999999999";
 const originalFetch = globalThis.fetch;
+
+function getRedisStringData() {
+  return (redis as unknown as { __stringData: Map<string, string> })
+    .__stringData;
+}
 
 interface FetchCall {
   url: string;
@@ -69,9 +75,7 @@ describe("proxy router", () => {
     getInstance.mockResolvedValue(null);
     listLiveInstances.mockResolvedValue([]);
     invalidateTarget(PHONE);
-    (
-      redis as unknown as { __stringData: Map<string, string> }
-    ).__stringData.clear();
+    getRedisStringData().clear();
 
     fetchCalls = [];
     fetchResponder = () => new Response("ok", { status: 200 });
@@ -142,6 +146,26 @@ describe("proxy router", () => {
 
       expect(response.status).toBe(404);
       expect(fetchCalls).toHaveLength(0);
+    });
+
+    it("rejects unroutable requests before buffering the body", async () => {
+      // An unowned phone with an oversized body must get the routing 404,
+      // not a 413 from a body that should never have been read.
+      const originalMaxBodyBytes = config.proxy.maxBodyBytes;
+      config.proxy.maxBodyBytes = 8;
+      try {
+        const response = await forwardByPhone(
+          PHONE,
+          makeRequest(
+            `/connections/${encodeURIComponent(PHONE)}/send-message`,
+            "POST",
+            "123456789",
+          ),
+        );
+        expect(response.status).toBe(404);
+      } finally {
+        config.proxy.maxBodyBytes = originalMaxBodyBytes;
+      }
     });
 
     it("places a new connection on the least loaded live worker", async () => {
@@ -269,9 +293,7 @@ describe("proxy router", () => {
 
   describe("#forwardMediaRequest", () => {
     it("routes to the instance that holds the file", async () => {
-      (
-        redis as unknown as { __stringData: Map<string, string> }
-      ).__stringData.set("@baileys-api:media-owner:MSG123", "worker-2");
+      getRedisStringData().set("@baileys-api:media-owner:MSG123", "worker-2");
       getInstance.mockResolvedValue(instanceInfo("worker-2"));
 
       const response = await forwardMediaRequest(
@@ -293,15 +315,46 @@ describe("proxy router", () => {
     });
 
     it("returns 404 when the owner died (file is gone with its disk)", async () => {
-      (
-        redis as unknown as { __stringData: Map<string, string> }
-      ).__stringData.set("@baileys-api:media-owner:MSG123", "worker-dead");
+      getRedisStringData().set(
+        "@baileys-api:media-owner:MSG123",
+        "worker-dead",
+      );
 
       const response = await forwardMediaRequest(
         "MSG123",
         makeRequest("/media/MSG123"),
       );
       expect(response.status).toBe(404);
+    });
+
+    it("maps a forward failure to 404 when the owner deregistered mid-request", async () => {
+      getRedisStringData().set("@baileys-api:media-owner:MSG123", "worker-2");
+      // Alive at resolution time, gone at the post-failure re-check.
+      getInstance.mockResolvedValueOnce(instanceInfo("worker-2"));
+      getInstance.mockResolvedValueOnce(null);
+      fetchResponder = () => {
+        throw new Error("ECONNREFUSED");
+      };
+
+      const response = await forwardMediaRequest(
+        "MSG123",
+        makeRequest("/media/MSG123"),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("maps a forward failure to 504 when the owner is still registered", async () => {
+      getRedisStringData().set("@baileys-api:media-owner:MSG123", "worker-2");
+      getInstance.mockResolvedValue(instanceInfo("worker-2"));
+      fetchResponder = () => {
+        throw new Error("timeout");
+      };
+
+      const response = await forwardMediaRequest(
+        "MSG123",
+        makeRequest("/media/MSG123"),
+      );
+      expect(response.status).toBe(504);
     });
   });
 

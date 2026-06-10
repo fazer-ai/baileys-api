@@ -120,10 +120,9 @@ export async function forwardByPhone(
   phoneNumber: string,
   rawRequest: Request,
 ): Promise<Response> {
-  const request = await toForwardable(rawRequest);
   const isConnectPost =
-    request.method === "POST" &&
-    decodeURIComponent(new URL(request.url).pathname) ===
+    rawRequest.method === "POST" &&
+    decodeURIComponent(new URL(rawRequest.url).pathname) ===
       `/connections/${phoneNumber}`;
 
   const resolution = await resolvePhoneTarget(phoneNumber);
@@ -151,6 +150,9 @@ export async function forwardByPhone(
     return notFound("Phone number not connected");
   }
 
+  // Buffer only after routing succeeds: a request bound for a 404/503 must
+  // not have its body read (or rejected with 413) first.
+  const request = await toForwardable(rawRequest);
   const response = await sendToTarget(target, request, phoneNumber);
   if (response.status !== 421 && response.status !== 409) {
     return response;
@@ -161,6 +163,9 @@ export async function forwardByPhone(
   if (!owner) {
     return response;
   }
+  // The misdirection response is dropped in favor of the retry; discard its
+  // unread body so the connection is released back to the pool.
+  await response.body?.cancel().catch(() => {});
   const ownerInstance = await getInstance(owner).catch(() => null);
   if (!ownerInstance) {
     return serviceUnavailable();
@@ -173,6 +178,7 @@ export async function forwardByPhone(
   if (retried.status === 421 || retried.status === 409) {
     // Two hops and still misdirected — ownership is in flux (failover or
     // rebalance mid-flight). Let the client retry rather than loop here.
+    await retried.body?.cancel().catch(() => {});
     return serviceUnavailable();
   }
   if (retried.ok) {
@@ -195,13 +201,35 @@ export async function forwardMediaRequest(
     return notFound("File not found");
   }
   const request = await toForwardable(rawRequest);
-  return forwardRequest(instance.baseUrl, request);
+  try {
+    return await forwardRequest(instance.baseUrl, request);
+  } catch (error) {
+    logger.warn(
+      "[proxy] media forward to %s (%s) failed: %s",
+      ownerId,
+      instance.baseUrl,
+      errorToString(error),
+    );
+    // Same dead-vs-slow split as sendToTarget, except a dead owner here
+    // means the file is gone with its disk — a final 404, not a retryable
+    // 503.
+    const stillRegistered = await getInstance(ownerId).catch(() => null);
+    if (!stillRegistered) {
+      return notFound("File not found");
+    }
+    return Response.json(
+      { error: "Gateway Timeout", message: "Media owner did not respond" },
+      { status: 504 },
+    );
+  }
 }
 
 export async function fanOutToAllInstances(
   rawRequest: Request,
 ): Promise<Response> {
   const instances = await listLiveInstances();
+  // Buffered after listing for the same reason as forwardByPhone: an empty
+  // worker pool should not cost a body read.
   const request = await toForwardable(rawRequest);
   const results = await Promise.allSettled(
     instances.map(async (instance: InstanceInfo) => {

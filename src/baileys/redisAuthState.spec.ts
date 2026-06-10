@@ -56,6 +56,28 @@ describe("useRedisAuthState", () => {
     expect(stored).toBe(JSON.stringify(metadata));
   });
 
+  it("rejects metadata writes when the lease is owned by another instance", async () => {
+    // A zombie socket auto-reconnecting after losing its lease must not
+    // replay stale config (webhookUrl, apiKeyHash) over a newer
+    // client-driven update written through the new owner.
+    const mockStringData = (redis as any).__stringData as Map<string, string>;
+    const key = "@baileys-api:connections:meta-fenced-phone:authState";
+    mockRedisData.set(
+      key,
+      new Map([["metadata", JSON.stringify({ webhookUrl: "current" })]]),
+    );
+    mockStringData.set(
+      "@baileys-api:cluster:lease:meta-fenced-phone",
+      JSON.stringify({ owner: "someone-else", epoch: 2 }),
+    );
+
+    await useRedisAuthState("meta-fenced-phone", { webhookUrl: "stale" });
+
+    expect(mockRedisData.get(key)?.get("metadata")).toBe(
+      JSON.stringify({ webhookUrl: "current" }),
+    );
+  });
+
   describe("state.keys.get", () => {
     it("retrieves existing signal keys", async () => {
       const key = "@baileys-api:connections:keys-phone:authState";
@@ -118,7 +140,9 @@ describe("useRedisAuthState", () => {
         },
       });
 
-      expect(mockRedisData.get(key)?.has("pre-key-1")).toBe(false);
+      // The mock mirrors real Redis: deleting the last field removes the
+      // hash itself, so the field is gone either way.
+      expect(mockRedisData.get(key)?.get("pre-key-1")).toBeUndefined();
     });
   });
 
@@ -134,6 +158,26 @@ describe("useRedisAuthState", () => {
       await state.keys.clear?.();
 
       expect(mockRedisData.has(key)).toBe(false);
+    });
+
+    it("does not clear the hash when the lease is owned by another instance", async () => {
+      // A stale instance processing a late loggedOut must not wipe the auth
+      // state out from under the live owner.
+      const mockStringData = (redis as any).__stringData as Map<string, string>;
+      const key = "@baileys-api:connections:stale-clear-phone:authState";
+      mockRedisData.set(
+        key,
+        new Map([["creds", JSON.stringify({ registrationId: 1 })]]),
+      );
+      mockStringData.set(
+        "@baileys-api:cluster:lease:stale-clear-phone",
+        JSON.stringify({ owner: "someone-else", epoch: 2 }),
+      );
+
+      const { state } = await useRedisAuthState("stale-clear-phone");
+      await state.keys.clear?.();
+
+      expect(mockRedisData.has(key)).toBe(true);
     });
   });
 
