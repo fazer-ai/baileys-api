@@ -26,32 +26,38 @@ const mediaCleanup = new MediaCleanupService({
   intervalMs: config.media.cleanupIntervalMs,
 });
 
-app.listen(config.port, () => {
-  logger.info(
-    `${config.packageInfo.name}@${config.packageInfo.version} running on ${app.server?.hostname}:${app.server?.port}`,
-  );
-  logger.info(
-    "Loaded config %s",
-    JSON.stringify(
-      deepSanitizeObject(config, { omitKeys: ["password"] }),
-      null,
-      2,
-    ),
-  );
-
-  if (config.media.cleanupEnabled) {
-    mediaCleanup.start();
+const bootstrap = async () => {
+  // Redis (and the coordinator loops on top of it) must be up before the
+  // HTTP listener opens — a node serving requests without coordination
+  // guarantees would hold sockets it can never lease. Fail fast instead.
+  try {
+    await initializeRedis();
+    coordinator.start();
+  } catch (error) {
+    logger.error("Redis initialization failed: %s", errorToString(error));
+    process.exit(1);
   }
 
-  // A node that serves HTTP without Redis (and therefore without coordinator
-  // loops) would hold sockets it can never lease — fail fast instead.
-  initializeRedis()
-    .then(() => coordinator.start())
-    .catch((error) => {
-      logger.error("Redis initialization failed: %s", errorToString(error));
-      process.exit(1);
-    });
-});
+  app.listen(config.port, () => {
+    logger.info(
+      `${config.packageInfo.name}@${config.packageInfo.version} running on ${app.server?.hostname}:${app.server?.port}`,
+    );
+    logger.info(
+      "Loaded config %s",
+      JSON.stringify(
+        deepSanitizeObject(config, { omitKeys: ["password"] }),
+        null,
+        2,
+      ),
+    );
+
+    if (config.media.cleanupEnabled) {
+      mediaCleanup.start();
+    }
+  });
+};
+
+void bootstrap();
 
 let shuttingDown = false;
 const shutdown = async (signal: string) => {
