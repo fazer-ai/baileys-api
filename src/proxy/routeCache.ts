@@ -34,6 +34,12 @@ export function invalidateTarget(phoneNumber: string) {
 let activeSubscriber: ReturnType<typeof createSubscriberClient> | null = null;
 
 export async function startRouteCacheInvalidation() {
+  // A double start would leak the first subscriber: still connected, but no
+  // longer referenced by stopRouteCacheInvalidation.
+  if (activeSubscriber) {
+    logger.warn("Route cache invalidation already started");
+    return;
+  }
   const subscriber = createSubscriberClient();
   activeSubscriber = subscriber;
   subscriber.on("error", (error: unknown) => {
