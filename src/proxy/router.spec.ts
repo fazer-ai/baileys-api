@@ -31,6 +31,7 @@ afterAll(() => {
 
 const PHONE = "+5511999999999";
 const originalFetch = globalThis.fetch;
+const originalMaxBodyBytes = config.proxy.maxBodyBytes;
 
 function getRedisStringData() {
   return (redis as unknown as { __stringData: Map<string, string> })
@@ -98,6 +99,7 @@ describe("proxy router", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    config.proxy.maxBodyBytes = originalMaxBodyBytes;
   });
 
   describe("#forwardByPhone", () => {
@@ -151,21 +153,18 @@ describe("proxy router", () => {
     it("rejects unroutable requests before buffering the body", async () => {
       // An unowned phone with an oversized body must get the routing 404,
       // not a 413 from a body that should never have been read.
-      const originalMaxBodyBytes = config.proxy.maxBodyBytes;
       config.proxy.maxBodyBytes = 8;
-      try {
-        const response = await forwardByPhone(
-          PHONE,
-          makeRequest(
-            `/connections/${encodeURIComponent(PHONE)}/send-message`,
-            "POST",
-            "123456789",
-          ),
-        );
-        expect(response.status).toBe(404);
-      } finally {
-        config.proxy.maxBodyBytes = originalMaxBodyBytes;
-      }
+
+      const response = await forwardByPhone(
+        PHONE,
+        makeRequest(
+          `/connections/${encodeURIComponent(PHONE)}/send-message`,
+          "POST",
+          "123456789",
+        ),
+      );
+
+      expect(response.status).toBe(404);
     });
 
     it("places a new connection on the least loaded live worker", async () => {

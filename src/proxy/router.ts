@@ -161,6 +161,8 @@ export async function forwardByPhone(
   invalidateTarget(phoneNumber);
   const owner = response.headers.get("x-baileys-owner");
   if (!owner) {
+    // No owner to retry against: relay the worker's 421/409 as-is. The body
+    // is delivered to the client, so it must NOT be cancelled here.
     return response;
   }
   // The misdirection response is dropped in favor of the retry; discard its
