@@ -426,6 +426,23 @@ describe("ClusterCoordinator", () => {
       });
     });
 
+    it("releases the force-acquired lease when connect fails", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 4 });
+      handler.connect.mockRejectedValueOnce(new Error("socket failed"));
+
+      await expect(
+        coordinator.connectWithLease("+5511999", {
+          webhookUrl: "https://h.com",
+          webhookVerifyToken: "t",
+        }),
+      ).rejects.toThrow("socket failed");
+
+      // A lease held without a socket would keep routing here until TTL.
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 4);
+    });
+
     describe("in worker role", () => {
       // config is the shared preload mock — restore the role even if a test
       // throws, or every spec file that runs after this one sees "worker".
