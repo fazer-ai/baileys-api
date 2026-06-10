@@ -30,40 +30,51 @@ const mediaCleanup = new MediaCleanupService({
   intervalMs: config.media.cleanupIntervalMs,
 });
 
-const server = isProxy ? proxyApp : app;
-server.listen(config.port, () => {
-  logger.info(
-    `${config.packageInfo.name}@${config.packageInfo.version} (${config.cluster.role}) running on ${server.server?.hostname}:${server.server?.port}`,
-  );
-  logger.info(
-    "Loaded config %s",
-    JSON.stringify(
-      deepSanitizeObject(config, { omitKeys: ["password"] }),
-      null,
-      2,
-    ),
-  );
-
-  if (isProxy) {
-    // The proxy holds no sockets and no media; it only needs Redis (route
-    // resolution) and the pub/sub invalidation feed.
-    initializeRedis().then(() =>
-      startRouteCacheInvalidation().catch((error) => {
+const bootstrap = async () => {
+  // Redis must be up before the HTTP listener opens — a worker serving
+  // requests without coordination guarantees would hold sockets it can never
+  // lease, and the proxy cannot resolve routes at all. Fail fast instead.
+  try {
+    await initializeRedis();
+    if (isProxy) {
+      // The proxy holds no sockets and no media; it only needs Redis (route
+      // resolution) and the pub/sub invalidation feed. A failed subscription
+      // is not fatal — routes still expire via the cache TTL.
+      await startRouteCacheInvalidation().catch((error) => {
         logger.error(
           "Failed to start route cache invalidation: %s",
           errorToString(error),
         );
-      }),
+      });
+    } else {
+      coordinator.start();
+    }
+  } catch (error) {
+    logger.error("Redis initialization failed: %s", errorToString(error));
+    process.exit(1);
+  }
+
+  const server = isProxy ? proxyApp : app;
+  server.listen(config.port, () => {
+    logger.info(
+      `${config.packageInfo.name}@${config.packageInfo.version} (${config.cluster.role}) running on ${server.server?.hostname}:${server.server?.port}`,
     );
-    return;
-  }
+    logger.info(
+      "Loaded config %s",
+      JSON.stringify(
+        deepSanitizeObject(config, { omitKeys: ["password"] }),
+        null,
+        2,
+      ),
+    );
 
-  if (config.media.cleanupEnabled) {
-    mediaCleanup.start();
-  }
+    if (!isProxy && config.media.cleanupEnabled) {
+      mediaCleanup.start();
+    }
+  });
+};
 
-  initializeRedis().then(() => coordinator.start());
-});
+void bootstrap();
 
 let shuttingDown = false;
 const shutdown = async (signal: string) => {

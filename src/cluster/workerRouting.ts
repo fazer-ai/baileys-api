@@ -1,4 +1,5 @@
 import { instanceId } from "@/cluster/identity";
+import { isInstanceAlive } from "@/cluster/instanceRegistry";
 import { getLease } from "@/cluster/leaseStore";
 import config from "@/config";
 
@@ -19,11 +20,19 @@ export async function resolveMisdirectedRequest(
   }
   try {
     const lease = await getLease(phoneNumber);
-    if (lease && lease.owner !== instanceId) {
+    if (
+      lease &&
+      lease.owner !== instanceId &&
+      (await isInstanceAlive(lease.owner))
+    ) {
       return lease.owner;
     }
   } catch {
     return null;
   }
+  // No lease, our own lease without a socket, or a dead owner whose lease has
+  // not expired yet: serve locally. Advertising a dead owner would just send
+  // the caller to an address that cannot answer; the regular not-connected
+  // handling is the honest response while failover claims the phone.
   return null;
 }

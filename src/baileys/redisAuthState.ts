@@ -40,6 +40,20 @@ end
 return 1
 `;
 
+// Same fence for the destructive path: a discarded instance that processes a
+// late loggedOut must not DEL the auth hash out from under the live owner.
+// The "-- clear-if-owner" marker keeps the script distinguishable for the
+// test-side Lua emulation.
+const CLEAR_IF_OWNER_SCRIPT = `
+-- clear-if-owner
+local raw = redis.call('GET', KEYS[2])
+if raw then
+  local lease = cjson.decode(raw)
+  if lease.owner ~= ARGV[1] then return 0 end
+end
+return redis.call('DEL', KEYS[1])
+`;
+
 // `pairs` alternates field, value (value = DELETE_SENTINEL deletes the field).
 // Returns false when the write was fenced off (lease owned by someone else).
 async function fencedAuthWrite(id: string, pairs: string[]): Promise<boolean> {
@@ -81,6 +95,10 @@ export async function useRedisAuthState(
   const creds: AuthenticationCreds =
     (await readData("authState", "creds")) || initAuthCreds();
 
+  // Plain hSet, not fencedAuthWrite: metadata (webhookUrl, clientName, ...)
+  // is connection configuration, not Signal protocol state — a concurrent
+  // write cannot corrupt the crypto ratchet, and the most recent request
+  // should win regardless of which instance handled it.
   await redis.hSet(
     createKey("authState"),
     "metadata",
@@ -122,7 +140,16 @@ export async function useRedisAuthState(
           await fencedAuthWrite(id, pairs);
         },
         clear: async () => {
-          await redis.del(createKey("authState"));
+          const result = await redis.eval(CLEAR_IF_OWNER_SCRIPT, {
+            keys: [createKey("authState"), clusterKeys.lease(id)],
+            arguments: [instanceId],
+          });
+          if (result === 0) {
+            logger.warn(
+              "[%s] [clearAuthState] clear rejected — lease is owned by another instance",
+              id,
+            );
+          }
         },
       },
     },

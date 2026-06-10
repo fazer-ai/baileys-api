@@ -135,6 +135,26 @@ describe("useRedisAuthState", () => {
 
       expect(mockRedisData.has(key)).toBe(false);
     });
+
+    it("does not clear the hash when the lease is owned by another instance", async () => {
+      // A stale instance processing a late loggedOut must not wipe the auth
+      // state out from under the live owner.
+      const mockStringData = (redis as any).__stringData as Map<string, string>;
+      const key = "@baileys-api:connections:stale-clear-phone:authState";
+      mockRedisData.set(
+        key,
+        new Map([["creds", JSON.stringify({ registrationId: 1 })]]),
+      );
+      mockStringData.set(
+        "@baileys-api:cluster:lease:stale-clear-phone",
+        JSON.stringify({ owner: "someone-else", epoch: 2 }),
+      );
+
+      const { state } = await useRedisAuthState("stale-clear-phone");
+      await state.keys.clear?.();
+
+      expect(mockRedisData.has(key)).toBe(true);
+    });
   });
 
   describe("saveCreds", () => {

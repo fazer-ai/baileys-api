@@ -62,6 +62,7 @@ const mockRedis = {
     return stringData.has(key) || hashData.has(key) ? 1 : 0;
   }),
   pExpire: mock(async (_key: string, _ttlMs: number) => 1),
+  ping: mock(async () => "PONG"),
   // Emulates the known Lua scripts (dispatched by distinctive content) so the
   // real redisAuthState/leaseStore code paths behave faithfully in tests.
   // Specs can still pin outcomes with mockResolvedValueOnce.
@@ -79,13 +80,27 @@ const mockRedis = {
         const [owner, ...pairs] = args;
         const rawLease = stringData.get(leaseKey);
         if (rawLease && JSON.parse(rawLease).owner !== owner) return 0;
-        if (!hashData.has(hashKey)) hashData.set(hashKey, new Map());
-        const hash = hashData.get(hashKey)!;
+        // Mirror real Redis: HDEL never materializes a hash, and a hash whose
+        // last field is deleted disappears (redis.keys must not see it).
         for (let i = 0; i < pairs.length - 1; i += 2) {
-          if (pairs[i + 1] === "@@DEL@@") hash.delete(pairs[i]);
-          else hash.set(pairs[i], pairs[i + 1]);
+          if (pairs[i + 1] === "@@DEL@@") {
+            const hash = hashData.get(hashKey);
+            hash?.delete(pairs[i]);
+            if (hash?.size === 0) hashData.delete(hashKey);
+            continue;
+          }
+          if (!hashData.has(hashKey)) hashData.set(hashKey, new Map());
+          hashData.get(hashKey)!.set(pairs[i], pairs[i + 1]);
         }
         return 1;
+      }
+
+      // clear-if-owner: KEYS=[hash, lease], ARGV=[owner]
+      if (script.includes("clear-if-owner")) {
+        const [hashKey, leaseKey] = keys;
+        const rawLease = stringData.get(leaseKey);
+        if (rawLease && JSON.parse(rawLease).owner !== args[0]) return 0;
+        return hashData.delete(hashKey) ? 1 : 0;
       }
 
       // lease renew: KEYS=[lease], ARGV=[owner, ttlMs] → 1 | 0 | -1
@@ -95,15 +110,22 @@ const mockRedis = {
         return JSON.parse(raw).owner === args[0] ? 1 : 0;
       }
 
-      // lease release (compare-and-delete): KEYS=[lease], ARGV=[owner]
+      // lease release (compare-and-delete): KEYS=[lease], ARGV=[owner, epoch]
       if (script.includes("DEL")) {
         const raw = stringData.get(keys[0]);
-        if (!raw || JSON.parse(raw).owner !== args[0]) return 0;
+        if (!raw) return 0;
+        const lease = JSON.parse(raw);
+        if (lease.owner !== args[0]) return 0;
+        if (args[1] !== undefined && String(lease.epoch) !== args[1]) return 0;
         stringData.delete(keys[0]);
         return 1;
       }
 
-      return 1;
+      // Fail loudly: silently succeeding would mask a missing emulation path
+      // and let tests pass against behavior production does not have.
+      throw new Error(
+        `Unhandled redis.eval script in test preload emulator: ${script.slice(0, 80)}`,
+      );
     },
   ),
   publish: mock(async (_channel: string, _message: string) => 0),

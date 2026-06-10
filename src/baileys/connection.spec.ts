@@ -6,6 +6,7 @@ import {
   it,
   mock,
   setSystemTime,
+  spyOn,
 } from "bun:test";
 
 // Track fetch calls for webhook tests
@@ -130,11 +131,15 @@ describe("BaileysConnection", () => {
     });
 
     it("calls socket logout and clears state", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
       await connection.connect();
-      (redis.del as any).mockClear();
+      expect((redis as any).__hashData.has(authKey)).toBe(true);
+
       await connection.logout();
+
       expect(mockSocket.logout).toHaveBeenCalledTimes(1);
-      expect(redis.del).toHaveBeenCalled();
+      // clearAuthState goes through the owner-fenced clear script now.
+      expect((redis as any).__hashData.has(authKey)).toBe(false);
     });
 
     it("marks the connection discarded before the logout RPC so a mid-logout close event cannot resurrect the socket", async () => {
@@ -263,6 +268,39 @@ describe("BaileysConnection", () => {
       // After resuming, the post-fetch isDiscarded guard must bail before
       // makeWASocket runs.
       expect(makeSocket.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("bails out of connect() when discarded while pinning the lease epoch", async () => {
+      // Same race as above, one await later: discard() lands while connect()
+      // is parked on the getLease call that pins leaseEpoch. The post-lease
+      // guard must bail before makeWASocket.
+      const leaseStore = await import("@/cluster/leaseStore");
+      const getLeaseSpy = spyOn(leaseStore, "getLease");
+      let releaseLease: () => void = () => {};
+      const leaseDeferred = new Promise<null>((res) => {
+        releaseLease = () => res(null);
+      });
+      getLeaseSpy.mockImplementationOnce(() => leaseDeferred as Promise<null>);
+
+      try {
+        const baileys = (await import("@whiskeysockets/baileys")) as any;
+        const makeSocket = baileys.default as ReturnType<typeof mock>;
+        const callsBefore = makeSocket.mock.calls.length;
+
+        const connectPromise = connection.connect();
+        while (getLeaseSpy.mock.calls.length === 0) {
+          await new Promise((r) => setImmediate(r));
+        }
+        expect(makeSocket.mock.calls.length).toBe(callsBefore);
+
+        connection.discard();
+        releaseLease();
+        await connectPromise;
+
+        expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      } finally {
+        getLeaseSpy.mockRestore();
+      }
     });
 
     it("aborts the post-backoff reconnect after connectionReplaced", async () => {
@@ -427,6 +465,26 @@ describe("BaileysConnection", () => {
 
       expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
     });
+
+    it("keeps the reconnect behavior when the lease read fails", async () => {
+      // A Redis outage must not self-fence a healthy socket: an unverifiable
+      // lease falls back to the plain reconnect/backoff path.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      (redis.get as any).mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
   });
 
   describe("lease epoch on connection.update", () => {
@@ -441,11 +499,19 @@ describe("BaileysConnection", () => {
       const handler = mockEventHandlers.get("connection.update")!;
       fetchCalls.length = 0;
 
+      // The lease moves on after connect; the pinned epoch must not follow
+      // it — re-reading Redis per event would defeat the ordering guarantee.
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "test-instance", epoch: 9 }),
+      );
+
       await handler({ isNewLogin: true });
 
       while (!fetchCalls.some((c) => c.body?.includes('"epoch":7'))) {
         await new Promise((r) => setImmediate(r));
       }
+      expect(fetchCalls.some((c) => c.body?.includes('"epoch":9'))).toBe(false);
     });
 
     it("omits the epoch when no lease exists", async () => {
@@ -488,6 +554,27 @@ describe("BaileysConnection", () => {
 
       const hash = (redis as any).__hashData.get(authKey);
       expect(hash?.get("creds")).toBeUndefined();
+    });
+
+    it("stops persisting signal keys after discard", async () => {
+      // guardedKeys wraps state.keys.set — the makeCacheableSignalKeyStore
+      // mock is an identity passthrough, so the keys object handed to
+      // makeWASocket IS the guarded wrapper.
+      await connection.connect();
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      const [socketOptions] = makeSocket.mock.calls.at(-1) as [
+        { auth: { keys: { set: (data: unknown) => Promise<void> } } },
+      ];
+      const guardedKeys = socketOptions.auth.keys;
+
+      await guardedKeys.set({ "pre-key": { "1": { keyId: 1 } } });
+      const hash = (redis as any).__hashData.get(authKey);
+      expect(hash?.get("pre-key-1")).toBeDefined();
+
+      connection.discard();
+      await guardedKeys.set({ "pre-key": { "2": { keyId: 2 } } });
+      expect(hash?.get("pre-key-2")).toBeUndefined();
     });
   });
 
