@@ -55,6 +55,22 @@ export class BaileysConnectionsHandler {
     );
   }
 
+  // Activity snapshot used by the coordinator to prefer idle connections
+  // when shedding load (rebalance victim selection, shutdown ordering).
+  connectionActivity(phoneNumber: string): {
+    inFlightWebhooks: number;
+    lastTrafficAt: number | null;
+  } | null {
+    const connection = this.connections[phoneNumber];
+    if (!connection) {
+      return null;
+    }
+    return {
+      inFlightWebhooks: connection.inFlightWebhooks,
+      lastTrafficAt: connection.lastTrafficAt,
+    };
+  }
+
   // Tears down the local socket WITHOUT touching the Redis auth state, so the
   // identity can be picked up elsewhere. Used by the cluster coordinator for
   // self-fencing (lease owned by another instance) and graceful handoff.

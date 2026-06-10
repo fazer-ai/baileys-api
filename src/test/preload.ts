@@ -269,6 +269,7 @@ mock.module("@/config", () => ({
       rebalanceEnabled: true,
       rebalanceReleaseIntervalMs: 10_000,
       rebalanceTolerance: 1,
+      rebalanceIdleThresholdMs: 300_000,
       heartbeatIntervalMs: 5_000,
       instanceTtlMs: 15_000,
       shutdownTimeoutMs: 30_000,

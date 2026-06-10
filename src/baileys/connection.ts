@@ -130,6 +130,10 @@ export class BaileysConnection {
   private isDiscarded = false;
   private _inFlightWebhooks = 0;
   private leaseEpoch: number | null = null;
+  // Monotonic timestamp of the last message-level traffic (received message,
+  // outgoing send, receipt update). null = no traffic since this connection
+  // object was created. Drives idle-aware handoff in the coordinator.
+  private _lastTrafficAt: number | null = null;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -162,6 +166,14 @@ export class BaileysConnection {
 
   get inFlightWebhooks(): number {
     return this._inFlightWebhooks;
+  }
+
+  get lastTrafficAt(): number | null {
+    return this._lastTrafficAt;
+  }
+
+  private markTraffic() {
+    this._lastTrafficAt = performance.now();
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -457,6 +469,7 @@ export class BaileysConnection {
     options?: { quoted?: WAMessage },
   ) {
     this.safeSocket();
+    this.markTraffic();
     this.autoSubscribePresence(jid);
 
     let waveformProxy: Buffer | null = null;
@@ -854,6 +867,7 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    this.markTraffic();
     if (data.type === "notify") {
       for (const msg of data.messages) {
         const remoteJid = msg.key?.remoteJid;
@@ -918,6 +932,7 @@ export class BaileysConnection {
   private handleMessageReceiptUpdate(
     data: BaileysEventMap["message-receipt.update"],
   ) {
+    this.markTraffic();
     this.sendToWebhook({
       event: "message-receipt.update",
       data,
