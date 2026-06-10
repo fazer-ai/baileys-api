@@ -783,18 +783,39 @@ describe("BaileysConnection", () => {
       // No direct assertion on private fields — we verify it doesn't throw
     });
 
-    it("persists metadata to Redis on update", () => {
-      (redis as any).hSet.mockClear();
-      connection.updateOptions({
+    it("persists metadata to Redis on update", async () => {
+      await connection.updateOptions({
         webhookUrl: "https://new-hook.com",
         webhookVerifyToken: "new-token",
         groupsEnabled: false,
         apiKeyHash: "abc123",
       });
-      expect((redis as any).hSet).toHaveBeenCalledWith(
-        "@baileys-api:connections:+5511999999999:authState",
-        "metadata",
-        expect.stringContaining('"apiKeyHash":"abc123"'),
+      const stored = (redis as any).__hashData
+        .get("@baileys-api:connections:+5511999999999:authState")
+        ?.get("metadata");
+      expect(stored).toContain('"apiKeyHash":"abc123"');
+    });
+
+    it("rejects the metadata write when the lease is owned elsewhere", async () => {
+      // updateOptions on a connection whose lease moved must not overwrite
+      // the new owner's metadata (write-if-owner fence in persistMetadata).
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      (redis as any).__hashData.set(
+        authKey,
+        new Map([["metadata", JSON.stringify({ webhookUrl: "current" })]]),
+      );
+      (redis as any).__stringData.set(
+        "@baileys-api:cluster:lease:+5511999999999",
+        JSON.stringify({ owner: "someone-else", epoch: 9 }),
+      );
+
+      await connection.updateOptions({
+        webhookUrl: "https://stale-hook.com",
+        webhookVerifyToken: "new-token",
+      });
+
+      expect((redis as any).__hashData.get(authKey)?.get("metadata")).toBe(
+        JSON.stringify({ webhookUrl: "current" }),
       );
     });
 

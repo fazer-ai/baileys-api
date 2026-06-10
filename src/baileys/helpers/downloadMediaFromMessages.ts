@@ -65,10 +65,6 @@ export async function downloadMediaFromMessages(
           message.audioMessage.mimetype = "audio/ogg; codecs=opus";
         }
 
-        if (options?.includeMedia) {
-          downloadedMedia[key.id] = fileBuffer.toString("base64");
-        }
-
         const filePath = path.join(mediaDir, `${key.id}`);
         await file(filePath).write(fileBuffer);
 
@@ -109,6 +105,12 @@ export async function downloadMediaFromMessages(
             key.id,
             errorToString(error),
           );
+        }
+
+        // Populated only after the success path: when the worker rejection
+        // above fires, the message must not be reported as downloaded.
+        if (options?.includeMedia) {
+          downloadedMedia[key.id] = fileBuffer.toString("base64");
         }
       }),
     );

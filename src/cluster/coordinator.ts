@@ -218,7 +218,11 @@ export class ClusterCoordinator {
     const candidates = shuffle(
       saved.filter(({ id }) => !this.handler.hasConnection(id)),
     );
-    const claimed: Array<{ id: string; metadata: StoredMetadata }> = [];
+    const claimed: Array<{
+      id: string;
+      metadata: StoredMetadata;
+      epoch: number;
+    }> = [];
 
     for (const { id, metadata } of candidates) {
       // SIGTERM can land mid-scan; stop acquiring work the shutdown handoff
@@ -256,7 +260,7 @@ export class ClusterCoordinator {
         this.heldLeaseEpochs.set(id, acquired.epoch);
         this.firstSeenUnleasedAt.delete(id);
         void registry.publishOwnershipChanged(id);
-        claimed.push({ id, metadata });
+        claimed.push({ id, metadata, epoch: acquired.epoch });
       } catch (error) {
         logger.warn(
           "[coordinator] claim check failed for %s: %s",
@@ -289,10 +293,16 @@ export class ClusterCoordinator {
     for (let i = 0; i < claimed.length; i += reconnectConcurrency) {
       const chunk = claimed.slice(i, i + reconnectConcurrency);
       await Promise.allSettled(
-        chunk.map(async ({ id, metadata }) => {
+        chunk.map(async ({ id, metadata, epoch }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
           if (this.draining) {
             await this.releaseHeldLease(id).catch(() => {});
+            return;
+          }
+          // Superseded while queued: a connectWithLease for the same phone
+          // re-acquired under a newer epoch. Reconnecting now would apply
+          // this cycle's stale StoredMetadata over the newer connection.
+          if (this.heldLeaseEpochs.get(id) !== epoch) {
             return;
           }
           try {
@@ -302,7 +312,7 @@ export class ClusterCoordinator {
               // From this cycle's acquireLease — webhooks must carry the
               // epoch of the claim that authorized this socket, never a
               // re-read that could observe a successor's lease.
-              leaseEpoch: this.heldLeaseEpochs.get(id) ?? null,
+              leaseEpoch: epoch,
             });
           } catch (error) {
             logger.error(

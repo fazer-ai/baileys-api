@@ -74,6 +74,22 @@ async function fencedAuthWrite(id: string, pairs: string[]): Promise<boolean> {
   return true;
 }
 
+// Fenced like the Signal keys, but for a different reason: metadata
+// (webhookUrl, verify token, apiKeyHash) is also written by automatic
+// reconnects and option updates on reused connections, and a zombie socket
+// acting after losing its lease would replay stale config over a newer
+// client-driven update on the new owner. The fence makes that replay a
+// no-op; client requests always reach the lease owner (proxy routing /
+// standalone self-ownership), so legitimate updates are never rejected.
+// Shared by useRedisAuthState and BaileysConnection.persistMetadata so
+// every metadata write goes through the same fence.
+export async function writeAuthMetadata(
+  id: string,
+  metadata: unknown,
+): Promise<boolean> {
+  return fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
+}
+
 // NOTE: Inspired by https://github.com/hbinduni/baileys-redis-auth
 export async function useRedisAuthState(
   id: string,
@@ -95,17 +111,11 @@ export async function useRedisAuthState(
   const creds: AuthenticationCreds =
     (await readData("authState", "creds")) || initAuthCreds();
 
-  // Fenced like the Signal keys, but for a different reason: metadata
-  // (webhookUrl, verify token, apiKeyHash) is also written by automatic
-  // reconnects, and a zombie socket re-entering connect() after losing its
-  // lease would replay stale config over a newer client-driven update on the
-  // new owner. The fence makes that replay a no-op; client requests always
-  // reach the lease owner (proxy routing / standalone self-ownership), so
-  // legitimate updates are never rejected. Skipped entirely when no metadata
-  // was given: JSON.stringify(undefined) is undefined, which is not a valid
-  // hash value (and would clobber the stored copy anyway).
+  // Skipped entirely when no metadata was given: JSON.stringify(undefined)
+  // is undefined, which is not a valid hash value (and would clobber the
+  // stored copy anyway).
   if (metadata !== undefined) {
-    await fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
+    await writeAuthMetadata(id, metadata);
   }
 
   return {

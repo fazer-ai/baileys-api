@@ -35,6 +35,16 @@ const connectionsController = new Elysia({
         description:
           "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key.",
       },
+      421: {
+        description:
+          "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+        headers: {
+          "x-baileys-owner": {
+            description: "Instance id of the connection owner",
+            schema: { type: "string" },
+          },
+        },
+      },
     },
   },
 })
@@ -154,6 +164,16 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Connection initiated",
+          },
+          409: {
+            description:
+              "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header); a proxy re-routes the takeover there instead of stealing a healthy socket.",
+            headers: {
+              "x-baileys-owner": {
+                description: "Instance id of the connection owner",
+                schema: { type: "string" },
+              },
+            },
           },
         },
       },
