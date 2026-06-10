@@ -24,7 +24,7 @@ import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientV
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
-import { useRedisAuthState } from "@/baileys/redisAuthState";
+import { useRedisAuthState, writeAuthMetadata } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
@@ -36,7 +36,6 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
-import redis from "@/lib/redis";
 
 // `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
 // so default behavior is a normal reconnect. When the same disconnect repeats
@@ -158,6 +157,7 @@ export class BaileysConnection {
     this.groupsEnabled = options.groupsEnabled ?? true;
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? null;
+    this.leaseEpoch = options.leaseEpoch ?? null;
   }
 
   get apiKeyHash(): string | null {
@@ -214,25 +214,29 @@ export class BaileysConnection {
 
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
+    // A reused connection may have been re-leased under a newer epoch (e.g. a
+    // force-acquire on POST /connections); stale epochs would get the
+    // webhooks discarded by the client.
+    if (options.leaseEpoch !== undefined) {
+      this.leaseEpoch = options.leaseEpoch;
+    }
     await this.persistMetadata();
   }
 
   private async persistMetadata() {
-    const key = `@baileys-api:connections:${this.phoneNumber}:authState`;
-    await redis.hSet(
-      key,
-      "metadata",
-      JSON.stringify({
-        clientName: this.clientName,
-        webhookUrl: this.webhookUrl,
-        webhookVerifyToken: this.webhookVerifyToken,
-        includeMedia: this.includeMedia,
-        syncFullHistory: this.syncFullHistory,
-        groupsEnabled: this.groupsEnabled,
-        autoPresenceSubscribe: this.autoPresenceSubscribe,
-        apiKeyHash: this._apiKeyHash,
-      }),
-    );
+    // Owner-fenced: updateOptions can run on a connection whose lease has
+    // since moved, and an unfenced write here would overwrite the new
+    // owner's metadata (see writeAuthMetadata).
+    await writeAuthMetadata(this.phoneNumber, {
+      clientName: this.clientName,
+      webhookUrl: this.webhookUrl,
+      webhookVerifyToken: this.webhookVerifyToken,
+      includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
+      groupsEnabled: this.groupsEnabled,
+      autoPresenceSubscribe: this.autoPresenceSubscribe,
+      apiKeyHash: this._apiKeyHash,
+    });
   }
 
   async connect() {
@@ -271,15 +275,14 @@ export class BaileysConnection {
       return;
     }
 
-    // Pinned at connect time: every connection.update webhook carries this
-    // epoch so the client can discard late events from a previous owner.
-    this.leaseEpoch =
-      (await getLease(this.phoneNumber).catch(() => null))?.epoch ?? null;
-
     // A discarded connection must never write Signal state again — its
     // identity may already be live on another instance (or on a local
-    // replacement). The Redis-side owner fence covers other processes; this
-    // guard covers late writes from this very socket.
+    // replacement). This entry guard is a best-effort fast path; the
+    // authoritative fence is the Redis-side write-if-owner script, which
+    // rejects any write once the lease moves to a new owner. A write already
+    // in flight when discard() lands can only commit while no successor holds
+    // the lease, i.e. it is the closing socket's final state flush — exactly
+    // what the next owner should resume from.
     const guardedKeys: AuthenticationState["keys"] = {
       ...state.keys,
       set: async (data) => {
@@ -326,13 +329,13 @@ export class BaileysConnection {
     };
 
     const handledEvents: EventHandlers = {
-      "creds.update": async () => {
+      "creds.update": this.withErrorHandling("saveCreds", async () => {
         // See guardedKeys: a discarded socket must not persist creds.
         if (this.isDiscarded) {
           return;
         }
         await saveCreds();
-      },
+      }),
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
         this.handleConnectionUpdate,
@@ -1123,9 +1126,9 @@ export class BaileysConnection {
       enriched = {
         ...payload,
         data: {
-          ...(payload.data as Record<string, unknown>),
+          ...(payload.data as BaileysEventMap["connection.update"]),
           epoch: this.leaseEpoch,
-        } as BaileysConnectionWebhookPayload["data"],
+        },
       };
     }
     this._inFlightWebhooks += 1;

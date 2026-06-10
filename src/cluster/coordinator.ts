@@ -11,6 +11,7 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
+import redis from "@/lib/redis";
 
 type StoredMetadata = Omit<
   BaileysConnectionOptions,
@@ -86,6 +87,10 @@ export class ClusterCoordinator {
   // -Infinity, not 0: performance.now() starts near zero at process boot and
   // a 0 sentinel would silently rate-limit the first release away.
   private lastRebalanceReleaseAt = Number.NEGATIVE_INFINITY;
+  // Epoch of each lease this instance currently holds. Releases are
+  // compare-and-delete on (owner, epoch), so a stale release can never drop a
+  // lease the same instance has since re-acquired under a newer epoch.
+  private heldLeaseEpochs = new Map<string, number>();
 
   constructor(
     handler: BaileysConnectionsHandler,
@@ -108,8 +113,12 @@ export class ClusterCoordinator {
     };
   }
 
-  // Monotonic clock. Lease safety windows must not stretch or shrink with
-  // NTP steps, so Date.now() is off-limits here.
+  /**
+   * Monotonic clock for lease safety windows. `performance.now()` is
+   * high-resolution and immune to NTP steps; `Date.now()` is off-limits here
+   * because a wall-clock jump would stretch or shrink grace periods and
+   * deadlines, breaking the lease timing guarantees.
+   */
   private now() {
     return performance.now();
   }
@@ -216,7 +225,19 @@ export class ClusterCoordinator {
       return;
     }
 
-    const instances = await registry.listLiveInstances().catch(() => []);
+    let instances: registry.InstanceInfo[];
+    try {
+      instances = await registry.listLiveInstances();
+    } catch (error) {
+      // A failed registry read means our cluster view is stale. Treating it
+      // as "no peers" would let this node ignore the fair-share cap and grab
+      // everything — skip the cycle instead and retry on the next tick.
+      logger.warn(
+        "[coordinator] instance registry unavailable, skipping claim cycle: %s",
+        errorToString(error),
+      );
+      return;
+    }
     const liveCount = Math.max(
       instances.filter((instance) => !instance.draining).length,
       1,
@@ -227,9 +248,18 @@ export class ClusterCoordinator {
     const candidates = shuffle(
       saved.filter(({ id }) => !this.handler.hasConnection(id)),
     );
-    const claimed: Array<{ id: string; metadata: StoredMetadata }> = [];
+    const claimed: Array<{
+      id: string;
+      metadata: StoredMetadata;
+      epoch: number;
+    }> = [];
 
     for (const { id, metadata } of candidates) {
+      // SIGTERM can land mid-scan; stop acquiring work the shutdown handoff
+      // will never see (its phone snapshot is taken from live connections).
+      if (this.draining) {
+        break;
+      }
       try {
         const lease = await leaseStore.getLease(id);
         if (lease) {
@@ -267,14 +297,16 @@ export class ClusterCoordinator {
         if (!(await isRedisAuthStatePaired(id))) {
           continue;
         }
-        if (!(await leaseStore.acquireLease(id))) {
+        const acquired = await leaseStore.acquireLease(id);
+        if (!acquired) {
           continue;
         }
+        this.heldLeaseEpochs.set(id, acquired.epoch);
         this.firstSeenUnleasedAt.delete(id);
         this.claimedAt.set(id, now);
         this.lastClaimAt = now;
         void registry.publishOwnershipChanged(id);
-        claimed.push({ id, metadata });
+        claimed.push({ id, metadata, epoch: acquired.epoch });
       } catch (error) {
         logger.warn(
           "[coordinator] claim check failed for %s: %s",
@@ -288,6 +320,15 @@ export class ClusterCoordinator {
       return;
     }
 
+    if (this.draining) {
+      // Leases acquired in this scan never reached the handler, so the
+      // shutdown handoff cannot release them — do it here for the survivors.
+      for (const { id } of claimed) {
+        await this.releaseHeldLease(id).catch(() => {});
+      }
+      return;
+    }
+
     logger.info(
       "[coordinator] claimed %d connection(s): %o",
       claimed.length,
@@ -298,12 +339,26 @@ export class ClusterCoordinator {
     for (let i = 0; i < claimed.length; i += reconnectConcurrency) {
       const chunk = claimed.slice(i, i + reconnectConcurrency);
       await Promise.allSettled(
-        chunk.map(async ({ id, metadata }) => {
+        chunk.map(async ({ id, metadata, epoch }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
+          if (this.draining) {
+            await this.releaseHeldLease(id).catch(() => {});
+            return;
+          }
+          // Superseded while queued: a connectWithLease for the same phone
+          // re-acquired under a newer epoch. Reconnecting now would apply
+          // this cycle's stale StoredMetadata over the newer connection.
+          if (this.heldLeaseEpochs.get(id) !== epoch) {
+            return;
+          }
           try {
             await this.handler.connect(id, {
               isReconnect: true,
               ...metadata,
+              // From this cycle's acquireLease — webhooks must carry the
+              // epoch of the claim that authorized this socket, never a
+              // re-read that could observe a successor's lease.
+              leaseEpoch: epoch,
             });
           } catch (error) {
             logger.error(
@@ -312,7 +367,7 @@ export class ClusterCoordinator {
               errorToString(error),
             );
             // Don't sit on a lease we can't service — let a peer try.
-            await leaseStore.releaseLease(id).catch(() => {});
+            await this.releaseHeldLease(id).catch(() => {});
           }
         }),
       );
@@ -398,7 +453,10 @@ export class ClusterCoordinator {
     this.claimedAt.delete(victim);
     await leaseStore.setReleaseCooldown(victim);
     await leaseStore.setHandoffTarget(victim, target.instanceId);
-    await leaseStore.releaseLease(victim);
+    // Compare-and-delete on the epoch held since the claim: if ownership
+    // already moved (or we re-acquired under a newer epoch), the release
+    // no-ops instead of dropping someone else's lease.
+    await this.releaseHeldLease(victim);
     void registry.publishOwnershipChanged(victim);
     this.lastRebalanceReleaseAt = now;
   }
@@ -476,7 +534,22 @@ export class ClusterCoordinator {
   }
 
   async runRenewCycle() {
-    for (const phone of this.handler.getActivePhoneNumbers()) {
+    const phones = this.handler.getActivePhoneNumbers();
+    if (phones.length === 0) {
+      // An idle worker has no renewals to clear redisDegraded with, so a
+      // recovered Redis would otherwise leave claims paused forever — probe
+      // directly instead.
+      if (this.redisDegraded) {
+        try {
+          await redis.ping();
+          this.redisDegraded = false;
+        } catch {
+          // Still unreachable; claims stay paused.
+        }
+      }
+      return;
+    }
+    for (const phone of phones) {
       try {
         const result = await leaseStore.renewLease(phone);
         if (result === "renewed") {
@@ -488,7 +561,9 @@ export class ClusterCoordinator {
           // failover dropped it). Re-assert immediately: competitors only
           // claim phones they have observed unleased, so the sitting owner
           // wins this race in practice — no socket churn.
-          if (await leaseStore.acquireLease(phone)) {
+          const lease = await leaseStore.acquireLease(phone);
+          if (lease) {
+            this.heldLeaseEpochs.set(phone, lease.epoch);
             this.redisDegraded = false;
             continue;
           }
@@ -497,7 +572,17 @@ export class ClusterCoordinator {
           "[coordinator] lease for %s is owned elsewhere, discarding local socket",
           phone,
         );
-        await this.handler.discardConnection(phone);
+        this.heldLeaseEpochs.delete(phone);
+        // Socket cleanup failures are not Redis failures — swallowing them
+        // here keeps them out of the redisDegraded catch below, which would
+        // otherwise pause claims with Redis perfectly healthy.
+        await this.handler.discardConnection(phone).catch((error) => {
+          logger.warn(
+            "[coordinator] discard failed for %s: %s",
+            phone,
+            errorToString(error),
+          );
+        });
       } catch (error) {
         // Redis unreachable is NOT loss of ownership. If we can't reach
         // Redis, competitors most likely can't either; and if someone does
@@ -535,10 +620,22 @@ export class ClusterCoordinator {
         throw new BaileysConnectionOwnedElsewhereError(lease.owner);
       }
     }
-    await leaseStore.forceAcquireLease(phoneNumber);
+    const acquired = await leaseStore.forceAcquireLease(phoneNumber);
+    this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
     this.claimedAt.set(phoneNumber, this.now());
     void registry.publishOwnershipChanged(phoneNumber);
-    await this.handler.connect(phoneNumber, options);
+    try {
+      await this.handler.connect(phoneNumber, {
+        ...options,
+        leaseEpoch: acquired.epoch,
+      });
+    } catch (error) {
+      // A lease held without a socket would keep routing 421s here until the
+      // TTL expires; release it so a retry can land anywhere.
+      await this.releaseHeldLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
+      throw error;
+    }
   }
 
   get isDraining(): boolean {
@@ -549,9 +646,26 @@ export class ClusterCoordinator {
     try {
       await this.handler.logout(phoneNumber);
     } finally {
-      await leaseStore.releaseLease(phoneNumber).catch(() => {});
+      await this.releaseHeldLease(phoneNumber).catch(() => {});
       void registry.publishOwnershipChanged(phoneNumber);
     }
+  }
+
+  // Releases via compare-and-delete on the epoch we hold. Falls back to a
+  // lease read when the epoch was never tracked (e.g. a logout for a phone
+  // claimed before a process restart): if the lease meanwhile changed hands
+  // or epochs, the scripted compare no-ops, which is the safe outcome.
+  private async releaseHeldLease(phoneNumber: string) {
+    let epoch = this.heldLeaseEpochs.get(phoneNumber);
+    this.heldLeaseEpochs.delete(phoneNumber);
+    if (epoch === undefined) {
+      const lease = await leaseStore.getLease(phoneNumber);
+      if (lease?.owner !== instanceId) {
+        return;
+      }
+      epoch = lease.epoch;
+    }
+    await leaseStore.releaseLease(phoneNumber, epoch);
   }
 
   // Graceful handoff: announce draining (peers stop counting us toward fair
@@ -596,7 +710,7 @@ export class ClusterCoordinator {
     for (const phone of phones) {
       try {
         await this.handler.discardConnection(phone);
-        await leaseStore.releaseLease(phone);
+        await this.releaseHeldLease(phone);
         void registry.publishOwnershipChanged(phone);
       } catch (error) {
         logger.warn(

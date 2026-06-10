@@ -6,6 +6,7 @@ import statusController from "@/controllers/status";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import { adminGuard, authMiddleware } from "@/middlewares/auth";
+import { PayloadTooLargeError } from "@/proxy/forward";
 import {
   fanOutToAllInstances,
   forwardByPhone,
@@ -21,14 +22,23 @@ import {
 // before it touches workers), and again at the workers — defense in depth.
 const proxyApp = new Elysia()
   .onAfterResponse(({ request, response, set }) => {
+    // Path only: the phone number is this codebase's log correlation key
+    // (workers log it on every connection line), but query strings carry
+    // arbitrary client data and stay out of the access log.
     logger.info(
       "%s %s [%d]",
       request.method,
-      request.url,
+      new URL(request.url).pathname,
       (response as Response)?.status ?? set.status,
     );
   })
   .onError(({ path, error, code }) => {
+    if (error instanceof PayloadTooLargeError) {
+      return Response.json(
+        { error: "Payload Too Large", message: error.message },
+        { status: 413 },
+      );
+    }
     logger.error("%s\n%s", path, errorToString(error));
     if (code === "INTERNAL_SERVER_ERROR") {
       const message =

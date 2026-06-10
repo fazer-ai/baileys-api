@@ -170,6 +170,8 @@ describe("ClusterCoordinator", () => {
       ];
       expect(options.isReconnect).toBe(true);
       expect(options.webhookUrl).toBe("https://h.com");
+      // Epoch of the acquireLease that authorized this reconnect.
+      expect(options.leaseEpoch).toBe(1);
     });
 
     it("does not touch phones it already holds a connection for", async () => {
@@ -277,6 +279,39 @@ describe("ClusterCoordinator", () => {
       expect(acquireLease).not.toHaveBeenCalled();
     });
 
+    it("skips the claim cycle when the registry read fails", async () => {
+      // liveCount = 1 on a registry outage would let this node bypass the
+      // fair-share cap and grab the whole cluster with a stale view.
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+5511999")]);
+      listLiveInstances.mockRejectedValue(new Error("redis down"));
+
+      await coordinator.runClaimCycle();
+
+      expect(acquireLease).not.toHaveBeenCalled();
+      expect(handler.connect).not.toHaveBeenCalled();
+    });
+
+    it("releases freshly claimed leases when shutdown starts mid-cycle", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+5511999")]);
+      getLease.mockImplementation(async () => {
+        // SIGTERM lands while the cycle is scanning candidates. shutdown()
+        // flips draining synchronously before its first await.
+        void coordinator.shutdown();
+        return null;
+      });
+
+      await coordinator.runClaimCycle();
+
+      // The lease was acquired but never reached the handler, so the
+      // shutdown handoff cannot see it — the cycle itself must release it.
+      expect(handler.connect).not.toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+    });
+
     it("moves on when another instance wins the SET NX race", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
@@ -296,7 +331,8 @@ describe("ClusterCoordinator", () => {
 
       await coordinator.runClaimCycle();
 
-      expect(releaseLease).toHaveBeenCalledWith("+5511999");
+      // Released under the epoch acquired in this same cycle.
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
     });
   });
 
@@ -310,6 +346,10 @@ describe("ClusterCoordinator", () => {
         instanceEntry("test-instance"),
         { ...instanceEntry("peer-instance"), connectionCount: 0 },
       ]);
+      // Connections added directly (not via a claim cycle) have no tracked
+      // epoch; releaseHeldLease falls back to the stored lease, which must
+      // belong to this instance for the release to proceed.
+      getLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
     };
 
     it("releases one connection to the least loaded peer with the safe ordering", async () => {
@@ -334,6 +374,9 @@ describe("ClusterCoordinator", () => {
       // fairShare = ceil(4/2) = 2, held 4 > 2 + tolerance(1) → shed exactly 1.
       expect(handler.discardConnection).toHaveBeenCalledTimes(1);
       expect(releaseLease).toHaveBeenCalledTimes(1);
+      // Compare-and-delete under the epoch of the stored lease (fallback for
+      // an untracked claim).
+      expect(releaseLease).toHaveBeenCalledWith(expect.any(String), 7);
       expect(setHandoffTarget).toHaveBeenCalledWith(
         expect.any(String),
         "peer-instance",
@@ -593,6 +636,27 @@ describe("ClusterCoordinator", () => {
       await coordinator.runClaimCycle();
       expect(getRedisSavedAuthStateIds).toHaveBeenCalled();
     });
+
+    it("recovers from degradation on an idle worker via a direct probe", async () => {
+      // With zero active phones there are no renewals to clear the flag, so
+      // a recovered Redis would otherwise leave claims paused forever.
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      renewLease.mockRejectedValue(new Error("redis down"));
+      await coordinator.runRenewCycle();
+
+      // The only connection goes away while degraded (e.g. 440 lease gate).
+      handler.connections.delete("+5511999");
+      getRedisSavedAuthStateIds.mockClear();
+      await coordinator.runClaimCycle();
+      expect(getRedisSavedAuthStateIds).not.toHaveBeenCalled();
+
+      // Next renew tick has nothing to renew but probes Redis and recovers.
+      await coordinator.runRenewCycle();
+      await coordinator.runClaimCycle();
+      expect(getRedisSavedAuthStateIds).toHaveBeenCalled();
+    });
   });
 
   describe("#connectWithLease", () => {
@@ -604,7 +668,29 @@ describe("ClusterCoordinator", () => {
       await coordinator.connectWithLease("+5511999", options);
 
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
-      expect(handler.connect).toHaveBeenCalledWith("+5511999", options);
+      // The epoch from the force-acquire is threaded into the connection so
+      // its webhooks are stamped with the claim that authorized the socket.
+      expect(handler.connect).toHaveBeenCalledWith("+5511999", {
+        ...options,
+        leaseEpoch: 1,
+      });
+    });
+
+    it("releases the force-acquired lease when connect fails", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 4 });
+      handler.connect.mockRejectedValueOnce(new Error("socket failed"));
+
+      await expect(
+        coordinator.connectWithLease("+5511999", {
+          webhookUrl: "https://h.com",
+          webhookVerifyToken: "t",
+        }),
+      ).rejects.toThrow("socket failed");
+
+      // A lease held without a socket would keep routing here until TTL.
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 4);
     });
 
     describe("in worker role", () => {
@@ -673,26 +759,54 @@ describe("ClusterCoordinator", () => {
   });
 
   describe("#logoutWithLease", () => {
-    it("logs out and releases the lease", async () => {
+    it("logs out and releases the lease under the epoch acquired at connect", async () => {
       const handler = makeHandlerMock();
-      handler.connections.add("+5511999");
       const coordinator = makeCoordinator(handler);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 8 });
+      await coordinator.connectWithLease("+5511999", {
+        webhookUrl: "https://h.com",
+        webhookVerifyToken: "t",
+      });
 
       await coordinator.logoutWithLease("+5511999");
 
       expect(handler.logout).toHaveBeenCalledWith("+5511999");
-      expect(releaseLease).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 8);
+    });
+
+    it("falls back to the stored lease epoch when none is tracked locally", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(handler.logout).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 5);
+    });
+
+    it("skips the release when the lease belongs to another instance", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      getLease.mockResolvedValue({ owner: "other-instance", epoch: 5 });
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(releaseLease).not.toHaveBeenCalled();
     });
 
     it("releases the lease even when logout throws", async () => {
       const handler = makeHandlerMock();
       handler.logout.mockRejectedValueOnce(new Error("not connected"));
       const coordinator = makeCoordinator(handler);
+      getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
 
       await expect(coordinator.logoutWithLease("+5511999")).rejects.toThrow(
         "not connected",
       );
-      expect(releaseLease).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 5);
     });
   });
 
@@ -706,6 +820,10 @@ describe("ClusterCoordinator", () => {
         handler.connections.delete(phone);
         order.push(`discard:${phone}`);
       });
+      getLease.mockImplementation(async () => ({
+        owner: "test-instance",
+        epoch: 1,
+      }));
       releaseLease.mockImplementation(async (phone: string) => {
         order.push(`release:${phone}`);
         return true;

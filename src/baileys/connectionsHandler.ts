@@ -29,6 +29,10 @@ type ConnectionFactory = (
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
   private inFlightOps: Record<string, Promise<void>> = {};
+  // Discarded connections whose webhook deliveries (including retries) are
+  // still running. They left `connections` already, but the shutdown drain
+  // must keep seeing their in-flight count until it reaches zero.
+  private drainingWebhooks = new Set<BaileysConnection>();
   private createConnection: ConnectionFactory;
 
   constructor(createConnection?: ConnectionFactory) {
@@ -49,10 +53,19 @@ export class BaileysConnectionsHandler {
   }
 
   inFlightWebhookCount(): number {
-    return Object.values(this.connections).reduce(
-      (sum, connection) => sum + connection.inFlightWebhooks,
-      0,
-    );
+    for (const connection of this.drainingWebhooks) {
+      if (connection.inFlightWebhooks === 0) {
+        this.drainingWebhooks.delete(connection);
+      }
+    }
+    let sum = 0;
+    for (const connection of Object.values(this.connections)) {
+      sum += connection.inFlightWebhooks;
+    }
+    for (const connection of this.drainingWebhooks) {
+      sum += connection.inFlightWebhooks;
+    }
+    return sum;
   }
 
   // Activity snapshot used by the coordinator to prefer idle connections
@@ -84,6 +97,9 @@ export class BaileysConnectionsHandler {
       }
       connection.discard();
       delete this.connections[phoneNumber];
+      if (connection.inFlightWebhooks > 0) {
+        this.drainingWebhooks.add(connection);
+      }
     });
   }
 

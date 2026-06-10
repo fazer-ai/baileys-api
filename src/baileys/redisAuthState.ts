@@ -40,6 +40,20 @@ end
 return 1
 `;
 
+// Same fence for the destructive path: a discarded instance that processes a
+// late loggedOut must not DEL the auth hash out from under the live owner.
+// The "-- clear-if-owner" marker keeps the script distinguishable for the
+// test-side Lua emulation.
+const CLEAR_IF_OWNER_SCRIPT = `
+-- clear-if-owner
+local raw = redis.call('GET', KEYS[2])
+if raw then
+  local lease = cjson.decode(raw)
+  if lease.owner ~= ARGV[1] then return 0 end
+end
+return redis.call('DEL', KEYS[1])
+`;
+
 // `pairs` alternates field, value (value = DELETE_SENTINEL deletes the field).
 // Returns false when the write was fenced off (lease owned by someone else).
 async function fencedAuthWrite(id: string, pairs: string[]): Promise<boolean> {
@@ -58,6 +72,22 @@ async function fencedAuthWrite(id: string, pairs: string[]): Promise<boolean> {
     return false;
   }
   return true;
+}
+
+// Fenced like the Signal keys, but for a different reason: metadata
+// (webhookUrl, verify token, apiKeyHash) is also written by automatic
+// reconnects and option updates on reused connections, and a zombie socket
+// acting after losing its lease would replay stale config over a newer
+// client-driven update on the new owner. The fence makes that replay a
+// no-op; client requests always reach the lease owner (proxy routing /
+// standalone self-ownership), so legitimate updates are never rejected.
+// Shared by useRedisAuthState and BaileysConnection.persistMetadata so
+// every metadata write goes through the same fence.
+export async function writeAuthMetadata(
+  id: string,
+  metadata: unknown,
+): Promise<boolean> {
+  return fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
 }
 
 // NOTE: Inspired by https://github.com/hbinduni/baileys-redis-auth
@@ -81,11 +111,12 @@ export async function useRedisAuthState(
   const creds: AuthenticationCreds =
     (await readData("authState", "creds")) || initAuthCreds();
 
-  await redis.hSet(
-    createKey("authState"),
-    "metadata",
-    JSON.stringify(metadata),
-  );
+  // Skipped entirely when no metadata was given: JSON.stringify(undefined)
+  // is undefined, which is not a valid hash value (and would clobber the
+  // stored copy anyway).
+  if (metadata !== undefined) {
+    await writeAuthMetadata(id, metadata);
+  }
 
   return {
     state: {
@@ -122,7 +153,16 @@ export async function useRedisAuthState(
           await fencedAuthWrite(id, pairs);
         },
         clear: async () => {
-          await redis.del(createKey("authState"));
+          const result = await redis.eval(CLEAR_IF_OWNER_SCRIPT, {
+            keys: [createKey("authState"), clusterKeys.lease(id)],
+            arguments: [instanceId],
+          });
+          if (result === 0) {
+            logger.warn(
+              "[%s] [clearAuthState] clear rejected — lease is owned by another instance",
+              id,
+            );
+          }
         },
       },
     },

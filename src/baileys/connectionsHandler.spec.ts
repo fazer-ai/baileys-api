@@ -193,6 +193,23 @@ describe("BaileysConnectionsHandler", () => {
       expect(mockDiscard).not.toHaveBeenCalled();
     });
 
+    it("keeps in-flight webhooks of a discarded connection visible until they drain", async () => {
+      // The shutdown drain waits on inFlightWebhookCount() AFTER discarding
+      // each phone — a discarded connection with a retrying webhook must
+      // still hold the drain open or the process exits mid-delivery.
+      await handler.connect("+5511999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999")!;
+      connection.inFlightWebhooks = 2;
+
+      await handler.discardConnection("+5511999");
+
+      expect(handler.hasConnection("+5511999")).toBe(false);
+      expect(handler.inFlightWebhookCount()).toBe(2);
+
+      connection.inFlightWebhooks = 0;
+      expect(handler.inFlightWebhookCount()).toBe(0);
+    });
+
     it("waits for an in-flight spawn before discarding", async () => {
       // A self-fence arriving while a connect is mid-flight must not run
       // before the spawn settles — otherwise the freshly created socket
