@@ -408,10 +408,18 @@ export class ClusterCoordinator {
     const acquired = await leaseStore.forceAcquireLease(phoneNumber);
     this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
     void registry.publishOwnershipChanged(phoneNumber);
-    await this.handler.connect(phoneNumber, {
-      ...options,
-      leaseEpoch: acquired.epoch,
-    });
+    try {
+      await this.handler.connect(phoneNumber, {
+        ...options,
+        leaseEpoch: acquired.epoch,
+      });
+    } catch (error) {
+      // A lease held without a socket would keep routing 421s here until the
+      // TTL expires; release it so a retry can land anywhere.
+      await this.releaseHeldLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
+      throw error;
+    }
   }
 
   get isDraining(): boolean {
