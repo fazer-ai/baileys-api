@@ -121,7 +121,11 @@ const mockRedis = {
         return 1;
       }
 
-      return 1;
+      // Fail loudly: silently succeeding would mask a missing emulation path
+      // and let tests pass against behavior production does not have.
+      throw new Error(
+        `Unhandled redis.eval script in test preload emulator: ${script.slice(0, 80)}`,
+      );
     },
   ),
   publish: mock(async (_channel: string, _message: string) => 0),

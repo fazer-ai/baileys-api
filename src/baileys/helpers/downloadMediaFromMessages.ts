@@ -71,15 +71,23 @@ export async function downloadMediaFromMessages(
         await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
 
         // The file lives on this instance's local disk; record who has it so
-        // a proxy can route GET /media/:messageId here. TTL matches the disk
-        // cleanup window — after that the file is gone anyway.
+        // a proxy can route GET /media/:messageId here. With cleanup enabled
+        // the TTL matches the disk window (after that the file is gone
+        // anyway); with cleanup disabled the file is retained indefinitely,
+        // so the routing key must persist too.
         await redis
-          .set(mediaOwnerKey(key.id), instanceId, {
-            expiration: {
-              type: "EX",
-              value: config.media.maxAgeHours * 3600,
-            },
-          })
+          .set(
+            mediaOwnerKey(key.id),
+            instanceId,
+            config.media.cleanupEnabled
+              ? {
+                  expiration: {
+                    type: "EX",
+                    value: config.media.maxAgeHours * 3600,
+                  },
+                }
+              : undefined,
+          )
           .catch((error) => {
             logger.warn(
               "Failed to record media owner for %s: %s",
