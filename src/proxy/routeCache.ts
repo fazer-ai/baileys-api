@@ -44,6 +44,10 @@ export async function startRouteCacheInvalidation() {
     try {
       const event = JSON.parse(message) as OwnershipChangedEvent;
       if (event.type === "ownership.changed") {
+        if (!event.phoneNumber) {
+          logger.warn("Ignoring ownership.changed event without phoneNumber");
+          return;
+        }
         invalidateTarget(event.phoneNumber);
       }
     } catch (error) {

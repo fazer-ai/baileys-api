@@ -67,7 +67,21 @@ export async function isInstanceAlive(id: string): Promise<boolean> {
 
 export async function getInstance(id: string): Promise<InstanceInfo | null> {
   const value = await redis.get(clusterKeys.instance(id));
-  return value ? (JSON.parse(value) as InstanceInfo) : null;
+  if (!value) {
+    return null;
+  }
+  // Same containment as listLiveInstances: a malformed entry is "missing",
+  // not an exception bubbling into the proxy's request path.
+  try {
+    return JSON.parse(value) as InstanceInfo;
+  } catch (error) {
+    logger.warn(
+      "[registry] malformed instance entry for %s: %s",
+      id,
+      errorToString(error),
+    );
+    return null;
+  }
 }
 
 export async function deregister(): Promise<void> {

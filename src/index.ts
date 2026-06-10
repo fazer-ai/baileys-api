@@ -9,6 +9,9 @@ import { startRouteCacheInvalidation } from "@/proxy/routeCache";
 import { MediaCleanupService } from "@/services/mediaCleanup";
 
 const isProxy = config.cluster.role === "proxy";
+// Module scope so the shutdown handler can close the listener and drain
+// in-flight requests instead of exiting under them.
+const server = isProxy ? proxyApp : app;
 
 process.on("uncaughtException", (error) => {
   logger.error(
@@ -54,7 +57,6 @@ const bootstrap = async () => {
     process.exit(1);
   }
 
-  const server = isProxy ? proxyApp : app;
   server.listen(config.port, () => {
     logger.info(
       `${config.packageInfo.name}@${config.packageInfo.version} (${config.cluster.role}) running on ${server.server?.hostname}:${server.server?.port}`,
@@ -84,7 +86,15 @@ const shutdown = async (signal: string) => {
   shuttingDown = true;
   logger.info(`Received ${signal}, shutting down gracefully...`);
   if (isProxy) {
-    // Stateless: nothing to hand off.
+    // Stateless (no leases to hand off), but a forward in flight may already
+    // have committed a mutation on a worker — close the listener and let
+    // pending requests finish instead of dropping their responses.
+    const drainStop = setTimeout(() => {
+      logger.error("Proxy drain timed out, exiting");
+      process.exit(0);
+    }, config.cluster.shutdownTimeoutMs);
+    drainStop.unref();
+    await server.stop().catch(() => {});
     process.exit(0);
   }
   mediaCleanup.stop();

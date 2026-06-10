@@ -195,7 +195,27 @@ export async function forwardMediaRequest(
     return notFound("File not found");
   }
   const request = await toForwardable(rawRequest);
-  return forwardRequest(instance.baseUrl, request);
+  try {
+    return await forwardRequest(instance.baseUrl, request);
+  } catch (error) {
+    logger.warn(
+      "[proxy] media forward to %s (%s) failed: %s",
+      ownerId,
+      instance.baseUrl,
+      errorToString(error),
+    );
+    // Same dead-vs-slow split as sendToTarget, except a dead owner here
+    // means the file is gone with its disk — a final 404, not a retryable
+    // 503.
+    const stillRegistered = await getInstance(ownerId).catch(() => null);
+    if (!stillRegistered) {
+      return notFound("File not found");
+    }
+    return Response.json(
+      { error: "Gateway Timeout", message: "Media owner did not respond" },
+      { status: 504 },
+    );
+  }
 }
 
 export async function fanOutToAllInstances(
