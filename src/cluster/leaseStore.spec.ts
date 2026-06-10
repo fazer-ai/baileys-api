@@ -110,12 +110,24 @@ describe("leaseStore", () => {
 
     it("returns true when the script deleted the lease", async () => {
       evalMock.mockResolvedValueOnce(1);
-      expect(await leaseStore.releaseLease(PHONE)).toBe(true);
+      expect(await leaseStore.releaseLease(PHONE, 1)).toBe(true);
     });
 
-    it("returns false when the lease belongs to someone else", async () => {
+    it("returns false when the lease belongs to someone else or epochs differ", async () => {
       evalMock.mockResolvedValueOnce(0);
-      expect(await leaseStore.releaseLease(PHONE)).toBe(false);
+      expect(await leaseStore.releaseLease(PHONE, 1)).toBe(false);
+    });
+
+    it("passes the lease key, instance id and expected epoch to the script", async () => {
+      evalMock.mockResolvedValueOnce(1);
+      await leaseStore.releaseLease(PHONE, 7);
+
+      const [, options] = evalMock.mock.calls.at(-1) as [
+        string,
+        { keys: string[]; arguments: string[] },
+      ];
+      expect(options.keys).toEqual([leaseKey]);
+      expect(options.arguments).toEqual(["test-instance", "7"]);
     });
   });
 

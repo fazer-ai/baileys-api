@@ -39,6 +39,24 @@ const {
   CLUSTER_SHUTDOWN_TIMEOUT_MS,
 } = process.env;
 
+// `Number(raw) || fallback` would collapse an explicit 0 into the fallback
+// and silently accept negatives; timing/TTL envs need strict validation.
+function intFromEnv(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+  { min = 1 }: { min?: number } = {},
+): number {
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min) {
+    throw new Error(`${name} must be an integer >= ${min}, got "${raw}"`);
+  }
+  return value;
+}
+
 const config = {
   packageInfo: {
     name: packageInfo.name,
@@ -101,16 +119,60 @@ const config = {
     role: (ROLE || "standalone") as "standalone" | "worker" | "proxy",
     instanceId: INSTANCE_ID || undefined,
     workerBaseUrl: WORKER_BASE_URL || undefined,
-    leaseTtlMs: Number(CLUSTER_LEASE_TTL_MS) || 30_000,
-    leaseRenewIntervalMs: Number(CLUSTER_LEASE_RENEW_INTERVAL_MS) || 10_000,
-    claimIntervalMs: Number(CLUSTER_CLAIM_INTERVAL_MS) || 5_000,
-    claimJitterMs: Number(CLUSTER_CLAIM_JITTER_MS) || 2_000,
-    reconnectConcurrency: Number(CLUSTER_RECONNECT_CONCURRENCY) || 5,
-    unclaimedGraceMs: Number(CLUSTER_UNCLAIMED_GRACE_MS) || 30_000,
-    releaseCooldownMs: Number(CLUSTER_RELEASE_COOLDOWN_MS) || 60_000,
-    heartbeatIntervalMs: Number(CLUSTER_HEARTBEAT_INTERVAL_MS) || 5_000,
-    instanceTtlMs: Number(CLUSTER_INSTANCE_TTL_MS) || 15_000,
-    shutdownTimeoutMs: Number(CLUSTER_SHUTDOWN_TIMEOUT_MS) || 30_000,
+    leaseTtlMs: intFromEnv(
+      "CLUSTER_LEASE_TTL_MS",
+      CLUSTER_LEASE_TTL_MS,
+      30_000,
+    ),
+    leaseRenewIntervalMs: intFromEnv(
+      "CLUSTER_LEASE_RENEW_INTERVAL_MS",
+      CLUSTER_LEASE_RENEW_INTERVAL_MS,
+      10_000,
+    ),
+    claimIntervalMs: intFromEnv(
+      "CLUSTER_CLAIM_INTERVAL_MS",
+      CLUSTER_CLAIM_INTERVAL_MS,
+      5_000,
+    ),
+    claimJitterMs: intFromEnv(
+      "CLUSTER_CLAIM_JITTER_MS",
+      CLUSTER_CLAIM_JITTER_MS,
+      2_000,
+      { min: 0 },
+    ),
+    reconnectConcurrency: intFromEnv(
+      "CLUSTER_RECONNECT_CONCURRENCY",
+      CLUSTER_RECONNECT_CONCURRENCY,
+      5,
+    ),
+    unclaimedGraceMs: intFromEnv(
+      "CLUSTER_UNCLAIMED_GRACE_MS",
+      CLUSTER_UNCLAIMED_GRACE_MS,
+      30_000,
+      { min: 0 },
+    ),
+    releaseCooldownMs: intFromEnv(
+      "CLUSTER_RELEASE_COOLDOWN_MS",
+      CLUSTER_RELEASE_COOLDOWN_MS,
+      60_000,
+      { min: 0 },
+    ),
+    heartbeatIntervalMs: intFromEnv(
+      "CLUSTER_HEARTBEAT_INTERVAL_MS",
+      CLUSTER_HEARTBEAT_INTERVAL_MS,
+      5_000,
+    ),
+    instanceTtlMs: intFromEnv(
+      "CLUSTER_INSTANCE_TTL_MS",
+      CLUSTER_INSTANCE_TTL_MS,
+      15_000,
+    ),
+    shutdownTimeoutMs: intFromEnv(
+      "CLUSTER_SHUTDOWN_TIMEOUT_MS",
+      CLUSTER_SHUTDOWN_TIMEOUT_MS,
+      30_000,
+      { min: 0 },
+    ),
   },
   media: {
     cleanupEnabled: MEDIA_CLEANUP_ENABLED === "true",
