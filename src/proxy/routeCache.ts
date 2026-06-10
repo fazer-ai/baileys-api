@@ -31,8 +31,11 @@ export function invalidateTarget(phoneNumber: string) {
   cache.delete(phoneNumber);
 }
 
+let activeSubscriber: ReturnType<typeof createSubscriberClient> | null = null;
+
 export async function startRouteCacheInvalidation() {
   const subscriber = createSubscriberClient();
+  activeSubscriber = subscriber;
   subscriber.on("error", (error: unknown) => {
     logger.error(
       "Route cache subscriber error: %s",
@@ -57,4 +60,12 @@ export async function startRouteCacheInvalidation() {
       );
     }
   });
+}
+
+export async function stopRouteCacheInvalidation() {
+  const subscriber = activeSubscriber;
+  activeSubscriber = null;
+  if (subscriber) {
+    await subscriber.quit().catch(() => {});
+  }
 }

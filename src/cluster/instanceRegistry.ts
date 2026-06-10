@@ -107,5 +107,11 @@ export async function publishOwnershipChanged(
   };
   await redis
     .publish(clusterKeys.eventsChannel, JSON.stringify(event))
-    .catch(() => {});
+    .catch((error) => {
+      logger.warn(
+        "[registry] ownership.changed publish failed for %s: %s",
+        phoneNumber,
+        errorToString(error),
+      );
+    });
 }

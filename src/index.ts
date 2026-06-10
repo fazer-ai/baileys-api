@@ -5,7 +5,10 @@ import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
 import proxyApp from "@/proxy/app";
-import { startRouteCacheInvalidation } from "@/proxy/routeCache";
+import {
+  startRouteCacheInvalidation,
+  stopRouteCacheInvalidation,
+} from "@/proxy/routeCache";
 import { MediaCleanupService } from "@/services/mediaCleanup";
 
 const isProxy = config.cluster.role === "proxy";
@@ -95,6 +98,7 @@ const shutdown = async (signal: string) => {
     }, config.cluster.shutdownTimeoutMs);
     drainStop.unref();
     await server.stop().catch(() => {});
+    await stopRouteCacheInvalidation().catch(() => {});
     process.exit(0);
   }
   mediaCleanup.stop();

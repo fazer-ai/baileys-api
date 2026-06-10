@@ -163,6 +163,9 @@ export async function forwardByPhone(
   if (!owner) {
     return response;
   }
+  // The misdirection response is dropped in favor of the retry; discard its
+  // unread body so the connection is released back to the pool.
+  await response.body?.cancel().catch(() => {});
   const ownerInstance = await getInstance(owner).catch(() => null);
   if (!ownerInstance) {
     return serviceUnavailable();
@@ -175,6 +178,7 @@ export async function forwardByPhone(
   if (retried.status === 421 || retried.status === 409) {
     // Two hops and still misdirected — ownership is in flux (failover or
     // rebalance mid-flight). Let the client retry rather than loop here.
+    await retried.body?.cancel().catch(() => {});
     return serviceUnavailable();
   }
   if (retried.ok) {
