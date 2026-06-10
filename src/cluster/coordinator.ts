@@ -340,7 +340,16 @@ export class ClusterCoordinator {
           phone,
         );
         this.heldLeaseEpochs.delete(phone);
-        await this.handler.discardConnection(phone);
+        // Socket cleanup failures are not Redis failures — swallowing them
+        // here keeps them out of the redisDegraded catch below, which would
+        // otherwise pause claims with Redis perfectly healthy.
+        await this.handler.discardConnection(phone).catch((error) => {
+          logger.warn(
+            "[coordinator] discard failed for %s: %s",
+            phone,
+            errorToString(error),
+          );
+        });
       } catch (error) {
         // Redis unreachable is NOT loss of ownership. If we can't reach
         // Redis, competitors most likely can't either; and if someone does
