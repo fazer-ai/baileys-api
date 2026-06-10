@@ -24,7 +24,7 @@ import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientV
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
-import { useRedisAuthState } from "@/baileys/redisAuthState";
+import { useRedisAuthState, writeAuthMetadata } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
@@ -36,7 +36,6 @@ import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
-import redis from "@/lib/redis";
 
 // `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
 // so default behavior is a normal reconnect. When the same disconnect repeats
@@ -213,21 +212,19 @@ export class BaileysConnection {
   }
 
   private async persistMetadata() {
-    const key = `@baileys-api:connections:${this.phoneNumber}:authState`;
-    await redis.hSet(
-      key,
-      "metadata",
-      JSON.stringify({
-        clientName: this.clientName,
-        webhookUrl: this.webhookUrl,
-        webhookVerifyToken: this.webhookVerifyToken,
-        includeMedia: this.includeMedia,
-        syncFullHistory: this.syncFullHistory,
-        groupsEnabled: this.groupsEnabled,
-        autoPresenceSubscribe: this.autoPresenceSubscribe,
-        apiKeyHash: this._apiKeyHash,
-      }),
-    );
+    // Owner-fenced: updateOptions can run on a connection whose lease has
+    // since moved, and an unfenced write here would overwrite the new
+    // owner's metadata (see writeAuthMetadata).
+    await writeAuthMetadata(this.phoneNumber, {
+      clientName: this.clientName,
+      webhookUrl: this.webhookUrl,
+      webhookVerifyToken: this.webhookVerifyToken,
+      includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
+      groupsEnabled: this.groupsEnabled,
+      autoPresenceSubscribe: this.autoPresenceSubscribe,
+      apiKeyHash: this._apiKeyHash,
+    });
   }
 
   async connect() {
@@ -1114,9 +1111,9 @@ export class BaileysConnection {
       enriched = {
         ...payload,
         data: {
-          ...(payload.data as Record<string, unknown>),
+          ...(payload.data as BaileysEventMap["connection.update"]),
           epoch: this.leaseEpoch,
-        } as BaileysConnectionWebhookPayload["data"],
+        },
       };
     }
     this._inFlightWebhooks += 1;

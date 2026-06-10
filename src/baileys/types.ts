@@ -24,7 +24,12 @@ export interface BaileysConnectionOptions {
 
 export interface BaileysConnectionWebhookPayload {
   event: keyof BaileysEventMap;
-  data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
+  // connection.update events additionally carry the lease epoch so the
+  // client can discard late events from a previous owner.
+  data:
+    | BaileysEventMap[keyof BaileysEventMap]
+    | (BaileysEventMap["connection.update"] & { epoch?: number })
+    | { error: string };
   extra?: unknown;
 }
 

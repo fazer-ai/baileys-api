@@ -148,17 +148,24 @@ const mockRedis = {
     // Each multi() invocation owns its own command buffer. A shared module-level
     // buffer races when concurrent/interleaved multi() calls reset it mid-flight
     // (e.g. one pipeline's execAsPipeline awaiting while another multi() zeroes
-    // the buffer), silently dropping the queued commands.
+    // the buffer), silently dropping the queued commands. The module-level
+    // `multiCommands` (exposed as __multiCommands) is a pure observation log:
+    // every queued command is mirrored into it so specs can assert on
+    // pipeline usage, but execution reads only the local buffer.
     const commands: Array<{ op: string; args: any[] }> = [];
+    const queue = (cmd: { op: string; args: any[] }) => {
+      commands.push(cmd);
+      multiCommands.push(cmd);
+    };
     return {
       hSet: (key: string, field: string, value: string) => {
-        commands.push({ op: "hSet", args: [key, field, value] });
+        queue({ op: "hSet", args: [key, field, value] });
       },
       hDel: (key: string, field: string) => {
-        commands.push({ op: "hDel", args: [key, field] });
+        queue({ op: "hDel", args: [key, field] });
       },
       hGet: (key: string, field: string) => {
-        commands.push({ op: "hGet", args: [key, field] });
+        queue({ op: "hGet", args: [key, field] });
       },
       execAsPipeline: mock(async () => {
         const results: any[] = [];
