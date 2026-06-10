@@ -34,6 +34,12 @@ export function invalidateTarget(phoneNumber: string) {
 let activeSubscriber: ReturnType<typeof createSubscriberClient> | null = null;
 
 export async function startRouteCacheInvalidation() {
+  // A double start would leak the first subscriber: still connected, but no
+  // longer referenced by stopRouteCacheInvalidation.
+  if (activeSubscriber) {
+    logger.warn("Route cache invalidation already started");
+    return;
+  }
   const subscriber = createSubscriberClient();
   activeSubscriber = subscriber;
   subscriber.on("error", (error: unknown) => {
@@ -42,24 +48,37 @@ export async function startRouteCacheInvalidation() {
       errorToString(error as Error),
     );
   });
-  await subscriber.connect();
-  await subscriber.subscribe(clusterKeys.eventsChannel, (message: string) => {
-    try {
-      const event = JSON.parse(message) as OwnershipChangedEvent;
-      if (event.type === "ownership.changed") {
-        if (!event.phoneNumber) {
-          logger.warn("Ignoring ownership.changed event without phoneNumber");
-          return;
+  try {
+    await subscriber.connect();
+    await subscriber.subscribe(
+      clusterKeys.eventsChannel,
+      (message: string) => {
+        try {
+          const event = JSON.parse(message) as OwnershipChangedEvent;
+          if (event.type === "ownership.changed") {
+            if (!event.phoneNumber) {
+              logger.warn(
+                "Ignoring ownership.changed event without phoneNumber",
+              );
+              return;
+            }
+            invalidateTarget(event.phoneNumber);
+          }
+        } catch (error) {
+          logger.warn(
+            "Ignoring malformed cluster event: %s",
+            errorToString(error as Error),
+          );
         }
-        invalidateTarget(event.phoneNumber);
-      }
-    } catch (error) {
-      logger.warn(
-        "Ignoring malformed cluster event: %s",
-        errorToString(error as Error),
-      );
-    }
-  });
+      },
+    );
+  } catch (error) {
+    // A failed start must not poison the double-start guard, or a transient
+    // blip would disable pub/sub invalidation for the process lifetime.
+    activeSubscriber = null;
+    await subscriber.quit().catch(() => {});
+    throw error;
+  }
 }
 
 export async function stopRouteCacheInvalidation() {
