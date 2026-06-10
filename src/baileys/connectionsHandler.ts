@@ -166,7 +166,7 @@ export class BaileysConnectionsHandler {
         return;
       }
 
-      existing.updateOptions(options);
+      await existing.updateOptions(options);
       try {
         // NOTE: This triggers a `connection.update` event.
         await existing.sendPresenceUpdate("available");
