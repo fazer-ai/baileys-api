@@ -400,7 +400,13 @@ export class ClusterCoordinator {
       return;
     }
 
-    const instances = await registry.listLiveInstances().catch(() => []);
+    const instances = await registry.listLiveInstances().catch((error) => {
+      logger.warn(
+        "[coordinator] instance registry unavailable, skipping rebalance cycle: %s",
+        errorToString(error),
+      );
+      return [];
+    });
     const peers = instances.filter(
       (instance) => instance.instanceId !== instanceId && !instance.draining,
     );

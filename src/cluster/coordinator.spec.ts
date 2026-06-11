@@ -377,6 +377,22 @@ describe("ClusterCoordinator", () => {
       expect(order.indexOf("handoff")).toBeLessThan(order.indexOf("release"));
     });
 
+    it("still releases the lease when the handoff metadata write fails", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+      setHandoffTarget.mockRejectedValue(new Error("redis blip"));
+
+      await coordinator.runRebalanceCycle();
+
+      // A discarded socket must never keep its lease: the cooldown/tombstone
+      // writes only steer placement, so their failure degrades to an
+      // undirected release instead of a blackhole until the TTL.
+      expect(handler.discardConnection).toHaveBeenCalledTimes(1);
+      expect(releaseLease).toHaveBeenCalledTimes(1);
+      expect(releaseLease).toHaveBeenCalledWith(expect.any(String), 7);
+    });
+
     it("rate-limits releases to one per interval", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
