@@ -17,10 +17,12 @@
 #   which means re-pairing every number.
 # - Each worker keeps its own media volume; GET /media is routed by the
 #   proxy to the instance that holds the file.
+# - Set BAILEYS_API_IMAGE_TAG to pin a release (e.g. v1.2.3). One variable
+#   for all three services: proxy and workers must never skew versions.
 
 services:
   proxy:
-    image: "ghcr.io/fazer-ai/baileys-api:latest"
+    image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
     ports:
       - "3025:3025"
     environment:
@@ -39,7 +41,7 @@ services:
       retries: 10
 
   worker-1:
-    image: "ghcr.io/fazer-ai/baileys-api:latest"
+    image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
     environment:
       - NODE_ENV=production
       - ROLE=worker
@@ -62,7 +64,7 @@ services:
       retries: 10
 
   worker-2:
-    image: "ghcr.io/fazer-ai/baileys-api:latest"
+    image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
     environment:
       - NODE_ENV=production
       - ROLE=worker
