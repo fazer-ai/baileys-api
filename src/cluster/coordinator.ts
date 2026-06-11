@@ -455,8 +455,19 @@ export class ClusterCoordinator {
     // owner can never overlap a still-open socket — a rebalance migration
     // must never produce a 440.
     await this.handler.discardConnection(victim);
-    await leaseStore.setReleaseCooldown(victim);
-    await leaseStore.setHandoffTarget(victim, target.instanceId);
+    // The cooldown and tombstone only steer WHERE the phone lands next; the
+    // release below must happen regardless, or a failed write here would
+    // leave a lease held with no socket behind it until the TTL.
+    try {
+      await leaseStore.setReleaseCooldown(victim);
+      await leaseStore.setHandoffTarget(victim, target.instanceId);
+    } catch (error) {
+      logger.warn(
+        "[coordinator] rebalance handoff metadata failed for %s, releasing undirected: %s",
+        victim,
+        errorToString(error),
+      );
+    }
     // Compare-and-delete on the epoch held since the claim: if ownership
     // already moved (or we re-acquired under a newer epoch), the release
     // no-ops instead of dropping someone else's lease.

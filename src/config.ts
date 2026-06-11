@@ -64,6 +64,20 @@ function intFromEnv(
   return value;
 }
 
+function boolFromEnv(
+  name: string,
+  raw: string | undefined,
+  fallback: boolean,
+): boolean {
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  if (raw !== "true" && raw !== "false") {
+    throw new Error(`${name} must be "true" or "false", got "${raw}"`);
+  }
+  return raw === "true";
+}
+
 const config = {
   packageInfo: {
     name: packageInfo.name,
@@ -164,7 +178,11 @@ const config = {
       60_000,
       { min: 0 },
     ),
-    rebalanceEnabled: CLUSTER_REBALANCE_ENABLED !== "false",
+    rebalanceEnabled: boolFromEnv(
+      "CLUSTER_REBALANCE_ENABLED",
+      CLUSTER_REBALANCE_ENABLED,
+      true,
+    ),
     rebalanceReleaseIntervalMs: intFromEnv(
       "CLUSTER_REBALANCE_RELEASE_INTERVAL_MS",
       CLUSTER_REBALANCE_RELEASE_INTERVAL_MS,
