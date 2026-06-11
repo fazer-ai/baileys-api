@@ -1,0 +1,128 @@
+# Example multi-instance deployment: one client-facing proxy + two workers.
+#
+# Clients (e.g. chatwoot's BAILEYS_PROVIDER_DEFAULT_URL) talk ONLY to the
+# proxy. Workers hold the WhatsApp sockets; ownership of each phone number is
+# arbitrated through Redis leases, so workers never expose a port.
+#
+# Notes:
+# - Workers resolve each other / the proxy resolves workers by service name
+#   on the compose network (WORKER_BASE_URL defaults to the container
+#   hostname, which works here; set it explicitly when in doubt).
+# - stop_grace_period must exceed CLUSTER_SHUTDOWN_TIMEOUT_MS so a rolling
+#   deploy lets the worker hand its connections off instead of being killed
+#   mid-drain (a SIGKILL means up to CLUSTER_LEASE_TTL_MS of downtime for
+#   that worker's phones).
+# - Redis MUST persist with AOF (appendonly): the Signal auth state lives
+#   there, and restoring a stale RDB snapshot regresses the crypto ratchet —
+#   which means re-pairing every number.
+# - Each worker keeps its own media volume; GET /media is routed by the
+#   proxy to the instance that holds the file.
+# - Set BAILEYS_API_IMAGE_TAG to pin a release (e.g. v1.2.3). One variable
+#   for all three services: proxy and workers must never skew versions.
+
+services:
+  proxy:
+    image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
+    # The image ships no CMD (deploy tooling injects it); without this the
+    # container falls through to bun's CLI help and restart-loops.
+    command: ["bun", "start"]
+    ports:
+      - "3025:3025"
+    environment:
+      - NODE_ENV=production
+      - ROLE=proxy
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3025/cluster/health"]
+      interval: 20s
+      timeout: 20s
+      retries: 10
+
+  worker-1:
+    image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
+    # The image ships no CMD (deploy tooling injects it); without this the
+    # container falls through to bun's CLI help and restart-loops.
+    command: ["bun", "start"]
+    environment:
+      - NODE_ENV=production
+      - ROLE=worker
+      - INSTANCE_ID=worker-1
+      - WORKER_BASE_URL=http://worker-1:3025
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - MEDIA_CLEANUP_ENABLED=true
+    volumes:
+      - "media-worker-1:/app/media"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3025/cluster/health"]
+      interval: 20s
+      timeout: 20s
+      retries: 10
+
+  worker-2:
+    image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
+    # The image ships no CMD (deploy tooling injects it); without this the
+    # container falls through to bun's CLI help and restart-loops.
+    command: ["bun", "start"]
+    environment:
+      - NODE_ENV=production
+      - ROLE=worker
+      - INSTANCE_ID=worker-2
+      - WORKER_BASE_URL=http://worker-2:3025
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - MEDIA_CLEANUP_ENABLED=true
+    volumes:
+      - "media-worker-2:/app/media"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3025/cluster/health"]
+      interval: 20s
+      timeout: 20s
+      retries: 10
+
+  redis:
+    image: "redis:8-alpine"
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    # requirepass only when REDIS_PASSWORD is set, so the example runs both
+    # secured and unsecured without editing this file.
+    command:
+      [
+        "sh",
+        "-c",
+        'redis-server --appendonly yes --appendfsync everysec $${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}',
+      ]
+    volumes:
+      - "redis-data:/data"
+    restart: always
+    healthcheck:
+      # Authenticates only when REDIS_PASSWORD is set, mirroring requirepass.
+      test:
+        [
+          "CMD-SHELL",
+          'redis-cli $${REDIS_PASSWORD:+-a "$$REDIS_PASSWORD"} --no-auth-warning ping | grep -q PONG',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  media-worker-1:
+  media-worker-2:
+  redis-data:

@@ -34,6 +34,9 @@ const renewLease = spyOn(leaseStore, "renewLease");
 const releaseLease = spyOn(leaseStore, "releaseLease");
 const getLease = spyOn(leaseStore, "getLease");
 const isOnOwnReleaseCooldown = spyOn(leaseStore, "isOnOwnReleaseCooldown");
+const setReleaseCooldown = spyOn(leaseStore, "setReleaseCooldown");
+const setHandoffTarget = spyOn(leaseStore, "setHandoffTarget");
+const getHandoffTarget = spyOn(leaseStore, "getHandoffTarget");
 
 afterAll(() => {
   getRedisSavedAuthStateIds.mockRestore();
@@ -48,6 +51,9 @@ afterAll(() => {
   releaseLease.mockRestore();
   getLease.mockRestore();
   isOnOwnReleaseCooldown.mockRestore();
+  setReleaseCooldown.mockRestore();
+  setHandoffTarget.mockRestore();
+  getHandoffTarget.mockRestore();
 });
 
 function makeHandlerMock() {
@@ -112,6 +118,9 @@ describe("ClusterCoordinator", () => {
     releaseLease.mockReset();
     getLease.mockReset();
     isOnOwnReleaseCooldown.mockReset();
+    setReleaseCooldown.mockReset();
+    setHandoffTarget.mockReset();
+    getHandoffTarget.mockReset();
 
     getRedisSavedAuthStateIds.mockResolvedValue([]);
     isRedisAuthStatePaired.mockResolvedValue(true);
@@ -128,6 +137,9 @@ describe("ClusterCoordinator", () => {
     releaseLease.mockResolvedValue(true);
     getLease.mockResolvedValue(null);
     isOnOwnReleaseCooldown.mockResolvedValue(false);
+    setReleaseCooldown.mockResolvedValue(undefined);
+    setHandoffTarget.mockResolvedValue(undefined);
+    getHandoffTarget.mockResolvedValue(null);
   });
 
   describe("#runClaimCycle", () => {
@@ -312,6 +324,173 @@ describe("ClusterCoordinator", () => {
 
       // Released under the epoch acquired in this same cycle.
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+    });
+  });
+
+  describe("#runRebalanceCycle", () => {
+    const setupOverloaded = (handler: HandlerMock, phones: string[]) => {
+      for (const phone of phones) {
+        handler.connections.add(phone);
+      }
+      getRedisSavedAuthStateIds.mockResolvedValue(phones.map(savedEntry));
+      listLiveInstances.mockResolvedValue([
+        instanceEntry("test-instance"),
+        { ...instanceEntry("peer-instance"), connectionCount: 0 },
+      ]);
+      // Connections added directly (not via a claim cycle) have no tracked
+      // epoch; releaseHeldLease falls back to the stored lease, which must
+      // belong to this instance for the release to proceed.
+      getLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+    };
+
+    it("releases one connection to the least loaded peer with the safe ordering", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+      const order: string[] = [];
+      handler.discardConnection.mockImplementation(async (phone: string) => {
+        handler.connections.delete(phone);
+        order.push("discard");
+      });
+      releaseLease.mockImplementation(async () => {
+        order.push("release");
+        return true;
+      });
+      setHandoffTarget.mockImplementation(async () => {
+        order.push("handoff");
+      });
+      setReleaseCooldown.mockImplementation(async () => {
+        order.push("cooldown");
+      });
+
+      await coordinator.runRebalanceCycle();
+
+      // fairShare = ceil(4/2) = 2, held 4 > 2 + tolerance(1) → shed exactly 1.
+      expect(handler.discardConnection).toHaveBeenCalledTimes(1);
+      expect(releaseLease).toHaveBeenCalledTimes(1);
+      // Compare-and-delete under the epoch of the stored lease (fallback for
+      // an untracked claim).
+      expect(releaseLease).toHaveBeenCalledWith(expect.any(String), 7);
+      expect(setHandoffTarget).toHaveBeenCalledWith(
+        expect.any(String),
+        "peer-instance",
+      );
+      // Socket down → cooldown/tombstone → lease released. Never the reverse.
+      expect(order.indexOf("discard")).toBeLessThan(order.indexOf("cooldown"));
+      expect(order.indexOf("cooldown")).toBeLessThan(order.indexOf("release"));
+      expect(order.indexOf("handoff")).toBeLessThan(order.indexOf("release"));
+    });
+
+    it("still releases the lease when the handoff metadata write fails", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+      setHandoffTarget.mockRejectedValue(new Error("redis blip"));
+
+      await coordinator.runRebalanceCycle();
+
+      // A discarded socket must never keep its lease: the cooldown/tombstone
+      // writes only steer placement, so their failure degrades to an
+      // undirected release instead of a blackhole until the TTL.
+      expect(handler.discardConnection).toHaveBeenCalledTimes(1);
+      expect(releaseLease).toHaveBeenCalledTimes(1);
+      expect(releaseLease).toHaveBeenCalledWith(expect.any(String), 7);
+    });
+
+    it("rate-limits releases to one per interval", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4", "+5", "+6"]);
+
+      await coordinator.runRebalanceCycle();
+      await coordinator.runRebalanceCycle();
+
+      expect(handler.discardConnection).toHaveBeenCalledTimes(1);
+    });
+
+    it("does nothing within the tolerance band", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      // fairShare = ceil(4/2) = 2; held 3 ≤ 2 + tolerance(1) → stable.
+      setupOverloaded(handler, ["+1", "+2", "+3"]);
+      getRedisSavedAuthStateIds.mockResolvedValue(
+        ["+1", "+2", "+3", "+4"].map(savedEntry),
+      );
+
+      await coordinator.runRebalanceCycle();
+
+      expect(handler.discardConnection).not.toHaveBeenCalled();
+    });
+
+    it("does nothing without peers", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+      listLiveInstances.mockResolvedValue([instanceEntry("test-instance")]);
+
+      await coordinator.runRebalanceCycle();
+
+      expect(handler.discardConnection).not.toHaveBeenCalled();
+    });
+
+    it("defers to an in-progress failover (recent claims)", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      // A claim cycle that lands claims marks lastClaimAt = now.
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+0")]);
+      await coordinator.runClaimCycle();
+
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+
+      await coordinator.runRebalanceCycle();
+
+      expect(handler.discardConnection).not.toHaveBeenCalled();
+    });
+
+    it("never moves a pending-QR connection", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+      isRedisAuthStatePaired.mockResolvedValue(false);
+
+      await coordinator.runRebalanceCycle();
+
+      expect(handler.discardConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("handoff tombstones in the claim cycle", () => {
+    it("skips phones whose tombstone names another instance", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+5511999")]);
+      getHandoffTarget.mockResolvedValue("peer-instance");
+
+      await coordinator.runClaimCycle();
+
+      expect(acquireLease).not.toHaveBeenCalled();
+    });
+
+    it("claims a phone directed at itself even past the fair-share cap", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+1").add("+2");
+      const coordinator = makeCoordinator(handler);
+      getRedisSavedAuthStateIds.mockResolvedValue(
+        ["+1", "+2", "+3", "+4"].map(savedEntry),
+      );
+      listLiveInstances.mockResolvedValue([
+        instanceEntry("test-instance"),
+        instanceEntry("peer-instance"),
+      ]);
+      // fairShare = 2 and we already hold 2 — but +3 is directed at us.
+      getHandoffTarget.mockImplementation(async (phone: string) =>
+        phone === "+3" ? "test-instance" : null,
+      );
+
+      await coordinator.runClaimCycle();
+
+      expect(handler.connect).toHaveBeenCalledTimes(1);
+      expect(handler.connect.mock.calls[0][0]).toBe("+3");
     });
   });
 

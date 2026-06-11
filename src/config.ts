@@ -34,6 +34,9 @@ const {
   CLUSTER_RECONNECT_CONCURRENCY,
   CLUSTER_UNCLAIMED_GRACE_MS,
   CLUSTER_RELEASE_COOLDOWN_MS,
+  CLUSTER_REBALANCE_ENABLED,
+  CLUSTER_REBALANCE_RELEASE_INTERVAL_MS,
+  CLUSTER_REBALANCE_TOLERANCE,
   CLUSTER_HEARTBEAT_INTERVAL_MS,
   CLUSTER_INSTANCE_TTL_MS,
   CLUSTER_SHUTDOWN_TIMEOUT_MS,
@@ -58,6 +61,20 @@ function intFromEnv(
     throw new Error(`${name} must be an integer >= ${min}, got "${raw}"`);
   }
   return value;
+}
+
+function boolFromEnv(
+  name: string,
+  raw: string | undefined,
+  fallback: boolean,
+): boolean {
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  if (raw !== "true" && raw !== "false") {
+    throw new Error(`${name} must be "true" or "false", got "${raw}"`);
+  }
+  return raw === "true";
 }
 
 const config = {
@@ -158,6 +175,22 @@ const config = {
       "CLUSTER_RELEASE_COOLDOWN_MS",
       CLUSTER_RELEASE_COOLDOWN_MS,
       60_000,
+      { min: 0 },
+    ),
+    rebalanceEnabled: boolFromEnv(
+      "CLUSTER_REBALANCE_ENABLED",
+      CLUSTER_REBALANCE_ENABLED,
+      true,
+    ),
+    rebalanceReleaseIntervalMs: intFromEnv(
+      "CLUSTER_REBALANCE_RELEASE_INTERVAL_MS",
+      CLUSTER_REBALANCE_RELEASE_INTERVAL_MS,
+      10_000,
+    ),
+    rebalanceTolerance: intFromEnv(
+      "CLUSTER_REBALANCE_TOLERANCE",
+      CLUSTER_REBALANCE_TOLERANCE,
+      1,
       { min: 0 },
     ),
     heartbeatIntervalMs: intFromEnv(
