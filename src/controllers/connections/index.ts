@@ -259,23 +259,36 @@ const connectionsController = new Elysia({
           ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
           : null;
 
-      const result = await withIdempotency(idempotencyKey, async () => {
-        const { messageContent: builtContent, quoted } =
-          buildMessageContent(messageContent);
+      let result: Awaited<ReturnType<typeof withIdempotency>>;
+      try {
+        result = await withIdempotency(idempotencyKey, async () => {
+          const { messageContent: builtContent, quoted } =
+            buildMessageContent(messageContent);
 
-        const response = await baileys.sendMessage(phoneNumber, {
-          jid,
-          messageContent: builtContent,
-          quoted,
+          const response = await baileys.sendMessage(phoneNumber, {
+            jid,
+            messageContent: builtContent,
+            quoted,
+          });
+
+          if (!response) return null;
+
+          return {
+            key: response.key,
+            messageTimestamp: response.messageTimestamp,
+          };
         });
-
-        if (!response) return null;
-
-        return {
-          key: response.key,
-          messageTimestamp: response.messageTimestamp,
-        };
-      });
+      } catch (e) {
+        // The phone has no live socket on this instance (never connected, or
+        // dropped mid-request). Surface it as 404 instead of a generic 500 so
+        // callers can distinguish "not connected" from a real send failure.
+        // withIdempotency already released the lock on throw, so a retry after
+        // reconnect is free to proceed.
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not connected", { status: 404 });
+        }
+        throw e;
+      }
 
       if (result.status === "processing") {
         return new Response("Message is already being processed", {
@@ -310,6 +323,9 @@ const connectionsController = new Elysia({
                 }),
               },
             },
+          },
+          404: {
+            description: "Phone number not connected",
           },
           409: {
             description: "Message is already being processed",

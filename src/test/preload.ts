@@ -43,6 +43,27 @@ const mockRedis = {
     const regex = new RegExp(`^${pattern.replace(/\*/g, ".*")}$`);
     return Array.from(hashData.keys()).filter((k) => regex.test(k));
   }),
+  // Mirrors node-redis v6: yields SCAN reply batches (arrays of keys), not
+  // individual keys. Walks the whole emulated keyspace (hashes + strings) so
+  // it faithfully covers both call sites (authState hashes, instance strings).
+  scanIterator: (options?: { MATCH?: string; COUNT?: number }) => {
+    const pattern = options?.MATCH ?? "*";
+    // Escape regex metacharacters so only "*" acts as a wildcard, matching
+    // Redis glob semantics (a literal "." must not become "any char").
+    const regex = new RegExp(
+      `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === "*" ? ".*" : `\\${c}`))}$`,
+    );
+    const allKeys = [...hashData.keys(), ...stringData.keys()].filter((k) =>
+      regex.test(k),
+    );
+    const batchSize = options?.COUNT ?? 250;
+    async function* generate() {
+      for (let i = 0; i < allKeys.length; i += batchSize) {
+        yield allKeys.slice(i, i + batchSize);
+      }
+    }
+    return generate();
+  },
   get: mock(async (key: string) => {
     return stringData.get(key) ?? null;
   }),
@@ -88,6 +109,21 @@ const mockRedis = {
     ) => {
       const keys = options?.keys ?? [];
       const args = options?.arguments ?? [];
+
+      // steal-if-stale idempotency lock (compare-and-set): KEYS=[key],
+      // ARGV=[expected, new, ttl]. Reclaims an orphaned "processing" marker
+      // only if it still matches the value observed by the caller.
+      if (script.includes("steal-if-stale")) {
+        const [key] = keys;
+        const [expected, newValue, ttl] = args;
+        if (stringData.get(key) === expected) {
+          stringData.set(key, newValue);
+          // Mirror the real SET ... EX: the reclaimed marker carries a TTL.
+          expirations.set(key, { type: "EX", value: Number(ttl) });
+          return 1;
+        }
+        return 0;
+      }
 
       // write-if-owner (auth state fencing): KEYS=[hash, lease], ARGV=[owner, ...pairs]
       if (script.includes("HSET")) {

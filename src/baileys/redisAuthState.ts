@@ -10,6 +10,7 @@ import { instanceId } from "@/cluster/identity";
 import { clusterKeys } from "@/cluster/keys";
 import logger from "@/lib/logger";
 import redis from "@/lib/redis";
+import { scanKeys } from "@/lib/scanKeys";
 
 const redisKeyPrefix = "@baileys-api:connections";
 
@@ -199,7 +200,7 @@ export async function getRedisAuthMetadata<T>(id: string): Promise<T | null> {
 export async function getRedisSavedAuthStateIds<T>(): Promise<
   Array<{ id: string; metadata: T }>
 > {
-  const keys = await redis.keys(`${redisKeyPrefix}:*:authState`);
+  const keys = await scanKeys(`${redisKeyPrefix}:*:authState`);
   const ids = keys.map((key) => key.split(":").at(-2) ?? "").filter(Boolean);
 
   const multi = redis.multi();

@@ -104,6 +104,16 @@ Operational requirements:
 - Pending-QR pairings are tied to the instance showing the QR code; they are excluded from failover/rebalance and restart via a new `POST /connections` if that instance dies.
 - One caveat on the **first** deploy of a lease-aware version over a non-lease version: the old container does not participate in the protocol, so that one rollout still shows the legacy reconnect churn. Subsequent deploys are clean.
 
+#### Workers across multiple hosts
+
+[`docker-compose.cluster.yml`](./docker-compose.cluster.yml) runs every service on one host, where the proxy reaches each worker by its Docker-network hostname (the default `WORKER_BASE_URL=http://<hostname>:<port>`). To spread workers across separate hosts (or VMs/regions), three things must hold:
+
+- **Every worker advertises a reachable address.** Set `WORKER_BASE_URL` explicitly on each worker to an address the proxy can reach from its host, e.g. `WORKER_BASE_URL=http://10.0.0.21:3025` (private IP or internal DNS name). The default container-hostname value only resolves inside a shared Docker network and will not work across hosts.
+- **All hosts share one Redis.** Workers and the proxy coordinate exclusively through Redis (leases, registry, route invalidation), so every node points `REDIS_URL` at the same instance. Keep it close to the workers — the Signal auth state reads/writes sit on the hot path.
+- **The network between nodes is private.** Inter-node traffic carries Signal auth state and proxied message payloads. Run it over a private network, VPN (e.g. WireGuard/Tailscale), or cloud VPC, and expose **only the proxy** to clients. Worker HTTP ports and Redis must never be publicly reachable — set `REDIS_PASSWORD` and firewall those ports to the cluster's own hosts.
+
+Example: a proxy on host A (`WORKER_BASE_URL` unused), workers on hosts B and C each with `ROLE=worker`, a distinct `INSTANCE_ID`, `WORKER_BASE_URL` set to their private IP, and all three sharing `REDIS_URL`/`REDIS_PASSWORD`. The proxy resolves ownership from Redis and forwards to whichever worker holds the phone, regardless of host.
+
 ## Development Setup
 
 1.  **Clone the repository.**
