@@ -296,8 +296,11 @@ export class ClusterCoordinator {
         }
         this.heldLeaseEpochs.set(id, acquired.epoch);
         this.firstSeenUnleasedAt.delete(id);
-        this.claimedAt.set(id, now);
-        this.lastClaimAt = now;
+        // Acquisition-time clock, not the cycle-start one: a long scan would
+        // backdate these and let rebalance stop deferring mid-failover.
+        const claimedNow = this.now();
+        this.claimedAt.set(id, claimedNow);
+        this.lastClaimAt = claimedNow;
         void registry.publishOwnershipChanged(id);
         claimed.push({ id, metadata, epoch: acquired.epoch });
       } catch (error) {
