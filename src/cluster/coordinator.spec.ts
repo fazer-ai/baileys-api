@@ -533,6 +533,7 @@ describe("ClusterCoordinator", () => {
           { ...instanceEntry("peer-a"), connectionCount: 0 },
           { ...instanceEntry("peer-b"), connectionCount: 0 },
         ]);
+        getLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
         const now = performance.now();
         phones.forEach((phone, i) => {
           // All actively trafficked — +1 least recently.

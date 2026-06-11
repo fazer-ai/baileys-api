@@ -194,6 +194,9 @@ const config = {
       1,
       { min: 0 },
     ),
+    // 0 disables the timing component of idle detection: every connection
+    // without in-flight webhooks counts as idle (useful in tests, surprising
+    // in production).
     rebalanceIdleThresholdMs: intFromEnv(
       "CLUSTER_REBALANCE_IDLE_THRESHOLD_MS",
       CLUSTER_REBALANCE_IDLE_THRESHOLD_MS,

@@ -921,6 +921,9 @@ export class BaileysConnection {
   }
 
   private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
+    // Edits, deletions and reactions are conversation activity too — a
+    // connection seeing them must not look idle to the rebalancer.
+    this.markTraffic();
     this.sendToWebhook(
       {
         event: "messages.update",
