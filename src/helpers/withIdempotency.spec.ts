@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import { clusterKeys } from "@/cluster/keys";
 import redis from "@/lib/redis";
 import { withIdempotency } from "./withIdempotency";
 
 const stringData = (redis as any).__stringData as Map<string, string>;
+
+// instanceId resolves to "test-instance" via the mocked config in preload.ts.
+const SELF = "test-instance";
+
+const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 describe("withIdempotency", () => {
   afterEach(() => {
@@ -72,6 +78,93 @@ describe("withIdempotency", () => {
 
       expect(result).toEqual({ status: "processing" });
       expect(fn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("in-flight marker carries the holder instance id", () => {
+    it("tags the processing marker with this instance id while running", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fn = mock(async () => {
+        await gate;
+        return { id: "msg_1" };
+      });
+
+      const pending = withIdempotency("test-key", fn);
+      await flushMicrotasks();
+
+      expect(stringData.get("test-key")).toBe(`processing:${SELF}`);
+
+      release();
+      const result = await pending;
+      expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
+    });
+  });
+
+  describe("orphaned lock reclaim (dead holder)", () => {
+    it("steals a lock held by a dead instance and executes", async () => {
+      // Marker left behind by a worker that crashed mid-send. The holder is
+      // not in the registry, so it is safe to reclaim.
+      stringData.set("test-key", "processing:dead-instance");
+      const fn = mock(async () => ({ id: "msg_1" }));
+
+      const result = await withIdempotency("test-key", fn);
+
+      expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(stringData.get("test-key")).toBe(JSON.stringify({ id: "msg_1" }));
+    });
+
+    it("does not steal a lock held by a live instance", async () => {
+      stringData.set("test-key", "processing:live-instance");
+      // A heartbeat key makes the holder appear alive in the registry.
+      stringData.set(clusterKeys.instance("live-instance"), "{}");
+      const fn = mock(async () => ({ id: "msg_2" }));
+
+      const result = await withIdempotency("test-key", fn);
+
+      expect(result).toEqual({ status: "processing" });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it("does not steal its own in-flight lock", async () => {
+      stringData.set("test-key", `processing:${SELF}`);
+      const fn = mock(async () => ({ id: "msg_2" }));
+
+      const result = await withIdempotency("test-key", fn);
+
+      expect(result).toEqual({ status: "processing" });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it("does not steal a legacy bare 'processing' marker (unknown holder)", async () => {
+      stringData.set("test-key", "processing");
+      const fn = mock(async () => ({ id: "msg_2" }));
+
+      const result = await withIdempotency("test-key", fn);
+
+      expect(result).toEqual({ status: "processing" });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it("does not steal when liveness cannot be confirmed", async () => {
+      stringData.set("test-key", "processing:dead-instance");
+      const originalExists = redis.exists;
+      (redis as any).exists = mock(async () => {
+        throw new Error("Redis down");
+      });
+
+      try {
+        const fn = mock(async () => ({ id: "msg_2" }));
+        const result = await withIdempotency("test-key", fn);
+
+        expect(result).toEqual({ status: "processing" });
+        expect(fn).not.toHaveBeenCalled();
+      } finally {
+        (redis as any).exists = originalExists;
+      }
     });
   });
 

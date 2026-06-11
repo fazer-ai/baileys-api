@@ -4,6 +4,7 @@ import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import redis from "@/lib/redis";
+import { scanKeys } from "@/lib/scanKeys";
 
 export interface InstanceInfo {
   instanceId: string;
@@ -36,7 +37,7 @@ export async function heartbeat(info: {
 }
 
 export async function listLiveInstances(): Promise<InstanceInfo[]> {
-  const keys = await redis.keys(clusterKeys.instancePattern);
+  const keys = await scanKeys(clusterKeys.instancePattern);
   if (keys.length === 0) {
     return [];
   }
