@@ -368,6 +368,9 @@ describe("ClusterCoordinator", () => {
       setHandoffTarget.mockImplementation(async () => {
         order.push("handoff");
       });
+      setReleaseCooldown.mockImplementation(async () => {
+        order.push("cooldown");
+      });
 
       await coordinator.runRebalanceCycle();
 
@@ -382,7 +385,8 @@ describe("ClusterCoordinator", () => {
         "peer-instance",
       );
       // Socket down → cooldown/tombstone → lease released. Never the reverse.
-      expect(order.indexOf("discard")).toBeLessThan(order.indexOf("release"));
+      expect(order.indexOf("discard")).toBeLessThan(order.indexOf("cooldown"));
+      expect(order.indexOf("cooldown")).toBeLessThan(order.indexOf("release"));
       expect(order.indexOf("handoff")).toBeLessThan(order.indexOf("release"));
     });
 

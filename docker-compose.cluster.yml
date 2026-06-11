@@ -34,6 +34,7 @@ services:
       redis:
         condition: service_healthy
     restart: always
+    stop_grace_period: 45s
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3025/cluster/health"]
       interval: 20s
