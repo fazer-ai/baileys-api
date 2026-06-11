@@ -12,17 +12,13 @@ import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import {
-  getRedisAuthMetadata,
-  getRedisSavedAuthStateIds,
-} from "@/baileys/redisAuthState";
+import { getRedisAuthMetadata } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   FetchMessageHistoryOptions,
   MessageKeyWithId,
   SendReceiptsOptions,
 } from "@/baileys/types";
-import { asyncSleep } from "@/helpers/asyncSleep";
 import logger from "@/lib/logger";
 
 type ConnectionFactory = (
@@ -33,6 +29,10 @@ type ConnectionFactory = (
 export class BaileysConnectionsHandler {
   private connections: Record<string, BaileysConnection> = {};
   private inFlightOps: Record<string, Promise<void>> = {};
+  // Discarded connections whose webhook deliveries (including retries) are
+  // still running. They left `connections` already, but the shutdown drain
+  // must keep seeing their in-flight count until it reaches zero.
+  private drainingWebhooks = new Set<BaileysConnection>();
   private createConnection: ConnectionFactory;
 
   constructor(createConnection?: ConnectionFactory) {
@@ -40,41 +40,51 @@ export class BaileysConnectionsHandler {
       createConnection || ((phone, opts) => new BaileysConnection(phone, opts));
   }
 
-  async reconnectFromAuthStore() {
-    const savedConnections =
-      await getRedisSavedAuthStateIds<
-        Omit<BaileysConnectionOptions, "phoneNumber" | "onConnectionClose">
-      >();
+  hasConnection(phoneNumber: string): boolean {
+    return Boolean(this.connections[phoneNumber]);
+  }
 
-    if (savedConnections.length === 0) {
-      logger.info("No saved connections to reconnect");
-      return;
+  getActivePhoneNumbers(): string[] {
+    return Object.keys(this.connections);
+  }
+
+  get size(): number {
+    return Object.keys(this.connections).length;
+  }
+
+  inFlightWebhookCount(): number {
+    for (const connection of this.drainingWebhooks) {
+      if (connection.inFlightWebhooks === 0) {
+        this.drainingWebhooks.delete(connection);
+      }
     }
-
-    logger.info(
-      "Reconnecting %d connections from auth store %o",
-      savedConnections.length,
-      savedConnections.map(({ id }) => id),
-    );
-
-    const CONCURRENCY = 5;
-    for (let i = 0; i < savedConnections.length; i += CONCURRENCY) {
-      const chunk = savedConnections.slice(i, i + CONCURRENCY);
-      await Promise.allSettled(
-        chunk.map(async ({ id, metadata }) => {
-          await asyncSleep(Math.floor(Math.random() * 100));
-          // Go through `connect` (not `spawnConnection` directly) so any
-          // existing entry under this number is reused via sendPresenceUpdate
-          // instead of torn down. Today this only runs on boot when
-          // `connections` is empty, but the indirection makes the call safe
-          // against any future caller that runs it after startup.
-          await this.connect(id, {
-            isReconnect: true,
-            ...metadata,
-          });
-        }),
-      );
+    let sum = 0;
+    for (const connection of Object.values(this.connections)) {
+      sum += connection.inFlightWebhooks;
     }
+    for (const connection of this.drainingWebhooks) {
+      sum += connection.inFlightWebhooks;
+    }
+    return sum;
+  }
+
+  // Tears down the local socket WITHOUT touching the Redis auth state, so the
+  // identity can be picked up elsewhere. Used by the cluster coordinator for
+  // self-fencing (lease owned by another instance) and graceful handoff.
+  // Serialized through inFlightOps so it cannot interleave with a concurrent
+  // connect/logout for the same number.
+  async discardConnection(phoneNumber: string): Promise<void> {
+    await this.withInFlightOp(phoneNumber, async () => {
+      const connection = this.connections[phoneNumber];
+      if (!connection) {
+        return;
+      }
+      connection.discard();
+      delete this.connections[phoneNumber];
+      if (connection.inFlightWebhooks > 0) {
+        this.drainingWebhooks.add(connection);
+      }
+    });
   }
 
   // Drains any in-flight op for `phoneNumber`, reserves a fresh slot

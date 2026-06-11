@@ -1,5 +1,5 @@
 import app from "@/app";
-import baileys from "@/baileys";
+import coordinator from "@/cluster";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
@@ -26,36 +26,62 @@ const mediaCleanup = new MediaCleanupService({
   intervalMs: config.media.cleanupIntervalMs,
 });
 
-app.listen(config.port, () => {
-  logger.info(
-    `${config.packageInfo.name}@${config.packageInfo.version} running on ${app.server?.hostname}:${app.server?.port}`,
-  );
-  logger.info(
-    "Loaded config %s",
-    JSON.stringify(
-      deepSanitizeObject(config, { omitKeys: ["password"] }),
-      null,
-      2,
-    ),
-  );
-
-  if (config.media.cleanupEnabled) {
-    mediaCleanup.start();
+const bootstrap = async () => {
+  // Redis (and the coordinator loops on top of it) must be up before the
+  // HTTP listener opens — a node serving requests without coordination
+  // guarantees would hold sockets it can never lease. Fail fast instead.
+  try {
+    await initializeRedis();
+    coordinator.start();
+  } catch (error) {
+    logger.error("Redis initialization failed: %s", errorToString(error));
+    process.exit(1);
   }
 
-  initializeRedis().then(() =>
-    baileys.reconnectFromAuthStore().catch((error) => {
-      logger.error(
-        "Failed to reconnect from auth store: %s",
-        errorToString(error),
-      );
-    }),
-  );
-});
+  app.listen(config.port, () => {
+    logger.info(
+      `${config.packageInfo.name}@${config.packageInfo.version} running on ${app.server?.hostname}:${app.server?.port}`,
+    );
+    logger.info(
+      "Loaded config %s",
+      JSON.stringify(
+        deepSanitizeObject(config, { omitKeys: ["password"] }),
+        null,
+        2,
+      ),
+    );
 
-const shutdown = (signal: string) => {
+    if (config.media.cleanupEnabled) {
+      mediaCleanup.start();
+    }
+  });
+};
+
+void bootstrap();
+
+let shuttingDown = false;
+const shutdown = async (signal: string) => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
   logger.info(`Received ${signal}, shutting down gracefully...`);
   mediaCleanup.stop();
+
+  // Hard stop in case the handoff wedges (e.g. Redis unreachable mid-drain) —
+  // better to exit and let lease TTLs run the failover than to hang past the
+  // orchestrator's kill timeout with sockets half-closed.
+  const hardStop = setTimeout(() => {
+    logger.error("Graceful shutdown timed out, exiting");
+    process.exit(0);
+  }, config.cluster.shutdownTimeoutMs + 5_000);
+  hardStop.unref();
+
+  try {
+    await coordinator.shutdown();
+  } catch (error) {
+    logger.error("Error during shutdown: %s", errorToString(error));
+  }
   process.exit(0);
 };
 

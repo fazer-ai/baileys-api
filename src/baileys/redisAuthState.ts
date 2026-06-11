@@ -89,6 +89,22 @@ export async function useRedisAuthState(
   };
 }
 
+// A paired auth state has registered with WhatsApp (creds.me is set after the
+// QR scan completes). Unpaired states have nothing to resume — reconnecting
+// them only generates a fresh QR nobody is looking at.
+export async function isRedisAuthStatePaired(id: string): Promise<boolean> {
+  const data = await redis.hGet(`${redisKeyPrefix}:${id}:authState`, "creds");
+  if (!data) {
+    return false;
+  }
+  try {
+    const creds = JSON.parse(data) as { me?: { id?: string } };
+    return Boolean(creds?.me?.id);
+  } catch {
+    return false;
+  }
+}
+
 export async function getRedisAuthMetadata<T>(id: string): Promise<T | null> {
   const data = await redis.hGet(
     `${redisKeyPrefix}:${id}:authState`,

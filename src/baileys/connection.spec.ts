@@ -341,6 +341,114 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("connectionReplaced lease gate", () => {
+    const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
+    const conflictClosePayload = {
+      connection: "close" as const,
+      lastDisconnect: {
+        error: {
+          output: {
+            statusCode: 440,
+            payload: {
+              statusCode: 440,
+              error: "Unknown",
+              message: "Stream Errored (conflict)",
+            },
+          },
+          message: "Stream Errored (conflict)",
+        },
+      },
+    };
+
+    async function settle(makeSocket: ReturnType<typeof mock>) {
+      let prev = -1;
+      while (prev !== makeSocket.mock.calls.length) {
+        prev = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+    }
+
+    it("yields instead of reconnecting when the lease is owned by another instance", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "other-instance", epoch: 7 }),
+      );
+      fetchCalls.length = 0;
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      // No socket resurrection: the replacement is the legitimate owner.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      // And no reconnecting webhook — the new owner narrates from here on.
+      const reconnectingHits = fetchCalls.filter((c) =>
+        c.body?.includes('"connection":"reconnecting"'),
+      );
+      expect(reconnectingHits.length).toBe(0);
+    });
+
+    it("keeps the reconnect behavior when the lease is its own", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      // instanceId resolves to "test-instance" via the preload config mock.
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "test-instance", epoch: 7 }),
+      );
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
+
+    it("keeps the reconnect behavior when there is no lease", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
+
+    it("keeps the reconnect behavior when the lease read fails", async () => {
+      // A Redis outage must not self-fence a healthy socket: an unverifiable
+      // lease falls back to the plain reconnect/backoff path.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      (redis.get as any).mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
+  });
+
   describe("reconnect loop abort", () => {
     // Each `isNewLogin` connection.update routes through handleReconnecting
     // and bumps reconnectCount. Past the threshold (>10) the connection must

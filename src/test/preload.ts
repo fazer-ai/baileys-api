@@ -45,13 +45,28 @@ const mockRedis = {
     async (
       key: string,
       value: string,
-      options?: { NX?: boolean; EX?: number },
+      options?: { NX?: boolean; EX?: number; condition?: "NX" | "XX" },
     ) => {
-      if (options?.NX && stringData.has(key)) return null;
+      const nx = options?.NX || options?.condition === "NX";
+      if (nx && stringData.has(key)) return null;
       stringData.set(key, value);
       return "OK";
     },
   ),
+  incr: mock(async (key: string) => {
+    const next = (Number(stringData.get(key)) || 0) + 1;
+    stringData.set(key, String(next));
+    return next;
+  }),
+  exists: mock(async (key: string) => {
+    return stringData.has(key) || hashData.has(key) ? 1 : 0;
+  }),
+  pExpire: mock(async (_key: string, _ttlMs: number) => 1),
+  ping: mock(async () => "PONG"),
+  // Lua scripts are not emulated — specs that exercise script-backed paths
+  // (lease renew/release) install their own implementations via spyOn.
+  eval: mock(async (_script: string, _options?: unknown) => 1),
+  publish: mock(async (_channel: string, _message: string) => 0),
   multi: mock(() => {
     // Each multi() invocation owns its own command buffer. A shared module-level
     // buffer races when concurrent/interleaved multi() calls reset it mid-flight
@@ -182,6 +197,21 @@ mock.module("@/config", () => ({
     redis: {
       url: "redis://localhost:6379",
       password: "test-password",
+    },
+    cluster: {
+      role: "standalone" as "standalone" | "worker" | "proxy",
+      instanceId: "test-instance",
+      workerBaseUrl: undefined as string | undefined,
+      leaseTtlMs: 30_000,
+      leaseRenewIntervalMs: 10_000,
+      claimIntervalMs: 5_000,
+      claimJitterMs: 2_000,
+      reconnectConcurrency: 5,
+      unclaimedGraceMs: 30_000,
+      releaseCooldownMs: 60_000,
+      heartbeatIntervalMs: 5_000,
+      instanceTtlMs: 15_000,
+      shutdownTimeoutMs: 30_000,
     },
   },
 }));

@@ -4,6 +4,7 @@ import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
+import coordinator from "@/cluster";
 import {
   buildEditableMessageContent,
   buildMessageContent,
@@ -55,7 +56,9 @@ const connectionsController = new Elysia({
     async ({ params, body, apiKeyHash }) => {
       const { phoneNumber } = params;
 
-      await baileys.connect(phoneNumber, {
+      // Goes through the coordinator so the connect is backed by a lease:
+      // an explicit POST is authoritative and takes the identity over.
+      await coordinator.connectWithLease(phoneNumber, {
         ...body,
         apiKeyHash: apiKeyHash ?? undefined,
       });
@@ -1473,7 +1476,7 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
 
       try {
-        await baileys.logout(phoneNumber);
+        await coordinator.logoutWithLease(phoneNumber);
       } catch (e) {
         if (e instanceof BaileysNotConnectedError) {
           return new Response("Phone number not found", { status: 404 });
