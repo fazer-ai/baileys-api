@@ -80,7 +80,7 @@ O `docker-compose.coolify.yml` pode ser adaptado para outros ambientes Docker. V
 
 ### Escalando Horizontalmente (Múltiplas Instâncias)
 
-Rodar mais de uma instância contra o mesmo Redis é suportado através de uma topologia proxy + workers. Cada identidade do WhatsApp é possuída via um **lease** no Redis (renovado periodicamente, com self-fencing em caso de perda), então duas instâncias nunca disputam o mesmo número com loops de `conflict/replaced`.
+Rodar mais de uma instância no mesmo Redis é suportado por meio de uma topologia proxy + workers. Cada identidade do WhatsApp é possuída via um **lease** no Redis (renovado periodicamente, com self-fencing em caso de perda), então duas instâncias nunca disputam o mesmo número com loops de `conflict/replaced`.
 
 Roles, selecionadas pela variável de ambiente `ROLE`:
 
