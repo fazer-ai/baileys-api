@@ -29,7 +29,8 @@ services:
       - REDIS_URL=redis://redis:6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3025/cluster/health"]
@@ -50,7 +51,8 @@ services:
     volumes:
       - "media-worker-1:/app/media"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: always
     stop_grace_period: 45s
     healthcheck:
@@ -72,7 +74,8 @@ services:
     volumes:
       - "media-worker-2:/app/media"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     restart: always
     stop_grace_period: 45s
     healthcheck:
@@ -96,6 +99,16 @@ services:
     volumes:
       - "redis-data:/data"
     restart: always
+    healthcheck:
+      # Authenticates only when REDIS_PASSWORD is set, mirroring requirepass.
+      test:
+        [
+          "CMD-SHELL",
+          'redis-cli $${REDIS_PASSWORD:+-a "$$REDIS_PASSWORD"} --no-auth-warning ping | grep -q PONG',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   media-worker-1:
