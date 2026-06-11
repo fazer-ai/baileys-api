@@ -1,4 +1,4 @@
-import { instanceId } from "@/cluster/identity";
+import { incarnationId, instanceId } from "@/cluster/identity";
 import { isInstanceAlive } from "@/cluster/instanceRegistry";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
@@ -7,14 +7,21 @@ import redis from "@/lib/redis";
 const IDEMPOTENCY_TTL = 600;
 const PROCESSING_PREFIX = "processing:";
 
-// The in-flight marker now carries the holder's instance id so a different
+// The in-flight marker carries the holder's instance id AND a per-process
+// incarnation token ("processing:<instanceId>:<incarnationId>") so a different
 // instance can tell a genuinely-active lock from one orphaned by a crashed
 // holder. Without this, a worker that dies mid-send leaves the lock at
 // "processing" for the full IDEMPOTENCY_TTL (600s); after failover the new
-// owner cannot re-send that message until the TTL lapses. The legacy bare
-// "processing" value (written by pre-upgrade instances) is still recognized as
-// a marker, but with an unknown holder it is never stolen.
-const processingValue = () => `${PROCESSING_PREFIX}${instanceId}`;
+// owner cannot re-send that message until the TTL lapses. The incarnation
+// token additionally lets a process that restarts under a pinned INSTANCE_ID
+// reclaim a lock left by its own previous incarnation — same instanceId, but a
+// different incarnationId, so the registry (which the new incarnation has
+// already re-registered under that same id) cannot be consulted to prove the
+// old holder dead. The legacy bare "processing" value (written by pre-upgrade
+// instances) is still recognized as a marker, but with an unknown holder it is
+// never stolen.
+const processingValue = () =>
+  `${PROCESSING_PREFIX}${instanceId}:${incarnationId}`;
 
 // Atomic compare-and-set: only overwrite the orphaned marker if it is still the
 // exact value we observed, so two instances racing to reclaim the same dead
@@ -100,6 +107,11 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
       : { status: "processing" };
   }
 
+  // Our own genuine in-flight request (exact match incl. our incarnation).
+  if (current === processingValue()) {
+    return { status: "processing" };
+  }
+
   const holder = parseHolder(current);
   if (holder === null) {
     // Not a marker → a cached result.
@@ -110,42 +122,74 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
     }
   }
 
-  // A live holder (or our own concurrent request, or a legacy marker with no
-  // identifiable holder) is left alone.
-  if (holder === "" || holder === instanceId) {
+  // A legacy bare "processing" marker has no identifiable holder — leave it.
+  if (holder.instanceId === "") {
     return { status: "processing" };
   }
-  let alive: boolean;
-  try {
-    alive = await isInstanceAlive(holder);
-  } catch {
-    // Cannot confirm death → do not steal.
-    return { status: "processing" };
-  }
-  if (alive) {
-    return { status: "processing" };
+
+  // A marker from a previous incarnation of THIS process (same instanceId, but
+  // it died and we are its restart): definitively dead, reclaim immediately —
+  // the registry now points at us under that same id and would wrongly report
+  // it alive.
+  const isOwnDeadIncarnation =
+    holder.instanceId === instanceId &&
+    holder.incarnationId !== undefined &&
+    holder.incarnationId !== incarnationId;
+
+  if (!isOwnDeadIncarnation) {
+    let alive: boolean;
+    try {
+      alive = await isInstanceAlive(holder.instanceId);
+    } catch {
+      // Cannot confirm death → do not steal.
+      return { status: "processing" };
+    }
+    if (alive) {
+      return { status: "processing" };
+    }
   }
 
   // Holder is gone: reclaim the orphaned lock atomically.
   if (await stealLock(key, current)) {
     logger.info(
-      "[withIdempotency] reclaimed orphaned lock %s from dead instance %s",
+      "[withIdempotency] reclaimed orphaned lock %s from dead holder %s",
       key,
-      holder,
+      holder.incarnationId
+        ? `${holder.instanceId}:${holder.incarnationId}`
+        : holder.instanceId,
     );
     return { status: "owned" };
   }
   return { status: "processing" };
 }
 
-// Returns the holder instance id for an in-flight marker (empty string for the
-// legacy bare "processing" value), or null when the value is a cached result.
-function parseHolder(value: string): string | null {
-  if (value === "processing") return "";
-  if (value.startsWith(PROCESSING_PREFIX)) {
-    return value.slice(PROCESSING_PREFIX.length);
+interface Holder {
+  instanceId: string;
+  incarnationId: string | undefined;
+}
+
+// Parses an in-flight marker into its holder. Returns null when the value is a
+// cached result rather than a marker. The legacy bare "processing" value and
+// the pre-incarnation "processing:<instanceId>" form are both tolerated
+// (instanceId "" / incarnationId undefined respectively).
+function parseHolder(value: string): Holder | null {
+  if (value === "processing") {
+    return { instanceId: "", incarnationId: undefined };
   }
-  return null;
+  if (!value.startsWith(PROCESSING_PREFIX)) {
+    return null;
+  }
+  const rest = value.slice(PROCESSING_PREFIX.length);
+  // instanceId may itself contain ":" (user-supplied INSTANCE_ID), so the
+  // incarnation token is the segment after the LAST colon.
+  const sep = rest.lastIndexOf(":");
+  if (sep === -1) {
+    return { instanceId: rest, incarnationId: undefined };
+  }
+  return {
+    instanceId: rest.slice(0, sep),
+    incarnationId: rest.slice(sep + 1),
+  };
 }
 
 async function acquireLock(key: string): Promise<boolean> {

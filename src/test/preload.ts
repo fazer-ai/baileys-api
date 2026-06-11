@@ -111,9 +111,11 @@ const mockRedis = {
       // only if it still matches the value observed by the caller.
       if (script.includes("steal-if-stale")) {
         const [key] = keys;
-        const [expected, newValue] = args;
+        const [expected, newValue, ttl] = args;
         if (stringData.get(key) === expected) {
           stringData.set(key, newValue);
+          // Mirror the real SET ... EX: the reclaimed marker carries a TTL.
+          expirations.set(key, { type: "EX", value: Number(ttl) });
           return 1;
         }
         return 0;

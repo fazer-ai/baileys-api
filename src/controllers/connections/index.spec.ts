@@ -7,7 +7,12 @@ import connectionsController from "./index";
 // The send-message route maps a missing local socket to 404 (instead of a
 // generic 500) so callers can tell "phone not connected" from a real failure.
 describe("connectionsController send-message", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+
   beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
     // Dev mode bypasses the auth middleware, and standalone role skips the
     // worker 421 re-routing in onBeforeHandle.
     config.env = "development";
@@ -15,7 +20,8 @@ describe("connectionsController send-message", () => {
   });
 
   afterEach(() => {
-    config.env = "production";
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
   });
 
   const sendMessageRequest = (phone: string) =>

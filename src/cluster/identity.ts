@@ -8,6 +8,12 @@ export const instanceId =
   config.cluster.instanceId ||
   `${os.hostname()}-${Math.random().toString(36).slice(2, 8)}`;
 
+// Fresh on every process start, even when instanceId is pinned via INSTANCE_ID.
+// Lets a restarted process recognize a lock left by its own previous (dead)
+// incarnation: same instanceId, different incarnationId → safe to reclaim
+// without waiting for the registry TTL.
+export const incarnationId = Math.random().toString(36).slice(2, 10);
+
 export const role = config.cluster.role;
 
 // Address other instances (the proxy, mainly) can reach this worker at.
