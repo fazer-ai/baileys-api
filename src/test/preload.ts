@@ -48,7 +48,11 @@ const mockRedis = {
   // it faithfully covers both call sites (authState hashes, instance strings).
   scanIterator: (options?: { MATCH?: string; COUNT?: number }) => {
     const pattern = options?.MATCH ?? "*";
-    const regex = new RegExp(`^${pattern.replace(/\*/g, ".*")}$`);
+    // Escape regex metacharacters so only "*" acts as a wildcard, matching
+    // Redis glob semantics (a literal "." must not become "any char").
+    const regex = new RegExp(
+      `^${pattern.replace(/[.*+?^${}()|[\]\\]/g, (c) => (c === "*" ? ".*" : `\\${c}`))}$`,
+    );
     const allKeys = [...hashData.keys(), ...stringData.keys()].filter((k) =>
       regex.test(k),
     );
