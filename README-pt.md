@@ -93,7 +93,7 @@ Veja [`docker-compose.cluster.yml`](./docker-compose.cluster.yml) para um exempl
 Comportamento nos cenários comuns:
 
 - **Um worker cai** — seus leases expiram dentro de `CLUSTER_LEASE_TTL_MS` (padrão 30s); os sobreviventes reivindicam os números órfãos com concorrência de reconexão limitada e jitter, então um failover de 50 conexões procede em ondas em vez de uma tempestade.
-- **Um worker novo entra** — não rouba nada no boot (tudo está com lease). Workers sobrecarregados detectam que estão acima da fração justa do cluster e migram uma conexão por vez (com rate limit e handoff direcionado, para que a migração caia no worker subutilizado e nunca faça ping-pong). Uma migração 1→2 de 100 conexões equaliza gradualmente, cada número vendo uma única reconexão breve.
+- **Um worker novo entra** — não rouba nada no boot (tudo está com lease). Workers sobrecarregados detectam que estão acima da fração justa do cluster e migram uma conexão por vez (com rate limit e handoff direcionado, para que a migração caia no worker subutilizado e nunca faça ping-pong). Uma migração 1→2 de 100 conexões equaliza gradualmente (~8 minutos nos intervalos padrão), cada número vendo uma única reconexão breve.
 - **Rolling deploy** — suba o container novo antes de parar o antigo; o worker novo espera (os leases arbitram), e o handoff do SIGTERM do antigo transfere as conexões em segundos com zero eventos de `conflict/replaced`. Garanta que o stop grace period do orquestrador exceda `CLUSTER_SHUTDOWN_TIMEOUT_MS`.
 - **Redis cai** — os workers mantêm seus sockets (mensagens continuam fluindo) e pausam reivindicações; na recuperação, cada worker reafirma os leases que já possui, sem reconexões.
 

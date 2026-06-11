@@ -93,7 +93,7 @@ See [`docker-compose.cluster.yml`](./docker-compose.cluster.yml) for a complete 
 Behavior under the common scenarios:
 
 - **A worker crashes** — its leases expire within `CLUSTER_LEASE_TTL_MS` (default 30s); survivors claim the orphaned phones with limited reconnect concurrency and jitter, so a 50-connection failover proceeds in waves instead of a storm.
-- **A new worker joins** — it steals nothing at boot (everything is leased). Overloaded workers detect they are above the cluster fair share and migrate one connection at a time (rate-limited, with a directed handoff so the migration lands on the underloaded worker and never ping-pongs). A 100-connection 1→2 migration equalizes gradually, each phone seeing a single brief reconnect.
+- **A new worker joins** — it steals nothing at boot (everything is leased). Overloaded workers detect they are above the cluster fair share and migrate one connection at a time (rate-limited, with a directed handoff so the migration lands on the underloaded worker and never ping-pongs). A 100-connection 1→2 migration equalizes gradually (~8 minutes at default intervals), each phone seeing a single brief reconnect.
 - **Rolling deploy** — bring the new container up before stopping the old one; the new worker waits (leases arbitrate), and the old worker's SIGTERM handoff transfers connections in seconds with zero `conflict/replaced` events. Make sure the orchestrator's stop grace period exceeds `CLUSTER_SHUTDOWN_TIMEOUT_MS`.
 - **Redis goes down** — workers keep their sockets (messages keep flowing) and pause claims; on recovery each worker re-asserts the leases it already holds, with no reconnects.
 
