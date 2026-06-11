@@ -463,8 +463,22 @@ export class ClusterCoordinator {
     // Compare-and-delete on the epoch held since the claim: if ownership
     // already moved (or we re-acquired under a newer epoch), the release
     // no-ops instead of dropping someone else's lease.
-    await this.releaseHeldLease(victim);
-    void registry.publishOwnershipChanged(victim);
+    try {
+      await this.releaseHeldLease(victim);
+    } catch (error) {
+      // Socket already gone but Redis still lists us as owner: bounded by the
+      // lease TTL (the victim left the renew set with the discard). Treat the
+      // transport failure as degradation and stop shedding more load on top.
+      this.redisDegraded = true;
+      logger.warn(
+        "[coordinator] lease release failed after discard for %s, pausing rebalances: %s",
+        victim,
+        errorToString(error),
+      );
+      return;
+    } finally {
+      void registry.publishOwnershipChanged(victim);
+    }
     // Post-release clock, not the cycle-start one: the discard above can be
     // slow, and the throttle window must start when the release lands.
     this.lastRebalanceReleaseAt = this.now();
