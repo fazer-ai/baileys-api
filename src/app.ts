@@ -3,6 +3,7 @@ import swagger from "@elysiajs/swagger";
 import Elysia from "elysia";
 import config from "@/config";
 import adminController from "@/controllers/admin";
+import clusterController from "@/controllers/cluster";
 import connectionsController from "@/controllers/connections";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
@@ -89,6 +90,10 @@ const app = new Elysia()
             name: "Media",
             description: "Retrieve media content from a message",
           },
+          {
+            name: "Cluster",
+            description: "Instance health and cluster identity",
+          },
         ],
         components: {
           securitySchemes: {
@@ -106,7 +111,8 @@ const app = new Elysia()
   .use(statusController)
   .use(adminController)
   .use(connectionsController)
-  .use(mediaController);
+  .use(mediaController)
+  .use(clusterController);
 
 if (config.env === "development") {
   app.use(cors());

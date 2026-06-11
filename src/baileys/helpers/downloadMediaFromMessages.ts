@@ -1,3 +1,4 @@
+import { unlink } from "node:fs/promises";
 import path from "node:path";
 import {
   type BaileysEventMap,
@@ -7,8 +8,12 @@ import {
 } from "@whiskeysockets/baileys";
 import { file } from "bun";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
+import { instanceId } from "@/cluster/identity";
+import { mediaOwnerKey } from "@/cluster/keys";
+import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
+import redis from "@/lib/redis";
 
 type MediaMessage =
   | proto.Message.IImageMessage
@@ -60,11 +65,53 @@ export async function downloadMediaFromMessages(
           message.audioMessage.mimetype = "audio/ogg; codecs=opus";
         }
 
+        const filePath = path.join(mediaDir, `${key.id}`);
+        await file(filePath).write(fileBuffer);
+
+        // The file lives on this instance's local disk; record who has it so
+        // a proxy can route GET /media/:messageId here. With cleanup enabled
+        // the TTL covers the disk window padded by one sweep interval — a
+        // file only leaves the disk when the NEXT cleanup pass runs, so the
+        // routing key must outlive maxAgeHours by up to that long. With
+        // cleanup disabled the file is retained indefinitely, so the routing
+        // key must persist too.
+        try {
+          await redis.set(
+            mediaOwnerKey(key.id),
+            instanceId,
+            config.media.cleanupEnabled
+              ? {
+                  expiration: {
+                    type: "EX",
+                    value:
+                      config.media.maxAgeHours * 3600 +
+                      Math.ceil(config.media.cleanupIntervalMs / 1000),
+                  },
+                }
+              : undefined,
+          );
+        } catch (error) {
+          if (config.cluster.role === "worker") {
+            // Behind a proxy the owner key is the only route to this file —
+            // without it the blob is unreachable garbage. Remove it and fail
+            // the download so the error is visible instead of silent.
+            await unlink(filePath).catch(() => {});
+            throw error;
+          }
+          // Standalone serves media straight from local disk; the key is
+          // only a routing hint, so keep the file and just log.
+          logger.warn(
+            "Failed to record media owner for %s: %s",
+            key.id,
+            errorToString(error),
+          );
+        }
+
+        // Populated only after the success path: when the worker rejection
+        // above fires, the message must not be reported as downloaded.
         if (options?.includeMedia) {
           downloadedMedia[key.id] = fileBuffer.toString("base64");
         }
-
-        await file(path.join(mediaDir, `${key.id}`)).write(fileBuffer);
       }),
     );
 

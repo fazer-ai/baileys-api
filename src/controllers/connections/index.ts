@@ -5,6 +5,8 @@ import {
   BaileysNotConnectedError,
 } from "@/baileys/connection";
 import coordinator from "@/cluster";
+import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
+import { resolveMisdirectedRequest } from "@/cluster/workerRouting";
 import {
   buildEditableMessageContent,
   buildMessageContent,
@@ -33,35 +35,82 @@ const connectionsController = new Elysia({
         description:
           "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key.",
       },
+      421: {
+        description:
+          "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+        headers: {
+          "x-baileys-owner": {
+            description: "Instance id of the connection owner",
+            schema: { type: "string" },
+          },
+        },
+      },
     },
   },
 })
   .use(authMiddleware)
-  .onBeforeHandle(async ({ params, apiKeyHash, set }) => {
+  .onBeforeHandle(async ({ params, apiKeyHash, set, request, path }) => {
     const phoneNumber = (params as { phoneNumber?: string })?.phoneNumber;
-    if (phoneNumber) {
-      try {
-        await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
-      } catch (e) {
-        if (e instanceof BaileysConnectionForbiddenError) {
-          set.status = 403;
-          return { error: "Forbidden", message: e.message };
-        }
-        throw e;
+    if (!phoneNumber) {
+      return;
+    }
+
+    // Worker role: a request for a phone owned by another live instance is
+    // answered with 421 so the proxy invalidates its route cache and
+    // re-sends to the owner. This runs BEFORE the access check: during a
+    // lease transition the local metadata (apiKeyHash) can lag the new
+    // owner's writes, and answering 403 off that stale copy would mask the
+    // misdirect the proxy knows how to recover from.
+    // POST /connections/:phone is exempt — it is an explicit takeover and
+    // resolves ownership in connectWithLease (409 when the owner is alive).
+    const isConnectTakeover =
+      request.method === "POST" &&
+      decodeURIComponent(path) === `/connections/${phoneNumber}`;
+    if (!isConnectTakeover) {
+      const owner = await resolveMisdirectedRequest(phoneNumber);
+      if (owner) {
+        set.status = 421;
+        set.headers["x-baileys-owner"] = owner;
+        return {
+          error: "Misdirected Request",
+          message: "Connection is owned by another instance",
+        };
       }
+    }
+
+    try {
+      await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
+    } catch (e) {
+      if (e instanceof BaileysConnectionForbiddenError) {
+        set.status = 403;
+        return { error: "Forbidden", message: e.message };
+      }
+      throw e;
     }
   })
   .post(
     "/:phoneNumber",
-    async ({ params, body, apiKeyHash }) => {
+    async ({ params, body, apiKeyHash, set }) => {
       const { phoneNumber } = params;
 
       // Goes through the coordinator so the connect is backed by a lease:
       // an explicit POST is authoritative and takes the identity over.
-      await coordinator.connectWithLease(phoneNumber, {
-        ...body,
-        apiKeyHash: apiKeyHash ?? undefined,
-      });
+      try {
+        await coordinator.connectWithLease(phoneNumber, {
+          ...body,
+          apiKeyHash: apiKeyHash ?? undefined,
+        });
+      } catch (e) {
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another live instance",
+          };
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,
@@ -115,6 +164,16 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Connection initiated",
+          },
+          409: {
+            description:
+              "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header); a proxy re-routes the takeover there instead of stealing a healthy socket.",
+            headers: {
+              "x-baileys-owner": {
+                description: "Instance id of the connection owner",
+                schema: { type: "string" },
+              },
+            },
           },
         },
       },

@@ -18,6 +18,19 @@ type StoredMetadata = Omit<
   "phoneNumber" | "onConnectionClose"
 >;
 
+// A POST /connections reached a worker while another LIVE instance owns the
+// phone. The controller surfaces this as 409 + x-baileys-owner so the proxy
+// can re-route the request to the owner instead of force-stealing the
+// identity out from under a healthy socket.
+export class BaileysConnectionOwnedElsewhereError extends Error {
+  readonly ownerInstanceId: string;
+
+  constructor(ownerInstanceId: string) {
+    super(`Connection is owned by live instance ${ownerInstanceId}`);
+    this.ownerInstanceId = ownerInstanceId;
+  }
+}
+
 export interface CoordinatorOptions {
   claimIntervalMs: number;
   claimJitterMs: number;
@@ -205,7 +218,11 @@ export class ClusterCoordinator {
     const candidates = shuffle(
       saved.filter(({ id }) => !this.handler.hasConnection(id)),
     );
-    const claimed: Array<{ id: string; metadata: StoredMetadata }> = [];
+    const claimed: Array<{
+      id: string;
+      metadata: StoredMetadata;
+      epoch: number;
+    }> = [];
 
     for (const { id, metadata } of candidates) {
       // SIGTERM can land mid-scan; stop acquiring work the shutdown handoff
@@ -242,7 +259,7 @@ export class ClusterCoordinator {
         }
         this.heldLeaseEpochs.set(id, acquired.epoch);
         this.firstSeenUnleasedAt.delete(id);
-        claimed.push({ id, metadata });
+        claimed.push({ id, metadata, epoch: acquired.epoch });
       } catch (error) {
         logger.warn(
           "[coordinator] claim check failed for %s: %s",
@@ -275,16 +292,26 @@ export class ClusterCoordinator {
     for (let i = 0; i < claimed.length; i += reconnectConcurrency) {
       const chunk = claimed.slice(i, i + reconnectConcurrency);
       await Promise.allSettled(
-        chunk.map(async ({ id, metadata }) => {
+        chunk.map(async ({ id, metadata, epoch }) => {
           await asyncSleep(Math.floor(Math.random() * 100));
           if (this.draining) {
             await this.releaseHeldLease(id).catch(() => {});
+            return;
+          }
+          // Superseded while queued: a connectWithLease for the same phone
+          // re-acquired under a newer epoch. Reconnecting now would apply
+          // this cycle's stale StoredMetadata over the newer connection.
+          if (this.heldLeaseEpochs.get(id) !== epoch) {
             return;
           }
           try {
             await this.handler.connect(id, {
               isReconnect: true,
               ...metadata,
+              // From this cycle's acquireLease — webhooks must carry the
+              // epoch of the claim that authorized this socket, never a
+              // re-read that could observe a successor's lease.
+              leaseEpoch: epoch,
             });
           } catch (error) {
             logger.error(
@@ -368,15 +395,42 @@ export class ClusterCoordinator {
 
   // Explicit user intent (POST /connections) — takes the identity over even
   // if a lease exists. In standalone this matches today's single-instance
-  // semantics (the request is authoritative); the worker-role conflict
-  // handling (409 to a live owner) sits in the controller layer.
+  // semantics (the request is authoritative). In worker role, a lease held
+  // by another LIVE instance is not stolen: the caller gets
+  // BaileysConnectionOwnedElsewhereError and the proxy re-routes the request
+  // to the owner. A dead owner's lease is force-taken immediately instead of
+  // waiting for the TTL.
   async connectWithLease(
     phoneNumber: string,
     options: BaileysConnectionOptions,
   ) {
-    const lease = await leaseStore.forceAcquireLease(phoneNumber);
-    this.heldLeaseEpochs.set(phoneNumber, lease.epoch);
-    await this.handler.connect(phoneNumber, options);
+    if (config.cluster.role === "worker") {
+      const lease = await leaseStore.getLease(phoneNumber);
+      if (
+        lease &&
+        lease.owner !== instanceId &&
+        (await registry.isInstanceAlive(lease.owner))
+      ) {
+        throw new BaileysConnectionOwnedElsewhereError(lease.owner);
+      }
+    }
+    const acquired = await leaseStore.forceAcquireLease(phoneNumber);
+    this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
+    try {
+      await this.handler.connect(phoneNumber, {
+        ...options,
+        leaseEpoch: acquired.epoch,
+      });
+    } catch (error) {
+      // A lease held without a socket would keep routing 421s here until the
+      // TTL expires; release it so a retry can land anywhere.
+      await this.releaseHeldLease(phoneNumber).catch(() => {});
+      throw error;
+    }
+  }
+
+  get isDraining(): boolean {
+    return this.draining;
   }
 
   async logoutWithLease(phoneNumber: string) {
