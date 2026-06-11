@@ -8,7 +8,7 @@ const IDEMPOTENCY_TTL = 600;
 const PROCESSING_PREFIX = "processing:";
 
 // The in-flight marker carries the holder's instance id AND a per-process
-// incarnation token ("processing:<instanceId>:<incarnationId>") so a different
+// incarnation token ("processing:<instanceId>#<incarnationId>") so a different
 // instance can tell a genuinely-active lock from one orphaned by a crashed
 // holder. Without this, a worker that dies mid-send leaves the lock at
 // "processing" for the full IDEMPOTENCY_TTL (600s); after failover the new
@@ -20,8 +20,13 @@ const PROCESSING_PREFIX = "processing:";
 // old holder dead. The legacy bare "processing" value (written by pre-upgrade
 // instances) is still recognized as a marker, but with an unknown holder it is
 // never stolen.
+//
+// The incarnation is delimited with "#", not ":", so the split stays
+// unambiguous even when INSTANCE_ID itself contains colons (e.g. "host:port"):
+// the base36 incarnationId never contains "#", and "#" is far less likely than
+// ":" in a user-supplied id.
 const processingValue = () =>
-  `${PROCESSING_PREFIX}${instanceId}:${incarnationId}`;
+  `${PROCESSING_PREFIX}${instanceId}#${incarnationId}`;
 
 // Atomic compare-and-set: only overwrite the orphaned marker if it is still the
 // exact value we observed, so two instances racing to reclaim the same dead
@@ -155,7 +160,7 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
       "[withIdempotency] reclaimed orphaned lock %s from dead holder %s",
       key,
       holder.incarnationId
-        ? `${holder.instanceId}:${holder.incarnationId}`
+        ? `${holder.instanceId}#${holder.incarnationId}`
         : holder.instanceId,
     );
     return { status: "owned" };
@@ -180,9 +185,10 @@ function parseHolder(value: string): Holder | null {
     return null;
   }
   const rest = value.slice(PROCESSING_PREFIX.length);
-  // instanceId may itself contain ":" (user-supplied INSTANCE_ID), so the
-  // incarnation token is the segment after the LAST colon.
-  const sep = rest.lastIndexOf(":");
+  // The incarnation token is appended after "#". Splitting on "#" (rather than
+  // ":") keeps this unambiguous when instanceId contains colons. A legacy
+  // "processing:<instanceId>" marker has no "#" and parses as a bare instanceId.
+  const sep = rest.lastIndexOf("#");
   if (sep === -1) {
     return { instanceId: rest, incarnationId: undefined };
   }

@@ -9,7 +9,7 @@ const stringData = (redis as any).__stringData as Map<string, string>;
 // instanceId resolves to "test-instance" via the mocked config in preload.ts.
 const SELF = "test-instance";
 // The marker this process writes for its own in-flight work.
-const SELF_MARKER = `processing:${SELF}:${incarnationId}`;
+const SELF_MARKER = `processing:${SELF}#${incarnationId}`;
 
 const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -147,7 +147,7 @@ describe("withIdempotency", () => {
       // INSTANCE_ID. The registry now points at the live (current) process
       // under that id, so liveness cannot prove the old holder dead — the
       // incarnation mismatch does. No instance key is needed here.
-      stringData.set("test-key", `processing:${SELF}:stale-incarnation`);
+      stringData.set("test-key", `processing:${SELF}#stale-incarnation`);
       const fn = mock(async () => ({ id: "msg_1" }));
 
       const result = await withIdempotency("test-key", fn);
@@ -163,6 +163,21 @@ describe("withIdempotency", () => {
       stringData.set("test-key", SELF_MARKER);
       // A heartbeat key for ourselves should not change the outcome.
       stringData.set(clusterKeys.instance(SELF), "{}");
+      const fn = mock(async () => ({ id: "msg_2" }));
+
+      const result = await withIdempotency("test-key", fn);
+
+      expect(result).toEqual({ status: "processing" });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it("keeps a colon-containing instanceId intact (does not steal a live one)", async () => {
+      // The "#" delimiter must not be confused with colons inside the
+      // instanceId: holder is "host:9000", which is alive, so no steal. A
+      // naive ":" split would read the holder as "host" (not alive) and
+      // wrongly reclaim the lock.
+      stringData.set("test-key", "processing:host:9000#abc123");
+      stringData.set(clusterKeys.instance("host:9000"), "{}");
       const fn = mock(async () => ({ id: "msg_2" }));
 
       const result = await withIdempotency("test-key", fn);
