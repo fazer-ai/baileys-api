@@ -23,6 +23,9 @@
 services:
   proxy:
     image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
+    # The image ships no CMD (deploy tooling injects it); without this the
+    # container falls through to bun's CLI help and restart-loops.
+    command: ["bun", "start"]
     ports:
       - "3025:3025"
     environment:
@@ -43,6 +46,9 @@ services:
 
   worker-1:
     image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
+    # The image ships no CMD (deploy tooling injects it); without this the
+    # container falls through to bun's CLI help and restart-loops.
+    command: ["bun", "start"]
     environment:
       - NODE_ENV=production
       - ROLE=worker
@@ -66,6 +72,9 @@ services:
 
   worker-2:
     image: "ghcr.io/fazer-ai/baileys-api:${BAILEYS_API_IMAGE_TAG:-latest}"
+    # The image ships no CMD (deploy tooling injects it); without this the
+    # container falls through to bun's CLI help and restart-loops.
+    command: ["bun", "start"]
     environment:
       - NODE_ENV=production
       - ROLE=worker
