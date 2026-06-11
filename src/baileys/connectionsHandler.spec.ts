@@ -70,6 +70,7 @@ class MockBaileysConnection {
   options: any;
   _apiKeyHash: string | null;
   inFlightWebhooks = 0;
+  lastTrafficAt: number | null = null;
 
   constructor(phoneNumber: string, options: any) {
     this.phoneNumber = phoneNumber;
@@ -256,6 +257,16 @@ describe("BaileysConnectionsHandler", () => {
       ]);
       expect(handler.hasConnection("+5511999")).toBe(true);
       expect(handler.hasConnection("+5530000")).toBe(false);
+    });
+
+    it("exposes per-connection activity", async () => {
+      await handler.connect("+5511999", defaultOptions);
+
+      expect(handler.connectionActivity("+5511999")).toEqual({
+        inFlightWebhooks: 0,
+        lastTrafficAt: null,
+      });
+      expect(handler.connectionActivity("+5530000")).toBeNull();
     });
   });
 

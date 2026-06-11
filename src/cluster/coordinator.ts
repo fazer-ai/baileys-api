@@ -18,6 +18,11 @@ type StoredMetadata = Omit<
   "phoneNumber" | "onConnectionClose"
 >;
 
+// Above this multiple of the fair share, rebalance stops waiting for a quiet
+// window and migrates the least active connection. Keeps a cluster under
+// constant traffic from staying grossly unbalanced forever.
+const REBALANCE_FORCE_FACTOR = 2;
+
 // A POST /connections reached a worker while another LIVE instance owns the
 // phone. The controller surfaces this as 409 + x-baileys-owner so the proxy
 // can re-route the request to the owner instead of force-stealing the
@@ -42,6 +47,7 @@ export interface CoordinatorOptions {
   rebalanceEnabled: boolean;
   rebalanceReleaseIntervalMs: number;
   rebalanceTolerance: number;
+  rebalanceIdleThresholdMs: number;
 }
 
 // Owns the distributed side of connection lifecycle: which phone numbers this
@@ -102,6 +108,7 @@ export class ClusterCoordinator {
       rebalanceEnabled: config.cluster.rebalanceEnabled,
       rebalanceReleaseIntervalMs: config.cluster.rebalanceReleaseIntervalMs,
       rebalanceTolerance: config.cluster.rebalanceTolerance,
+      rebalanceIdleThresholdMs: config.cluster.rebalanceIdleThresholdMs,
       ...options,
     };
   }
@@ -430,17 +437,27 @@ export class ClusterCoordinator {
       return;
     }
 
-    const victim = await this.pickRebalanceVictim();
+    // Far above fair share (e.g. a 1→N migration under constant traffic),
+    // waiting for a quiet window could postpone balance indefinitely — force
+    // a migration of the least active connection instead.
+    const forced = myCount > fairShare * REBALANCE_FORCE_FACTOR;
+    const victim = await this.pickRebalanceVictim(forced);
     if (!victim) {
+      logger.debug(
+        "[coordinator] no idle connection to rebalance (%d held, fair share %d), deferring",
+        myCount,
+        fairShare,
+      );
       return;
     }
 
     logger.info(
-      "[coordinator] rebalancing %s to %s (%d held, fair share %d)",
+      "[coordinator] rebalancing %s to %s (%d held, fair share %d%s)",
       victim,
       target.instanceId,
       myCount,
       fairShare,
+      forced ? ", forced" : "",
     );
 
     // Order matters: socket closed BEFORE the lease is released, so the next
@@ -484,13 +501,66 @@ export class ClusterCoordinator {
     this.lastRebalanceReleaseAt = this.now();
   }
 
-  // Most recently claimed paired connection. Recent claims are the cheapest
-  // to move (least accumulated session warmth); pending-QR connections are
-  // never moved — the user is mid-pairing on THIS instance's QR code.
-  private async pickRebalanceVictim(): Promise<string | null> {
-    const phones = [...this.handler.getActivePhoneNumbers()].sort(
-      (a, b) => (this.claimedAt.get(b) ?? 0) - (this.claimedAt.get(a) ?? 0),
+  // Idle-aware victim selection. Migrating a connection costs a few seconds
+  // of gap — invisible on an idle connection, visible mid-conversation
+  // (presence lost, a racing send bounces to the client's retry). So:
+  // - prefer connections with no in-flight webhooks and no message traffic
+  //   within the idle threshold, tie-breaking by most recent claim (least
+  //   accumulated session warmth);
+  // - with no idle candidate, defer (return null) unless `forced`, in which
+  //   case the least recently active connection is moved anyway;
+  // - pending-QR connections are never moved — the user is mid-pairing on
+  //   THIS instance's QR code.
+  private async pickRebalanceVictim(forced: boolean): Promise<string | null> {
+    const now = this.now();
+    const candidates = this.handler
+      .getActivePhoneNumbers()
+      .map((phone) => ({
+        phone,
+        activity: this.handler.connectionActivity(phone),
+      }))
+      .filter(
+        (
+          candidate,
+        ): candidate is {
+          phone: string;
+          activity: NonNullable<
+            ReturnType<BaileysConnectionsHandler["connectionActivity"]>
+          >;
+        } => candidate.activity !== null,
+      );
+
+    const isIdle = (activity: {
+      inFlightWebhooks: number;
+      lastTrafficAt: number | null;
+    }) =>
+      activity.inFlightWebhooks === 0 &&
+      (activity.lastTrafficAt === null ||
+        now - activity.lastTrafficAt >= this.options.rebalanceIdleThresholdMs);
+
+    const idle = candidates
+      .filter(({ activity }) => isIdle(activity))
+      .sort(
+        (a, b) =>
+          (this.claimedAt.get(b.phone) ?? 0) -
+          (this.claimedAt.get(a.phone) ?? 0),
+      );
+    const pickedIdle = await this.firstPaired(idle.map(({ phone }) => phone));
+    if (pickedIdle || !forced) {
+      return pickedIdle;
+    }
+
+    // Forced path: least recently active first (null = never trafficked =
+    // oldest possible).
+    const byActivity = [...candidates].sort(
+      (a, b) =>
+        (a.activity.lastTrafficAt ?? Number.NEGATIVE_INFINITY) -
+        (b.activity.lastTrafficAt ?? Number.NEGATIVE_INFINITY),
     );
+    return this.firstPaired(byActivity.map(({ phone }) => phone));
+  }
+
+  private async firstPaired(phones: string[]): Promise<string | null> {
     for (const phone of phones) {
       try {
         if (await isRedisAuthStatePaired(phone)) {
@@ -662,7 +732,17 @@ export class ClusterCoordinator {
 
     await this.runHeartbeat();
 
-    const phones = this.handler.getActivePhoneNumbers();
+    // Idle connections hand off first; the active ones go last, buying their
+    // in-flight webhooks (and any racing sends) the most drain time.
+    const phones = [...this.handler.getActivePhoneNumbers()].sort((a, b) => {
+      const ta =
+        this.handler.connectionActivity(a)?.lastTrafficAt ??
+        Number.NEGATIVE_INFINITY;
+      const tb =
+        this.handler.connectionActivity(b)?.lastTrafficAt ??
+        Number.NEGATIVE_INFINITY;
+      return ta - tb;
+    });
     if (phones.length > 0) {
       logger.info(
         "[coordinator] releasing %d connection(s) for handoff",

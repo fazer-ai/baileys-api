@@ -519,6 +519,39 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("traffic tracking", () => {
+    it("starts with no traffic recorded", async () => {
+      await connection.connect();
+      expect(connection.lastTrafficAt).toBeNull();
+    });
+
+    it("marks traffic on incoming messages", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messages.upsert")!;
+
+      await handler({ type: "notify", messages: [] });
+
+      expect(connection.lastTrafficAt).not.toBeNull();
+    });
+
+    it("marks traffic on outgoing sends", async () => {
+      await connection.connect();
+
+      await connection.sendMessage("5511888@s.whatsapp.net", { text: "hi" });
+
+      expect(connection.lastTrafficAt).not.toBeNull();
+    });
+
+    it("marks traffic on receipt updates", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("message-receipt.update")!;
+
+      await handler([]);
+
+      expect(connection.lastTrafficAt).not.toBeNull();
+    });
+  });
+
   describe("post-discard auth write guard", () => {
     const authKey = "@baileys-api:connections:+5511999999999:authState";
 

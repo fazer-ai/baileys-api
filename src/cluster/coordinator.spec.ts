@@ -58,8 +58,13 @@ afterAll(() => {
 
 function makeHandlerMock() {
   const connections = new Set<string>();
+  const activity = new Map<
+    string,
+    { inFlightWebhooks: number; lastTrafficAt: number | null }
+  >();
   const handler = {
     connections,
+    activity,
     connect: mock(async (phone: string) => {
       connections.add(phone);
     }),
@@ -75,6 +80,10 @@ function makeHandlerMock() {
       return connections.size;
     },
     inFlightWebhookCount: () => 0,
+    connectionActivity: (phone: string) =>
+      connections.has(phone)
+        ? (activity.get(phone) ?? { inFlightWebhooks: 0, lastTrafficAt: null })
+        : null,
   };
   return handler;
 }
@@ -456,6 +465,89 @@ describe("ClusterCoordinator", () => {
       await coordinator.runRebalanceCycle();
 
       expect(handler.discardConnection).not.toHaveBeenCalled();
+    });
+
+    describe("idle awareness", () => {
+      it("prefers an idle victim over recently active connections", async () => {
+        const handler = makeHandlerMock();
+        const coordinator = makeCoordinator(handler);
+        setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+        const now = performance.now();
+        handler.activity.set("+1", { inFlightWebhooks: 0, lastTrafficAt: now });
+        handler.activity.set("+2", { inFlightWebhooks: 0, lastTrafficAt: now });
+        handler.activity.set("+3", { inFlightWebhooks: 0, lastTrafficAt: now });
+        // +4 never saw traffic — the only invisible migration.
+
+        await coordinator.runRebalanceCycle();
+
+        expect(handler.discardConnection).toHaveBeenCalledTimes(1);
+        expect(handler.discardConnection.mock.calls[0][0]).toBe("+4");
+      });
+
+      it("defers when every connection is mid-conversation", async () => {
+        const handler = makeHandlerMock();
+        const coordinator = makeCoordinator(handler);
+        // 4 held, fair share 2 — over share but not past the force factor
+        // (4 ≤ 2×2), so it waits for a quiet window.
+        setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+        const now = performance.now();
+        for (const phone of ["+1", "+2", "+3", "+4"]) {
+          handler.activity.set(phone, {
+            inFlightWebhooks: 0,
+            lastTrafficAt: now,
+          });
+        }
+
+        await coordinator.runRebalanceCycle();
+
+        expect(handler.discardConnection).not.toHaveBeenCalled();
+      });
+
+      it("treats in-flight webhooks as activity", async () => {
+        const handler = makeHandlerMock();
+        const coordinator = makeCoordinator(handler);
+        setupOverloaded(handler, ["+1", "+2", "+3", "+4"]);
+        for (const phone of ["+1", "+2", "+3", "+4"]) {
+          handler.activity.set(phone, {
+            inFlightWebhooks: 1,
+            lastTrafficAt: null,
+          });
+        }
+
+        await coordinator.runRebalanceCycle();
+
+        expect(handler.discardConnection).not.toHaveBeenCalled();
+      });
+
+      it("forces the least active migration far above the fair share", async () => {
+        const handler = makeHandlerMock();
+        const coordinator = makeCoordinator(handler);
+        const phones = ["+1", "+2", "+3", "+4", "+5", "+6", "+7", "+8"];
+        for (const phone of phones) {
+          handler.connections.add(phone);
+        }
+        getRedisSavedAuthStateIds.mockResolvedValue(phones.map(savedEntry));
+        // 3 live instances → fair share ceil(8/3) = 3; held 8 > 3×2 → forced.
+        listLiveInstances.mockResolvedValue([
+          instanceEntry("test-instance"),
+          { ...instanceEntry("peer-a"), connectionCount: 0 },
+          { ...instanceEntry("peer-b"), connectionCount: 0 },
+        ]);
+        getLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+        const now = performance.now();
+        phones.forEach((phone, i) => {
+          // All actively trafficked — +1 least recently.
+          handler.activity.set(phone, {
+            inFlightWebhooks: 0,
+            lastTrafficAt: now - 1000 + i,
+          });
+        });
+
+        await coordinator.runRebalanceCycle();
+
+        expect(handler.discardConnection).toHaveBeenCalledTimes(1);
+        expect(handler.discardConnection.mock.calls[0][0]).toBe("+1");
+      });
     });
   });
 

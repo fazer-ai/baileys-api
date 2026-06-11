@@ -37,6 +37,7 @@ const {
   CLUSTER_REBALANCE_ENABLED,
   CLUSTER_REBALANCE_RELEASE_INTERVAL_MS,
   CLUSTER_REBALANCE_TOLERANCE,
+  CLUSTER_REBALANCE_IDLE_THRESHOLD_MS,
   CLUSTER_HEARTBEAT_INTERVAL_MS,
   CLUSTER_INSTANCE_TTL_MS,
   CLUSTER_SHUTDOWN_TIMEOUT_MS,
@@ -191,6 +192,15 @@ const config = {
       "CLUSTER_REBALANCE_TOLERANCE",
       CLUSTER_REBALANCE_TOLERANCE,
       1,
+      { min: 0 },
+    ),
+    // 0 disables the timing component of idle detection: every connection
+    // without in-flight webhooks counts as idle (useful in tests, surprising
+    // in production).
+    rebalanceIdleThresholdMs: intFromEnv(
+      "CLUSTER_REBALANCE_IDLE_THRESHOLD_MS",
+      CLUSTER_REBALANCE_IDLE_THRESHOLD_MS,
+      300_000,
       { min: 0 },
     ),
     heartbeatIntervalMs: intFromEnv(
