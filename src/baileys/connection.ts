@@ -175,7 +175,7 @@ export class BaileysConnection {
     };
   }
 
-  updateOptions(options: BaileysConnectionOptions) {
+  async updateOptions(options: BaileysConnectionOptions) {
     this.clientName = options.clientName || "Chrome";
     this.webhookUrl = options.webhookUrl;
     this.webhookVerifyToken = options.webhookVerifyToken;
@@ -194,12 +194,12 @@ export class BaileysConnection {
 
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
-    this.persistMetadata();
+    await this.persistMetadata();
   }
 
-  private persistMetadata() {
+  private async persistMetadata() {
     const key = `@baileys-api:connections:${this.phoneNumber}:authState`;
-    redis.hSet(
+    await redis.hSet(
       key,
       "metadata",
       JSON.stringify({
@@ -404,6 +404,18 @@ export class BaileysConnection {
       );
     }
     this.socket = null;
+  }
+
+  // Terminal teardown for a connection that gives up on itself (e.g. a
+  // reconnect loop that never stabilizes). Unlike close(), preserves the
+  // Redis auth state so the same identity can be resumed later — by a new
+  // POST /connections or by another instance sharing this Redis. Unlike
+  // discard(), fires onConnectionClose so the handler evicts this instance
+  // from its registry.
+  private abort() {
+    const onConnectionClose = this.onConnectionClose;
+    this.discard();
+    onConnectionClose?.();
   }
 
   async sendMessage(
@@ -941,10 +953,14 @@ export class BaileysConnection {
     this.reconnectCount += 1;
     if (this.reconnectCount > 10) {
       logger.warn(
-        "[%s] [handleReconnecting] Reconnect count exceeded 10, resetting connection",
+        "[%s] [handleReconnecting] Reconnect count exceeded 10, aborting reconnection (auth state preserved)",
         this.phoneNumber,
       );
-      await this.close();
+      this.sendToWebhook({
+        event: "connection.update",
+        data: { error: "reconnect_loop_detected" },
+      });
+      this.abort();
       return;
     }
     this.sendToWebhook({

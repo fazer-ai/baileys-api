@@ -341,6 +341,82 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("reconnect loop abort", () => {
+    // Each `isNewLogin` connection.update routes through handleReconnecting
+    // and bumps reconnectCount. Past the threshold (>10) the connection must
+    // give up WITHOUT clearing the Redis auth state: the destructive close()
+    // used to DEL the shared authState hash, which in a multi-instance
+    // setup wipes the identity out from under the legitimate owner and
+    // forces a new QR scan.
+    it("preserves auth state, notifies the webhook, and evicts itself past the reconnect threshold", async () => {
+      let closeCalls = 0;
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        onConnectionClose: () => {
+          closeCalls += 1;
+        },
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      for (let i = 0; i < 11; i++) {
+        await handler({ isNewLogin: true });
+      }
+
+      // Auth state preserved: no DEL of the authState hash.
+      expect((redis.del as any).mock.calls.length).toBe(0);
+      // Handler eviction fired exactly once.
+      expect(closeCalls).toBe(1);
+
+      // The structured error webhook must reach the client.
+      while (
+        !fetchCalls.some((c) =>
+          c.body?.includes('"error":"reconnect_loop_detected"'),
+        )
+      ) {
+        await new Promise((r) => setImmediate(r));
+      }
+    });
+
+    it("does not resurrect the socket via the post-close reconnect after aborting", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      // Drive the count to the threshold with isNewLogin updates.
+      for (let i = 0; i < 10; i++) {
+        await handler({ isNewLogin: true });
+      }
+
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+      // Settle any pending fire-and-forget reconnects before snapshotting.
+      let prev = -1;
+      while (prev !== makeSocket.mock.calls.length) {
+        prev = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+      const callsBefore = makeSocket.mock.calls.length;
+
+      // The 11th increment arrives via a close event whose handler queues a
+      // fire-and-forget this.connect() right after handleReconnecting —
+      // abort() must have flagged the connection so that connect no-ops.
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      expect((redis.del as any).mock.calls.length).toBe(0);
+    });
+  });
+
   describe("#sendMessage", () => {
     it("throws BaileysNotConnectedError if not connected", async () => {
       await expect(
