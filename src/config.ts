@@ -37,6 +37,9 @@ const {
   CLUSTER_HEARTBEAT_INTERVAL_MS,
   CLUSTER_INSTANCE_TTL_MS,
   CLUSTER_SHUTDOWN_TIMEOUT_MS,
+  PROXY_ROUTE_CACHE_TTL_MS,
+  PROXY_REQUEST_TIMEOUT_MS,
+  PROXY_MAX_BODY_BYTES,
 } = process.env;
 
 // `Number(raw) || fallback` would collapse an explicit 0 into the fallback
@@ -172,6 +175,30 @@ const config = {
       CLUSTER_SHUTDOWN_TIMEOUT_MS,
       30_000,
       { min: 0 },
+    ),
+  },
+  proxy: {
+    routeCacheTtlMs: intFromEnv(
+      "PROXY_ROUTE_CACHE_TTL_MS",
+      PROXY_ROUTE_CACHE_TTL_MS,
+      5_000,
+    ),
+    // Above the worst-case worker operation: POST /connections (client
+    // version fetch + socket handshake) and send-message with audio
+    // preprocessing.
+    requestTimeoutMs: intFromEnv(
+      "PROXY_REQUEST_TIMEOUT_MS",
+      PROXY_REQUEST_TIMEOUT_MS,
+      75_000,
+    ),
+    // Bodies are buffered for 421/409 replay; the cap keeps a handful of
+    // concurrent large uploads from exhausting the proxy's memory. 64 MiB
+    // leaves headroom over chatwoot's default 40 MB attachment limit after
+    // base64 inflation (~54 MiB).
+    maxBodyBytes: intFromEnv(
+      "PROXY_MAX_BODY_BYTES",
+      PROXY_MAX_BODY_BYTES,
+      64 * 1024 * 1024,
     ),
   },
   media: {

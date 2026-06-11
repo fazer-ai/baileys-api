@@ -259,6 +259,7 @@ export class ClusterCoordinator {
         }
         this.heldLeaseEpochs.set(id, acquired.epoch);
         this.firstSeenUnleasedAt.delete(id);
+        void registry.publishOwnershipChanged(id);
         claimed.push({ id, metadata, epoch: acquired.epoch });
       } catch (error) {
         logger.warn(
@@ -278,6 +279,9 @@ export class ClusterCoordinator {
       // shutdown handoff cannot release them — do it here for the survivors.
       for (const { id } of claimed) {
         await this.releaseHeldLease(id).catch(() => {});
+        // The acquire above already announced this worker as owner; without
+        // a matching event, proxies would route here until TTL/421.
+        void registry.publishOwnershipChanged(id);
       }
       return;
     }
@@ -296,6 +300,7 @@ export class ClusterCoordinator {
           await asyncSleep(Math.floor(Math.random() * 100));
           if (this.draining) {
             await this.releaseHeldLease(id).catch(() => {});
+            void registry.publishOwnershipChanged(id);
             return;
           }
           // Superseded while queued: a connectWithLease for the same phone
@@ -321,6 +326,7 @@ export class ClusterCoordinator {
             );
             // Don't sit on a lease we can't service — let a peer try.
             await this.releaseHeldLease(id).catch(() => {});
+            void registry.publishOwnershipChanged(id);
           }
         }),
       );
@@ -416,6 +422,7 @@ export class ClusterCoordinator {
     }
     const acquired = await leaseStore.forceAcquireLease(phoneNumber);
     this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
+    void registry.publishOwnershipChanged(phoneNumber);
     try {
       await this.handler.connect(phoneNumber, {
         ...options,
@@ -425,6 +432,7 @@ export class ClusterCoordinator {
       // A lease held without a socket would keep routing 421s here until the
       // TTL expires; release it so a retry can land anywhere.
       await this.releaseHeldLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
       throw error;
     }
   }
@@ -438,6 +446,7 @@ export class ClusterCoordinator {
       await this.handler.logout(phoneNumber);
     } finally {
       await this.releaseHeldLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
     }
   }
 
@@ -491,6 +500,7 @@ export class ClusterCoordinator {
       try {
         await this.handler.discardConnection(phone);
         await this.releaseHeldLease(phone);
+        void registry.publishOwnershipChanged(phone);
       } catch (error) {
         logger.warn(
           "[coordinator] handoff failed for %s: %s",
