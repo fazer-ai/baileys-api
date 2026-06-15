@@ -21,12 +21,22 @@ export interface BaileysConnectionOptions {
   autoPresenceSubscribe?: boolean;
   apiKeyHash?: string;
   isReconnect?: boolean;
+  // Epoch of the lease under which this connection was claimed. Stamped onto
+  // connection.update webhooks so the client can discard late events from a
+  // previous owner. Threaded in by the coordinator's lease-claim path; never
+  // read back from Redis (a re-read could pick up a successor's epoch).
+  leaseEpoch?: number | null;
   onConnectionClose?: () => void;
 }
 
 export interface BaileysConnectionWebhookPayload {
   event: keyof BaileysEventMap;
-  data: BaileysEventMap[keyof BaileysEventMap] | { error: string };
+  // connection.update events additionally carry the lease epoch so the
+  // client can discard late events from a previous owner.
+  data:
+    | BaileysEventMap[keyof BaileysEventMap]
+    | (BaileysEventMap["connection.update"] & { epoch?: number })
+    | { error: string };
   extra?: unknown;
   // Set on every webhook produced by the history-import backfill path so
   // the consumer can suppress live-only side effects (notifications,

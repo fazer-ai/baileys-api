@@ -15,6 +15,9 @@ function sanitizeItem(
   item: unknown,
   options?: DeepSanitizeObjectOptions,
 ): unknown {
+  if (item === null || item === undefined) {
+    return item;
+  }
   if (typeof item === "string") {
     return `${item.slice(0, 50)}${item.length > 50 ? "..." : ""}`;
   }

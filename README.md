@@ -78,6 +78,42 @@ The `docker-compose.coolify.yml` can be adapted for other Docker environments. Y
     - Store these keys securely and provide them in the `x-api-key` header for authenticated requests.
     - In development (`NODE_ENV=development`), authentication is bypassed.
 
+### Scaling Horizontally (Multiple Instances)
+
+Running more than one instance against the same Redis is supported through a proxy + workers topology. Each WhatsApp identity is owned via a Redis **lease** (renewed periodically, self-fencing on loss), so two instances never fight over the same phone number with `conflict/replaced` loops.
+
+Roles, selected via the `ROLE` env var:
+
+- `standalone` (default) — single instance serving HTTP directly, exactly like before. It also participates in the lease protocol, which gives rolling deploys a graceful handoff for free: on SIGTERM the old container closes its sockets and releases its leases before the new one claims them — no churn window.
+- `worker` — holds the WhatsApp sockets, never exposed to clients. Claims unleased phones up to its fair share of the cluster, renews leases, sheds load gradually when over-share (rebalance), and hands everything off on SIGTERM.
+- `proxy` — the single client-facing entry point. Stateless: resolves which worker owns each phone via Redis and forwards requests (including `GET /media/:messageId`, routed to the instance holding the file). Point your client (e.g. chatwoot's `BAILEYS_PROVIDER_DEFAULT_URL`) at the proxy.
+
+See [`docker-compose.cluster.yml`](./docker-compose.cluster.yml) for a complete example (1 proxy + 2 workers + Redis with AOF).
+
+Behavior under the common scenarios:
+
+- **A worker crashes** — its leases expire within `CLUSTER_LEASE_TTL_MS` (default 30s); survivors claim the orphaned phones with limited reconnect concurrency and jitter, so a 50-connection failover proceeds in waves instead of a storm.
+- **A new worker joins** — it steals nothing at boot (everything is leased). Overloaded workers detect they are above the cluster fair share and migrate one connection at a time (rate-limited, with a directed handoff so the migration lands on the underloaded worker and never ping-pongs). Victims are chosen idle-first: connections with no message traffic within `CLUSTER_REBALANCE_IDLE_THRESHOLD_MS` (default 5 min) and no in-flight webhooks migrate invisibly; if everything is mid-conversation the migration is deferred to the next interval, unless the imbalance exceeds 2x the fair share, in which case the least active connection moves anyway. A 100-connection 1→2 migration equalizes gradually (~8 minutes at default intervals), each phone seeing a single brief reconnect.
+- **Rolling deploy** — bring the new container up before stopping the old one; the new worker waits (leases arbitrate), and the old worker's SIGTERM handoff transfers connections in seconds with zero `conflict/replaced` events. Make sure the orchestrator's stop grace period exceeds `CLUSTER_SHUTDOWN_TIMEOUT_MS`.
+- **Redis goes down** — workers keep their sockets (messages keep flowing) and pause claims; on recovery each worker re-asserts the leases it already holds, with no reconnects.
+
+Operational requirements:
+
+- Redis must persist with **AOF** (`appendonly yes`): the Signal auth state lives there, and restoring a stale snapshot regresses the crypto ratchet, forcing re-pairing.
+- Workers must be reachable from the proxy on the shared network (`WORKER_BASE_URL`, defaults to the container hostname).
+- Pending-QR pairings are tied to the instance showing the QR code; they are excluded from failover/rebalance and restart via a new `POST /connections` if that instance dies.
+- One caveat on the **first** deploy of a lease-aware version over a non-lease version: the old container does not participate in the protocol, so that one rollout still shows the legacy reconnect churn. Subsequent deploys are clean.
+
+#### Workers across multiple hosts
+
+[`docker-compose.cluster.yml`](./docker-compose.cluster.yml) runs every service on one host, where the proxy reaches each worker by its Docker-network hostname (the default `WORKER_BASE_URL=http://<hostname>:<port>`). To spread workers across separate hosts (or VMs/regions), three things must hold:
+
+- **Every worker advertises a reachable address.** Set `WORKER_BASE_URL` explicitly on each worker to an address the proxy can reach from its host, e.g. `WORKER_BASE_URL=http://10.0.0.21:3025` (private IP or internal DNS name). The default container-hostname value only resolves inside a shared Docker network and will not work across hosts.
+- **All hosts share one Redis.** Workers and the proxy coordinate exclusively through Redis (leases, registry, route invalidation), so every node points `REDIS_URL` at the same instance. Keep it close to the workers — the Signal auth state reads/writes sit on the hot path.
+- **The network between nodes is private.** Inter-node traffic carries Signal auth state and proxied message payloads. Run it over a private network, VPN (e.g. WireGuard/Tailscale), or cloud VPC, and expose **only the proxy** to clients. Worker HTTP ports and Redis must never be publicly reachable — set `REDIS_PASSWORD` and firewall those ports to the cluster's own hosts.
+
+Example: a proxy on host A (`WORKER_BASE_URL` unused), workers on hosts B and C each with `ROLE=worker`, a distinct `INSTANCE_ID`, `WORKER_BASE_URL` set to their private IP, and all three sharing `REDIS_URL`/`REDIS_PASSWORD`. The proxy resolves ownership from Redis and forwards to whichever worker holds the phone, regardless of host.
+
 ## Development Setup
 
 1.  **Clone the repository.**

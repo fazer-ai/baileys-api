@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { initAuthCreds } from "@whiskeysockets/baileys";
 import redis from "@/lib/redis";
-import { getRedisSavedAuthStateIds, useRedisAuthState } from "./redisAuthState";
+import {
+  getRedisSavedAuthStateIds,
+  isRedisAuthStatePaired,
+  useRedisAuthState,
+} from "./redisAuthState";
 
 // Access mock internals through the shared preload mock
 const mockRedisData = (redis as any).__hashData as Map<
@@ -52,6 +56,28 @@ describe("useRedisAuthState", () => {
     expect(stored).toBe(JSON.stringify(metadata));
   });
 
+  it("rejects metadata writes when the lease is owned by another instance", async () => {
+    // A zombie socket auto-reconnecting after losing its lease must not
+    // replay stale config (webhookUrl, apiKeyHash) over a newer
+    // client-driven update written through the new owner.
+    const mockStringData = (redis as any).__stringData as Map<string, string>;
+    const key = "@baileys-api:connections:meta-fenced-phone:authState";
+    mockRedisData.set(
+      key,
+      new Map([["metadata", JSON.stringify({ webhookUrl: "current" })]]),
+    );
+    mockStringData.set(
+      "@baileys-api:cluster:lease:meta-fenced-phone",
+      JSON.stringify({ owner: "someone-else", epoch: 2 }),
+    );
+
+    await useRedisAuthState("meta-fenced-phone", { webhookUrl: "stale" });
+
+    expect(mockRedisData.get(key)?.get("metadata")).toBe(
+      JSON.stringify({ webhookUrl: "current" }),
+    );
+  });
+
   describe("state.keys.get", () => {
     it("retrieves existing signal keys", async () => {
       const key = "@baileys-api:connections:keys-phone:authState";
@@ -88,7 +114,7 @@ describe("useRedisAuthState", () => {
   });
 
   describe("state.keys.set", () => {
-    it("saves key data to Redis via multi pipeline", async () => {
+    it("saves key data to Redis via the fenced batch write", async () => {
       const { state } = await useRedisAuthState("set-phone");
       await state.keys.set({
         "pre-key": {
@@ -114,7 +140,9 @@ describe("useRedisAuthState", () => {
         },
       });
 
-      expect(mockRedisData.get(key)?.has("pre-key-1")).toBe(false);
+      // The mock mirrors real Redis: deleting the last field removes the
+      // hash itself, so the field is gone either way.
+      expect(mockRedisData.get(key)?.get("pre-key-1")).toBeUndefined();
     });
   });
 
@@ -131,6 +159,26 @@ describe("useRedisAuthState", () => {
 
       expect(mockRedisData.has(key)).toBe(false);
     });
+
+    it("does not clear the hash when the lease is owned by another instance", async () => {
+      // A stale instance processing a late loggedOut must not wipe the auth
+      // state out from under the live owner.
+      const mockStringData = (redis as any).__stringData as Map<string, string>;
+      const key = "@baileys-api:connections:stale-clear-phone:authState";
+      mockRedisData.set(
+        key,
+        new Map([["creds", JSON.stringify({ registrationId: 1 })]]),
+      );
+      mockStringData.set(
+        "@baileys-api:cluster:lease:stale-clear-phone",
+        JSON.stringify({ owner: "someone-else", epoch: 2 }),
+      );
+
+      const { state } = await useRedisAuthState("stale-clear-phone");
+      await state.keys.clear?.();
+
+      expect(mockRedisData.has(key)).toBe(true);
+    });
   });
 
   describe("saveCreds", () => {
@@ -146,6 +194,86 @@ describe("useRedisAuthState", () => {
       expect(stored).toBeDefined();
       expect(JSON.parse(stored!).registrationId).toBe(54321);
     });
+  });
+
+  describe("owner fencing", () => {
+    // The split-brain hazard: a zombie socket writing Signal keys over the
+    // new owner's state regresses the ratchet ("Bad MAC"). Writes only land
+    // when the lease is ours — or when there is no lease at all, since then
+    // there is no competing owner to protect.
+    const mockStringData = (redis as any).__stringData as Map<string, string>;
+
+    it("drops writes when the lease is owned by another instance", async () => {
+      mockStringData.set(
+        "@baileys-api:cluster:lease:fenced-phone",
+        JSON.stringify({ owner: "someone-else", epoch: 2 }),
+      );
+
+      const { state, saveCreds } = await useRedisAuthState("fenced-phone");
+      (state.creds as any).registrationId = 777;
+      await saveCreds();
+      await state.keys.set({
+        "pre-key": { "1": { keyId: 1 } as never },
+      });
+
+      const hash = mockRedisData.get(
+        "@baileys-api:connections:fenced-phone:authState",
+      );
+      expect(hash?.get("creds")).toBeUndefined();
+      expect(hash?.get("pre-key-1")).toBeUndefined();
+    });
+
+    it("lands writes when this instance owns the lease", async () => {
+      mockStringData.set(
+        "@baileys-api:cluster:lease:owned-phone",
+        JSON.stringify({ owner: "test-instance", epoch: 2 }),
+      );
+
+      const { saveCreds } = await useRedisAuthState("owned-phone");
+      await saveCreds();
+
+      const hash = mockRedisData.get(
+        "@baileys-api:connections:owned-phone:authState",
+      );
+      expect(hash?.get("creds")).toBeDefined();
+    });
+
+    it("lands writes when no lease exists", async () => {
+      const { saveCreds } = await useRedisAuthState("unleased-phone");
+      await saveCreds();
+
+      const hash = mockRedisData.get(
+        "@baileys-api:connections:unleased-phone:authState",
+      );
+      expect(hash?.get("creds")).toBeDefined();
+    });
+  });
+});
+
+describe("isRedisAuthStatePaired", () => {
+  beforeEach(() => {
+    mockRedisData.clear();
+  });
+
+  const setCreds = (id: string, creds: unknown) => {
+    mockRedisData.set(
+      `@baileys-api:connections:${id}:authState`,
+      new Map([["creds", JSON.stringify(creds)]]),
+    );
+  };
+
+  it("returns true when creds carry a registered identity", async () => {
+    setCreds("paired", { me: { id: "5511999@s.whatsapp.net" } });
+    expect(await isRedisAuthStatePaired("paired")).toBe(true);
+  });
+
+  it("returns false when pairing never completed", async () => {
+    setCreds("unpaired", { registrationId: 1 });
+    expect(await isRedisAuthStatePaired("unpaired")).toBe(false);
+  });
+
+  it("returns false when there are no creds at all", async () => {
+    expect(await isRedisAuthStatePaired("missing")).toBe(false);
   });
 });
 

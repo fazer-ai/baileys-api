@@ -78,6 +78,42 @@ O `docker-compose.coolify.yml` pode ser adaptado para outros ambientes Docker. V
     - Armazene essas chaves com segurança e forneça-as no cabeçalho `x-api-key` para solicitações autenticadas.
     - Em desenvolvimento (`NODE_ENV=development`), a autenticação é ignorada.
 
+### Escalando Horizontalmente (Múltiplas Instâncias)
+
+Rodar mais de uma instância no mesmo Redis é suportado por meio de uma topologia proxy + workers. Cada identidade do WhatsApp é possuída via um **lease** no Redis (renovado periodicamente, com self-fencing em caso de perda), então duas instâncias nunca disputam o mesmo número com loops de `conflict/replaced`.
+
+Roles, selecionadas pela variável de ambiente `ROLE`:
+
+- `standalone` (padrão) — instância única servindo HTTP diretamente, exatamente como antes. Também participa do protocolo de lease, o que dá aos rolling deploys um handoff gracioso de graça: no SIGTERM, o container antigo fecha seus sockets e libera seus leases antes que o novo os reivindique — sem janela de churn.
+- `worker` — segura os sockets do WhatsApp, nunca exposto a clientes. Reivindica números sem lease até sua fração justa do cluster, renova leases, transfere carga gradualmente quando acima da fração (rebalance) e entrega tudo no SIGTERM.
+- `proxy` — o único ponto de entrada voltado ao cliente. Stateless: resolve qual worker possui cada número via Redis e encaminha as requisições (incluindo `GET /media/:messageId`, roteado para a instância que tem o arquivo). Aponte seu cliente (ex.: `BAILEYS_PROVIDER_DEFAULT_URL` do chatwoot) para o proxy.
+
+Veja [`docker-compose.cluster.yml`](./docker-compose.cluster.yml) para um exemplo completo (1 proxy + 2 workers + Redis com AOF).
+
+Comportamento nos cenários comuns:
+
+- **Um worker cai** — seus leases expiram dentro de `CLUSTER_LEASE_TTL_MS` (padrão 30s); os sobreviventes reivindicam os números órfãos com concorrência de reconexão limitada e jitter, então um failover de 50 conexões procede em ondas em vez de uma tempestade.
+- **Um worker novo entra** — não rouba nada no boot (tudo está com lease). Workers sobrecarregados detectam que estão acima da fração justa do cluster e migram uma conexão por vez (com rate limit e handoff direcionado, para que a migração caia no worker subutilizado e nunca faça ping-pong). As vítimas são escolhidas priorizando conexões idle: sem tráfego de mensagens dentro de `CLUSTER_REBALANCE_IDLE_THRESHOLD_MS` (padrão 5 min) e sem webhooks in-flight migram de forma invisível; se tudo estiver no meio de conversa, a migração é adiada para o próximo intervalo, a menos que o desbalanceio exceda 2x a fração justa, caso em que a conexão menos ativa é movida mesmo assim. Uma migração 1→2 de 100 conexões equaliza gradualmente (~8 minutos nos intervalos padrão), cada número vendo uma única reconexão breve.
+- **Rolling deploy** — suba o container novo antes de parar o antigo; o worker novo espera (os leases arbitram), e o handoff do SIGTERM do antigo transfere as conexões em segundos com zero eventos de `conflict/replaced`. Garanta que o stop grace period do orquestrador exceda `CLUSTER_SHUTDOWN_TIMEOUT_MS`.
+- **Redis cai** — os workers mantêm seus sockets (mensagens continuam fluindo) e pausam reivindicações; na recuperação, cada worker reafirma os leases que já possui, sem reconexões.
+
+Requisitos operacionais:
+
+- O Redis deve persistir com **AOF** (`appendonly yes`): o estado de auth do Signal vive lá, e restaurar um snapshot antigo regride o ratchet criptográfico, forçando novo pareamento.
+- Os workers devem ser alcançáveis pelo proxy na rede compartilhada (`WORKER_BASE_URL`, padrão é o hostname do container).
+- Pareamentos com QR pendente ficam presos à instância exibindo o QR code; são excluídos de failover/rebalance e reiniciam via um novo `POST /connections` se aquela instância morrer.
+- Uma ressalva no **primeiro** deploy de uma versão com lease sobre uma versão sem lease: o container antigo não participa do protocolo, então aquele rollout ainda exibe o churn de reconexão legado. Deploys subsequentes são limpos.
+
+#### Workers em múltiplos hosts
+
+O [`docker-compose.cluster.yml`](./docker-compose.cluster.yml) roda todos os serviços em um único host, onde o proxy alcança cada worker pelo hostname da rede Docker (o padrão `WORKER_BASE_URL=http://<hostname>:<porta>`). Para distribuir workers em hosts separados (ou VMs/regiões), três condições precisam valer:
+
+- **Cada worker anuncia um endereço alcançável.** Defina `WORKER_BASE_URL` explicitamente em cada worker para um endereço que o proxy consiga alcançar a partir do host dele, por exemplo, `WORKER_BASE_URL=http://10.0.0.21:3025` (IP privado ou nome DNS interno). O valor padrão (hostname do container) só resolve numa rede Docker compartilhada e não funciona entre hosts.
+- **Todos os hosts compartilham um único Redis.** Workers e proxy se coordenam exclusivamente pelo Redis (leases, registry, invalidação de rota), então todo nó aponta `REDIS_URL` para a mesma instância. Mantenha-o próximo aos workers: as leituras/escritas do estado de auth do Signal ficam no hot path.
+- **A rede entre os nós é privada.** O tráfego entre nós carrega o estado de auth do Signal e os payloads de mensagens encaminhados. Rode sobre rede privada, VPN (por exemplo, WireGuard/Tailscale) ou VPC, e exponha **apenas o proxy** aos clientes. As portas HTTP dos workers e o Redis nunca podem ser publicamente acessíveis: defina `REDIS_PASSWORD` e restrinja essas portas por firewall aos próprios hosts do cluster.
+
+Exemplo: um proxy no host A (`WORKER_BASE_URL` não usado), workers nos hosts B e C cada um com `ROLE=worker`, um `INSTANCE_ID` distinto, `WORKER_BASE_URL` apontando para seu IP privado, e os três compartilhando `REDIS_URL`/`REDIS_PASSWORD`. O proxy resolve a posse pelo Redis e encaminha para o worker que detém o telefone, independente do host.
+
 ## Configuração de Desenvolvimento
 
 1.  **Clone o repositório.**

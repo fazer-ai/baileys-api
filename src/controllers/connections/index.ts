@@ -4,6 +4,9 @@ import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
+import coordinator from "@/cluster";
+import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
+import { resolveMisdirectedRequest } from "@/cluster/workerRouting";
 import {
   buildEditableMessageContent,
   buildMessageContent,
@@ -32,33 +35,82 @@ const connectionsController = new Elysia({
         description:
           "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key.",
       },
+      421: {
+        description:
+          "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+        headers: {
+          "x-baileys-owner": {
+            description: "Instance id of the connection owner",
+            schema: { type: "string" },
+          },
+        },
+      },
     },
   },
 })
   .use(authMiddleware)
-  .onBeforeHandle(async ({ params, apiKeyHash, set }) => {
+  .onBeforeHandle(async ({ params, apiKeyHash, set, request, path }) => {
     const phoneNumber = (params as { phoneNumber?: string })?.phoneNumber;
-    if (phoneNumber) {
-      try {
-        await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
-      } catch (e) {
-        if (e instanceof BaileysConnectionForbiddenError) {
-          set.status = 403;
-          return { error: "Forbidden", message: e.message };
-        }
-        throw e;
+    if (!phoneNumber) {
+      return;
+    }
+
+    // Worker role: a request for a phone owned by another live instance is
+    // answered with 421 so the proxy invalidates its route cache and
+    // re-sends to the owner. This runs BEFORE the access check: during a
+    // lease transition the local metadata (apiKeyHash) can lag the new
+    // owner's writes, and answering 403 off that stale copy would mask the
+    // misdirect the proxy knows how to recover from.
+    // POST /connections/:phone is exempt — it is an explicit takeover and
+    // resolves ownership in connectWithLease (409 when the owner is alive).
+    const isConnectTakeover =
+      request.method === "POST" &&
+      decodeURIComponent(path) === `/connections/${phoneNumber}`;
+    if (!isConnectTakeover) {
+      const owner = await resolveMisdirectedRequest(phoneNumber);
+      if (owner) {
+        set.status = 421;
+        set.headers["x-baileys-owner"] = owner;
+        return {
+          error: "Misdirected Request",
+          message: "Connection is owned by another instance",
+        };
       }
+    }
+
+    try {
+      await baileys.verifyConnectionAccess(phoneNumber, apiKeyHash);
+    } catch (e) {
+      if (e instanceof BaileysConnectionForbiddenError) {
+        set.status = 403;
+        return { error: "Forbidden", message: e.message };
+      }
+      throw e;
     }
   })
   .post(
     "/:phoneNumber",
-    async ({ params, body, apiKeyHash }) => {
+    async ({ params, body, apiKeyHash, set }) => {
       const { phoneNumber } = params;
 
-      await baileys.connect(phoneNumber, {
-        ...body,
-        apiKeyHash: apiKeyHash ?? undefined,
-      });
+      // Goes through the coordinator so the connect is backed by a lease:
+      // an explicit POST is authoritative and takes the identity over.
+      try {
+        await coordinator.connectWithLease(phoneNumber, {
+          ...body,
+          apiKeyHash: apiKeyHash ?? undefined,
+        });
+      } catch (e) {
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another live instance",
+          };
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,
@@ -121,6 +173,16 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Connection initiated",
+          },
+          409: {
+            description:
+              "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header); a proxy re-routes the takeover there instead of stealing a healthy socket.",
+            headers: {
+              "x-baileys-owner": {
+                description: "Instance id of the connection owner",
+                schema: { type: "string" },
+              },
+            },
           },
         },
       },
@@ -206,23 +268,36 @@ const connectionsController = new Elysia({
           ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
           : null;
 
-      const result = await withIdempotency(idempotencyKey, async () => {
-        const { messageContent: builtContent, quoted } =
-          buildMessageContent(messageContent);
+      let result: Awaited<ReturnType<typeof withIdempotency>>;
+      try {
+        result = await withIdempotency(idempotencyKey, async () => {
+          const { messageContent: builtContent, quoted } =
+            buildMessageContent(messageContent);
 
-        const response = await baileys.sendMessage(phoneNumber, {
-          jid,
-          messageContent: builtContent,
-          quoted,
+          const response = await baileys.sendMessage(phoneNumber, {
+            jid,
+            messageContent: builtContent,
+            quoted,
+          });
+
+          if (!response) return null;
+
+          return {
+            key: response.key,
+            messageTimestamp: response.messageTimestamp,
+          };
         });
-
-        if (!response) return null;
-
-        return {
-          key: response.key,
-          messageTimestamp: response.messageTimestamp,
-        };
-      });
+      } catch (e) {
+        // The phone has no live socket on this instance (never connected, or
+        // dropped mid-request). Surface it as 404 instead of a generic 500 so
+        // callers can distinguish "not connected" from a real send failure.
+        // withIdempotency already released the lock on throw, so a retry after
+        // reconnect is free to proceed.
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not connected", { status: 404 });
+        }
+        throw e;
+      }
 
       if (result.status === "processing") {
         return new Response("Message is already being processed", {
@@ -257,6 +332,9 @@ const connectionsController = new Elysia({
                 }),
               },
             },
+          },
+          404: {
+            description: "Phone number not connected",
           },
           409: {
             description: "Message is already being processed",
@@ -1482,7 +1560,7 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
 
       try {
-        await baileys.logout(phoneNumber);
+        await coordinator.logoutWithLease(phoneNumber);
       } catch (e) {
         if (e instanceof BaileysNotConnectedError) {
           return new Response("Phone number not found", { status: 404 });

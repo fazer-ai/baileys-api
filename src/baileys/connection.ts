@@ -25,17 +25,18 @@ import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientV
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
-import { useRedisAuthState } from "@/baileys/redisAuthState";
+import { useRedisAuthState, writeAuthMetadata } from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
   MessageKeyWithId,
 } from "@/baileys/types";
+import { instanceId } from "@/cluster/identity";
+import { getLease } from "@/cluster/leaseStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
-import redis from "@/lib/redis";
 
 // `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
 // so default behavior is a normal reconnect. When the same disconnect repeats
@@ -135,6 +136,12 @@ export class BaileysConnection {
   private reconnectCount = 0;
   private connectionReplacedTimestamps: number[] = [];
   private isDiscarded = false;
+  private _inFlightWebhooks = 0;
+  private leaseEpoch: number | null = null;
+  // Monotonic timestamp of the last message-level traffic (received message,
+  // outgoing send, receipt update). null = no traffic since this connection
+  // object was created. Drives idle-aware handoff in the coordinator.
+  private _lastTrafficAt: number | null = null;
   private groupsEnabled: boolean;
   private autoPresenceSubscribe: boolean;
   private _apiKeyHash: string | null;
@@ -164,10 +171,23 @@ export class BaileysConnection {
     this.groupsEnabled = options.groupsEnabled ?? true;
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? null;
+    this.leaseEpoch = options.leaseEpoch ?? null;
   }
 
   get apiKeyHash(): string | null {
     return this._apiKeyHash;
+  }
+
+  get inFlightWebhooks(): number {
+    return this._inFlightWebhooks;
+  }
+
+  get lastTrafficAt(): number | null {
+    return this._lastTrafficAt;
+  }
+
+  private markTraffic() {
+    this._lastTrafficAt = performance.now();
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -189,7 +209,7 @@ export class BaileysConnection {
     };
   }
 
-  updateOptions(options: BaileysConnectionOptions) {
+  async updateOptions(options: BaileysConnectionOptions) {
     this.clientName = options.clientName || "Chrome";
     this.webhookUrl = options.webhookUrl;
     this.webhookVerifyToken = options.webhookVerifyToken;
@@ -210,26 +230,30 @@ export class BaileysConnection {
 
     this.autoPresenceSubscribe = options.autoPresenceSubscribe ?? false;
     this._apiKeyHash = options.apiKeyHash ?? this._apiKeyHash;
-    this.persistMetadata();
+    // A reused connection may have been re-leased under a newer epoch (e.g. a
+    // force-acquire on POST /connections); stale epochs would get the
+    // webhooks discarded by the client.
+    if (options.leaseEpoch !== undefined) {
+      this.leaseEpoch = options.leaseEpoch;
+    }
+    await this.persistMetadata();
   }
 
-  private persistMetadata() {
-    const key = `@baileys-api:connections:${this.phoneNumber}:authState`;
-    redis.hSet(
-      key,
-      "metadata",
-      JSON.stringify({
-        clientName: this.clientName,
-        webhookUrl: this.webhookUrl,
-        webhookVerifyToken: this.webhookVerifyToken,
-        includeMedia: this.includeMedia,
-        syncFullHistory: this.syncFullHistory,
-        historyImportDays: this.historyImportDays,
-        groupsEnabled: this.groupsEnabled,
-        autoPresenceSubscribe: this.autoPresenceSubscribe,
-        apiKeyHash: this._apiKeyHash,
-      }),
-    );
+  private async persistMetadata() {
+    // Owner-fenced: updateOptions can run on a connection whose lease has
+    // since moved, and an unfenced write here would overwrite the new
+    // owner's metadata (see writeAuthMetadata).
+    await writeAuthMetadata(this.phoneNumber, {
+      clientName: this.clientName,
+      webhookUrl: this.webhookUrl,
+      webhookVerifyToken: this.webhookVerifyToken,
+      includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
+      historyImportDays: this.historyImportDays,
+      groupsEnabled: this.groupsEnabled,
+      autoPresenceSubscribe: this.autoPresenceSubscribe,
+      apiKeyHash: this._apiKeyHash,
+    });
   }
 
   async connect() {
@@ -276,10 +300,28 @@ export class BaileysConnection {
       return;
     }
 
+    // A discarded connection must never write Signal state again — its
+    // identity may already be live on another instance (or on a local
+    // replacement). This entry guard is a best-effort fast path; the
+    // authoritative fence is the Redis-side write-if-owner script, which
+    // rejects any write once the lease moves to a new owner. A write already
+    // in flight when discard() lands can only commit while no successor holds
+    // the lease, i.e. it is the closing socket's final state flush — exactly
+    // what the next owner should resume from.
+    const guardedKeys: AuthenticationState["keys"] = {
+      ...state.keys,
+      set: async (data) => {
+        if (this.isDiscarded) {
+          return;
+        }
+        await state.keys.set(data);
+      },
+    };
+
     const socketOptions: UserFacingSocketConfig = {
       auth: {
         creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger),
+        keys: makeCacheableSignalKeyStore(guardedKeys, logger),
       },
       markOnlineOnConnect: false,
       logger: baileysLogger,
@@ -312,7 +354,13 @@ export class BaileysConnection {
     };
 
     const handledEvents: EventHandlers = {
-      "creds.update": saveCreds,
+      "creds.update": this.withErrorHandling("saveCreds", async () => {
+        // See guardedKeys: a discarded socket must not persist creds.
+        if (this.isDiscarded) {
+          return;
+        }
+        await saveCreds();
+      }),
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
         this.handleConnectionUpdate,
@@ -431,12 +479,25 @@ export class BaileysConnection {
     this.socket = null;
   }
 
+  // Terminal teardown for a connection that gives up on itself (e.g. a
+  // reconnect loop that never stabilizes). Unlike close(), preserves the
+  // Redis auth state so the same identity can be resumed later — by a new
+  // POST /connections or by another instance sharing this Redis. Unlike
+  // discard(), fires onConnectionClose so the handler evicts this instance
+  // from its registry.
+  private abort() {
+    const onConnectionClose = this.onConnectionClose;
+    this.discard();
+    onConnectionClose?.();
+  }
+
   async sendMessage(
     jid: string,
     messageContent: AnyMessageContent,
     options?: { quoted?: WAMessage },
   ) {
     this.safeSocket();
+    this.markTraffic();
     this.autoSubscribePresence(jid);
 
     let waveformProxy: Buffer | null = null;
@@ -760,6 +821,17 @@ export class BaileysConnection {
         message !== "QR refs attempts ended";
 
       if (shouldReconnect) {
+        // Distributed fence: a conflict/replaced kick may mean another
+        // instance legitimately took this identity over (its lease says so).
+        // Yield instead of stealing the connection back — the in-memory
+        // backoff below only throttles that fight, it doesn't end it.
+        if (
+          statusCode === DisconnectReason.connectionReplaced &&
+          (await this.shouldYieldToLeaseOwner())
+        ) {
+          this.abort();
+          return;
+        }
         logger.debug(
           "[%s] [handleConnectionUpdate] Reconnecting (lastDisconnect=%o)",
           this.phoneNumber,
@@ -823,6 +895,7 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    this.markTraffic();
     if (data.type === "notify") {
       for (const msg of data.messages) {
         const remoteJid = msg.key?.remoteJid;
@@ -873,6 +946,9 @@ export class BaileysConnection {
   }
 
   private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
+    // Edits, deletions and reactions are conversation activity too — a
+    // connection seeing them must not look idle to the rebalancer.
+    this.markTraffic();
     this.sendToWebhook(
       {
         event: "messages.update",
@@ -887,6 +963,7 @@ export class BaileysConnection {
   private handleMessageReceiptUpdate(
     data: BaileysEventMap["message-receipt.update"],
   ) {
+    this.markTraffic();
     this.sendToWebhook({
       event: "message-receipt.update",
       data,
@@ -1143,16 +1220,47 @@ export class BaileysConnection {
     this.reconnectCount += 1;
     if (this.reconnectCount > 10) {
       logger.warn(
-        "[%s] [handleReconnecting] Reconnect count exceeded 10, resetting connection",
+        "[%s] [handleReconnecting] Reconnect count exceeded 10, aborting reconnection (auth state preserved)",
         this.phoneNumber,
       );
-      await this.close();
+      this.sendToWebhook({
+        event: "connection.update",
+        data: { error: "reconnect_loop_detected" },
+      });
+      this.abort();
       return;
     }
     this.sendToWebhook({
       event: "connection.update",
       data: { connection: "reconnecting" as WAConnectionState },
     });
+  }
+
+  // True only when the lease verifiably belongs to another instance. On any
+  // doubt (no lease system state, Redis unreachable) we keep the
+  // single-instance behavior — reconnect with backoff — because wrongly
+  // yielding here silently kills a healthy connection.
+  private async shouldYieldToLeaseOwner(): Promise<boolean> {
+    try {
+      const lease = await getLease(this.phoneNumber);
+      if (lease && lease.owner !== instanceId) {
+        logger.info(
+          "[%s] [shouldYieldToLeaseOwner] lease is owned by %s (epoch %d), yielding",
+          this.phoneNumber,
+          lease.owner,
+          lease.epoch,
+        );
+        return true;
+      }
+      return false;
+    } catch (error) {
+      logger.warn(
+        "[%s] [shouldYieldToLeaseOwner] could not verify lease, keeping reconnect behavior: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      return false;
+    }
   }
 
   private trackConnectionReplaced(): number {
@@ -1205,7 +1313,38 @@ export class BaileysConnection {
     this.flushGroupActivity();
   }
 
+  // Counts deliveries (including their retry windows) still running in this
+  // process's memory. Graceful shutdown waits on this before exiting so a
+  // handoff doesn't drop events that WhatsApp already considers delivered.
   private async sendToWebhook(
+    payload: BaileysConnectionWebhookPayload,
+    options?: {
+      awaitResponse?: boolean;
+    },
+  ) {
+    // connection.update events carry the lease epoch so the client can
+    // discard late events from a previous owner (last-writer-wins on the
+    // chatwoot side would otherwise let a stale "reconnecting" overwrite the
+    // new owner's "open").
+    let enriched = payload;
+    if (payload.event === "connection.update" && this.leaseEpoch !== null) {
+      enriched = {
+        ...payload,
+        data: {
+          ...(payload.data as BaileysEventMap["connection.update"]),
+          epoch: this.leaseEpoch,
+        },
+      };
+    }
+    this._inFlightWebhooks += 1;
+    try {
+      return await this.deliverToWebhook(enriched, options);
+    } finally {
+      this._inFlightWebhooks -= 1;
+    }
+  }
+
+  private async deliverToWebhook(
     payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;

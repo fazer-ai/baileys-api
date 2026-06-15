@@ -130,11 +130,15 @@ describe("BaileysConnection", () => {
     });
 
     it("calls socket logout and clears state", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
       await connection.connect();
-      (redis.del as any).mockClear();
+      expect((redis as any).__hashData.has(authKey)).toBe(true);
+
       await connection.logout();
+
       expect(mockSocket.logout).toHaveBeenCalledTimes(1);
-      expect(redis.del).toHaveBeenCalled();
+      // clearAuthState goes through the owner-fenced clear script now.
+      expect((redis as any).__hashData.has(authKey)).toBe(false);
     });
 
     it("marks the connection discarded before the logout RPC so a mid-logout close event cannot resurrect the socket", async () => {
@@ -341,6 +345,337 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("connectionReplaced lease gate", () => {
+    const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
+    const conflictClosePayload = {
+      connection: "close" as const,
+      lastDisconnect: {
+        error: {
+          output: {
+            statusCode: 440,
+            payload: {
+              statusCode: 440,
+              error: "Unknown",
+              message: "Stream Errored (conflict)",
+            },
+          },
+          message: "Stream Errored (conflict)",
+        },
+      },
+    };
+
+    async function settle(makeSocket: ReturnType<typeof mock>) {
+      let prev = -1;
+      while (prev !== makeSocket.mock.calls.length) {
+        prev = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+    }
+
+    it("yields instead of reconnecting when the lease is owned by another instance", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "other-instance", epoch: 7 }),
+      );
+      fetchCalls.length = 0;
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      // No socket resurrection: the replacement is the legitimate owner.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      // And no reconnecting webhook — the new owner narrates from here on.
+      const reconnectingHits = fetchCalls.filter((c) =>
+        c.body?.includes('"connection":"reconnecting"'),
+      );
+      expect(reconnectingHits.length).toBe(0);
+    });
+
+    it("keeps the reconnect behavior when the lease is its own", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      // instanceId resolves to "test-instance" via the preload config mock.
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "test-instance", epoch: 7 }),
+      );
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
+
+    it("keeps the reconnect behavior when there is no lease", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
+
+    it("keeps the reconnect behavior when the lease read fails", async () => {
+      // A Redis outage must not self-fence a healthy socket: an unverifiable
+      // lease falls back to the plain reconnect/backoff path.
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      await settle(makeSocket);
+      const callsBefore = makeSocket.mock.calls.length;
+
+      (redis.get as any).mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      await handler(conflictClosePayload);
+      await settle(makeSocket);
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore + 1);
+    });
+  });
+
+  describe("lease epoch on connection.update", () => {
+    const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
+
+    it("stamps connection.update payloads with the epoch threaded in from the lease claim", async () => {
+      // The epoch comes exclusively from the coordinator's claim (options),
+      // never from a Redis read: a re-read mid-connect could observe a
+      // successor's lease and stamp the wrong epoch onto our webhooks. The
+      // store deliberately disagrees (epoch 9) to prove there is no re-read.
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "test-instance", epoch: 9 }),
+      );
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 7,
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+
+      while (!fetchCalls.some((c) => c.body?.includes('"epoch":7'))) {
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(fetchCalls.some((c) => c.body?.includes('"epoch":9'))).toBe(false);
+      conn.discard();
+    });
+
+    it("refreshes the pinned epoch when updateOptions carries a newer one", async () => {
+      // A reused connection re-leased under a newer epoch (force-acquire on
+      // POST /connections) must not keep stamping the old epoch — the client
+      // would discard its webhooks as stale.
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 7,
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      await conn.updateOptions({ ...defaultOptions, leaseEpoch: 9 });
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+
+      while (!fetchCalls.some((c) => c.body?.includes('"epoch":9'))) {
+        await new Promise((r) => setImmediate(r));
+      }
+      conn.discard();
+    });
+
+    it("omits the epoch when none was provided", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+
+      while (
+        !fetchCalls.some((c) => c.body?.includes('"connection":"reconnecting"'))
+      ) {
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(fetchCalls.some((c) => c.body?.includes('"epoch"'))).toBe(false);
+    });
+  });
+
+  describe("traffic tracking", () => {
+    it("starts with no traffic recorded", async () => {
+      await connection.connect();
+      expect(connection.lastTrafficAt).toBeNull();
+    });
+
+    it("marks traffic on incoming messages", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messages.upsert")!;
+
+      await handler({ type: "notify", messages: [] });
+
+      expect(connection.lastTrafficAt).not.toBeNull();
+    });
+
+    it("marks traffic on outgoing sends", async () => {
+      await connection.connect();
+
+      await connection.sendMessage("5511888@s.whatsapp.net", { text: "hi" });
+
+      expect(connection.lastTrafficAt).not.toBeNull();
+    });
+
+    it("marks traffic on receipt updates", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("message-receipt.update")!;
+
+      await handler([]);
+
+      expect(connection.lastTrafficAt).not.toBeNull();
+    });
+  });
+
+  describe("post-discard auth write guard", () => {
+    const authKey = "@baileys-api:connections:+5511999999999:authState";
+
+    it("persists creds while active", async () => {
+      await connection.connect();
+      const credsHandler = mockEventHandlers.get("creds.update")!;
+
+      await credsHandler(undefined as never);
+
+      const hash = (redis as any).__hashData.get(authKey);
+      expect(hash?.get("creds")).toBeDefined();
+    });
+
+    it("stops persisting creds after discard", async () => {
+      // A discarded socket may belong to an identity that is already live
+      // elsewhere; its late creds.update must not clobber the shared state.
+      await connection.connect();
+      const credsHandler = mockEventHandlers.get("creds.update")!;
+
+      connection.discard();
+      await credsHandler(undefined as never);
+
+      const hash = (redis as any).__hashData.get(authKey);
+      expect(hash?.get("creds")).toBeUndefined();
+    });
+
+    it("stops persisting signal keys after discard", async () => {
+      // guardedKeys wraps state.keys.set — the makeCacheableSignalKeyStore
+      // mock is an identity passthrough, so the keys object handed to
+      // makeWASocket IS the guarded wrapper.
+      await connection.connect();
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      const [socketOptions] = makeSocket.mock.calls.at(-1) as [
+        { auth: { keys: { set: (data: unknown) => Promise<void> } } },
+      ];
+      const guardedKeys = socketOptions.auth.keys;
+
+      await guardedKeys.set({ "pre-key": { "1": { keyId: 1 } } });
+      const hash = (redis as any).__hashData.get(authKey);
+      expect(hash?.get("pre-key-1")).toBeDefined();
+
+      connection.discard();
+      await guardedKeys.set({ "pre-key": { "2": { keyId: 2 } } });
+      expect(hash?.get("pre-key-2")).toBeUndefined();
+    });
+  });
+
+  describe("reconnect loop abort", () => {
+    // Each `isNewLogin` connection.update routes through handleReconnecting
+    // and bumps reconnectCount. Past the threshold (>10) the connection must
+    // give up WITHOUT clearing the Redis auth state: the destructive close()
+    // used to DEL the shared authState hash, which in a multi-instance
+    // setup wipes the identity out from under the legitimate owner and
+    // forces a new QR scan.
+    it("preserves auth state, notifies the webhook, and evicts itself past the reconnect threshold", async () => {
+      let closeCalls = 0;
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        onConnectionClose: () => {
+          closeCalls += 1;
+        },
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      for (let i = 0; i < 11; i++) {
+        await handler({ isNewLogin: true });
+      }
+
+      // Auth state preserved: no DEL of the authState hash.
+      expect((redis.del as any).mock.calls.length).toBe(0);
+      // Handler eviction fired exactly once.
+      expect(closeCalls).toBe(1);
+
+      // The structured error webhook must reach the client.
+      while (
+        !fetchCalls.some((c) =>
+          c.body?.includes('"error":"reconnect_loop_detected"'),
+        )
+      ) {
+        await new Promise((r) => setImmediate(r));
+      }
+    });
+
+    it("does not resurrect the socket via the post-close reconnect after aborting", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      // Drive the count to the threshold with isNewLogin updates.
+      for (let i = 0; i < 10; i++) {
+        await handler({ isNewLogin: true });
+      }
+
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+      // Settle any pending fire-and-forget reconnects before snapshotting.
+      let prev = -1;
+      while (prev !== makeSocket.mock.calls.length) {
+        prev = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+      const callsBefore = makeSocket.mock.calls.length;
+
+      // The 11th increment arrives via a close event whose handler queues a
+      // fire-and-forget this.connect() right after handleReconnecting —
+      // abort() must have flagged the connection so that connect no-ops.
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      expect((redis.del as any).mock.calls.length).toBe(0);
+    });
+  });
+
   describe("#sendMessage", () => {
     it("throws BaileysNotConnectedError if not connected", async () => {
       await expect(
@@ -481,18 +816,39 @@ describe("BaileysConnection", () => {
       // No direct assertion on private fields — we verify it doesn't throw
     });
 
-    it("persists metadata to Redis on update", () => {
-      (redis as any).hSet.mockClear();
-      connection.updateOptions({
+    it("persists metadata to Redis on update", async () => {
+      await connection.updateOptions({
         webhookUrl: "https://new-hook.com",
         webhookVerifyToken: "new-token",
         groupsEnabled: false,
         apiKeyHash: "abc123",
       });
-      expect((redis as any).hSet).toHaveBeenCalledWith(
-        "@baileys-api:connections:+5511999999999:authState",
-        "metadata",
-        expect.stringContaining('"apiKeyHash":"abc123"'),
+      const stored = (redis as any).__hashData
+        .get("@baileys-api:connections:+5511999999999:authState")
+        ?.get("metadata");
+      expect(stored).toContain('"apiKeyHash":"abc123"');
+    });
+
+    it("rejects the metadata write when the lease is owned elsewhere", async () => {
+      // updateOptions on a connection whose lease moved must not overwrite
+      // the new owner's metadata (write-if-owner fence in persistMetadata).
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      (redis as any).__hashData.set(
+        authKey,
+        new Map([["metadata", JSON.stringify({ webhookUrl: "current" })]]),
+      );
+      (redis as any).__stringData.set(
+        "@baileys-api:cluster:lease:+5511999999999",
+        JSON.stringify({ owner: "someone-else", epoch: 9 }),
+      );
+
+      await connection.updateOptions({
+        webhookUrl: "https://stale-hook.com",
+        webhookVerifyToken: "new-token",
+      });
+
+      expect((redis as any).__hashData.get(authKey)?.get("metadata")).toBe(
+        JSON.stringify({ webhookUrl: "current" }),
       );
     });
 
