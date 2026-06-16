@@ -16,6 +16,7 @@ import makeWASocket, {
   type WAConnectionState,
   type WAMessage,
   type WAMessageKey,
+  WAMessageStatus,
   type WAPresence,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
@@ -44,6 +45,18 @@ import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 const CONNECTION_REPLACED_LOOP_WINDOW_MS = 30_000;
 const CONNECTION_REPLACED_LOOP_THRESHOLD = 5;
 const CONNECTION_REPLACED_BACKOFF_MS = 30_000;
+
+// Per-message NACK code WhatsApp returns when an outgoing message hits the
+// reach-out time-lock ("account restricted", error 463). It surfaces to us as
+// a messages.update with status ERROR carrying this code in
+// messageStubParameters. See messages-recv.js in @whiskeysockets/baileys.
+const MESSAGE_ACCOUNT_RESTRICTION_CODE = "463";
+// On a 463 we actively query the authoritative restriction state from
+// WhatsApp (fetchAccountReachoutTimelock), which emits a connection.update
+// carrying reachoutTimeLock. A burst of 463s (mass cold outreach) would
+// otherwise fire one query per failed message; debounce so we query at most
+// once per window per connection.
+const REACHOUT_TIMELOCK_REFETCH_WINDOW_MS = 60_000;
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -141,6 +154,10 @@ export class BaileysConnection {
     { unreadCount: number; lastMessageAt: number }
   > = new Map();
   private groupActivityInterval: ReturnType<typeof setInterval> | null = null;
+  // Debounce bookkeeping for the active reach-out time-lock query triggered on
+  // a 463 (see handleMessagesUpdate / fetchReachoutTimelockOn463).
+  private reachoutTimelockFetchInFlight = false;
+  private lastReachoutTimelockFetchAt = 0;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -351,6 +368,13 @@ export class BaileysConnection {
       "message-receipt.update": this.withErrorHandling(
         "handleMessageReceiptUpdate",
         this.handleMessageReceiptUpdate,
+      ),
+      // Antecedent signal to the 463 restriction: WhatsApp's new-chat message
+      // cap. Handled (not left to the generic forwarder) so it is always
+      // delivered, independent of BAILEYS_LISTEN_TO_EVENTS.
+      "message-capping.update": this.withErrorHandling(
+        "handleMessageCappingUpdate",
+        this.handleMessageCappingUpdate,
       ),
       "messaging-history.set": this.withErrorHandling(
         "handleMessagingHistorySet",
@@ -639,6 +663,17 @@ export class BaileysConnection {
     return this.safeSocket().profilePictureUrl(jid, type);
   }
 
+  // Read-only restriction diagnostics. Both query WhatsApp directly via MEX
+  // (GraphQL) queries — they do NOT send a message, so they are safe to call
+  // on a 463-restricted account without worsening the reach-out time-lock.
+  getReachoutTimelock() {
+    return this.safeSocket().fetchAccountReachoutTimelock();
+  }
+
+  getNewChatMessageCap() {
+    return this.safeSocket().fetchNewChatMessageCap();
+  }
+
   async updateProfilePicture(jid: string, image: Buffer) {
     return this.safeSocket().updateProfilePicture(jid, image);
   }
@@ -762,6 +797,23 @@ export class BaileysConnection {
     }
 
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
+
+    // WhatsApp's authoritative reach-out time-lock state (the restriction
+    // behind error 463). It rides on connection.update — sometimes standalone
+    // (no `connection` field), e.g. when emitted by fetchAccountReachoutTimelock
+    // — and falls through to the sendToWebhook below. Destructured explicitly
+    // and logged so it stays visible in production and a future refactor of
+    // this handler cannot silently drop the pass-through.
+    const { reachoutTimeLock } = data;
+    if (reachoutTimeLock) {
+      logger.info(
+        "[%s] [handleConnectionUpdate] reachoutTimeLock update (isActive=%s, enforcementType=%s, ends=%s)",
+        this.phoneNumber,
+        String(reachoutTimeLock.isActive ?? false),
+        reachoutTimeLock.enforcementType ?? "",
+        reachoutTimeLock.timeEnforcementEnds?.toISOString?.() ?? "",
+      );
+    }
 
     // NOTE: Reconnection flow
     // - `isNewLogin`: sent after close on first connection (see `shouldReconnect` below). We send a `reconnecting` update to indicate qr code has been read.
@@ -924,6 +976,16 @@ export class BaileysConnection {
     // Edits, deletions and reactions are conversation activity too — a
     // connection seeing them must not look idle to the rebalancer.
     this.markTraffic();
+
+    // A 463 ("account restricted") surfaces here as a status=ERROR update. The
+    // Baileys 463 handler does not emit the reach-out time-lock state on its
+    // own, so we actively query it: the resulting connection.update carries
+    // reachoutTimeLock to the webhook, giving the consumer a structured,
+    // authoritative signal instead of just a failed message.
+    if (this.hasAccountRestrictionError(data)) {
+      this.fetchReachoutTimelockOn463();
+    }
+
     this.sendToWebhook(
       {
         event: "messages.update",
@@ -933,6 +995,58 @@ export class BaileysConnection {
         awaitResponse: true,
       },
     );
+  }
+
+  private hasAccountRestrictionError(
+    data: BaileysEventMap["messages.update"],
+  ): boolean {
+    return data.some(
+      ({ update }) =>
+        update?.status === WAMessageStatus.ERROR &&
+        Array.isArray(update.messageStubParameters) &&
+        update.messageStubParameters.includes(MESSAGE_ACCOUNT_RESTRICTION_CODE),
+    );
+  }
+
+  // Fire-and-forget, debounced. fetchAccountReachoutTimelock emits a
+  // connection.update { reachoutTimeLock } which handleConnectionUpdate
+  // forwards to the webhook. Safe on a restricted account (read-only MEX
+  // query, sends no message).
+  private fetchReachoutTimelockOn463() {
+    if (this.reachoutTimelockFetchInFlight) {
+      return;
+    }
+    const now = Date.now();
+    if (
+      now - this.lastReachoutTimelockFetchAt <
+      REACHOUT_TIMELOCK_REFETCH_WINDOW_MS
+    ) {
+      return;
+    }
+    this.reachoutTimelockFetchInFlight = true;
+    this.lastReachoutTimelockFetchAt = now;
+    void (async () => {
+      try {
+        await this.getReachoutTimelock();
+      } catch (error) {
+        logger.warn(
+          "[%s] [fetchReachoutTimelockOn463] failed to fetch reachout timelock: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+      } finally {
+        this.reachoutTimelockFetchInFlight = false;
+      }
+    })();
+  }
+
+  private handleMessageCappingUpdate(
+    data: BaileysEventMap["message-capping.update"],
+  ) {
+    this.sendToWebhook({
+      event: "message-capping.update",
+      data,
+    });
   }
 
   private handleMessageReceiptUpdate(

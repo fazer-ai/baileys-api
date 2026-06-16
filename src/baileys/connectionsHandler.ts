@@ -329,6 +329,14 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).updateProfilePicture(jid, image);
   }
 
+  getReachoutTimelock(phoneNumber: string) {
+    return this.getConnection(phoneNumber).getReachoutTimelock();
+  }
+
+  getNewChatMessageCap(phoneNumber: string) {
+    return this.getConnection(phoneNumber).getNewChatMessageCap();
+  }
+
   onWhatsApp(phoneNumber: string, jids: string[]) {
     return this.getConnection(phoneNumber).onWhatsApp(jids);
   }
