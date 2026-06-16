@@ -805,6 +805,40 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("#getReachoutTimelock", () => {
+    it("throws BaileysNotConnectedError if not connected", () => {
+      expect(() => connection.getReachoutTimelock()).toThrow(
+        BaileysNotConnectedError,
+      );
+    });
+
+    it("delegates to socket.fetchAccountReachoutTimelock", async () => {
+      await connection.connect();
+      const result = (await connection.getReachoutTimelock()) as any;
+      expect(mockSocket.fetchAccountReachoutTimelock).toHaveBeenCalled();
+      expect(result).toEqual({ isActive: false, enforcementType: "DEFAULT" });
+    });
+  });
+
+  describe("#getNewChatMessageCap", () => {
+    it("throws BaileysNotConnectedError if not connected", () => {
+      expect(() => connection.getNewChatMessageCap()).toThrow(
+        BaileysNotConnectedError,
+      );
+    });
+
+    it("delegates to socket.fetchNewChatMessageCap", async () => {
+      await connection.connect();
+      const result = (await connection.getNewChatMessageCap()) as any;
+      expect(mockSocket.fetchNewChatMessageCap).toHaveBeenCalled();
+      expect(result).toEqual({
+        total_quota: 100,
+        used_quota: 0,
+        capping_status: "NONE",
+      });
+    });
+  });
+
   describe("#updateOptions", () => {
     it("updates connection options", () => {
       connection.updateOptions({
@@ -1024,6 +1058,24 @@ describe("BaileysConnection", () => {
         expect(body.webhookVerifyToken).toBe("test-token");
       });
 
+      it("forwards a standalone reachoutTimeLock update to the webhook", async () => {
+        // fetchAccountReachoutTimelock emits connection.update carrying only
+        // reachoutTimeLock (no connection state); it must fall through to the
+        // webhook so the consumer gets the authoritative 463 restriction state.
+        const handler = mockEventHandlers.get("connection.update")!;
+        await handler({
+          reachoutTimeLock: { isActive: true, enforcementType: "BIZ_QUALITY" },
+        });
+
+        expect(fetchCalls.length).toBe(1);
+        const body = JSON.parse(fetchCalls[0].body);
+        expect(body.event).toBe("connection.update");
+        expect(body.data.reachoutTimeLock).toEqual({
+          isActive: true,
+          enforcementType: "BIZ_QUALITY",
+        });
+      });
+
       describe("connectionReplaced (440 conflict/replaced)", () => {
         const conflictClosePayload = {
           connection: "close" as const,
@@ -1118,6 +1170,54 @@ describe("BaileysConnection", () => {
         expect(body.event).toBe("messages.update");
         expect(body.awaitResponse).toBe(true);
       });
+
+      it("actively fetches the reachout timelock on a 463 update", async () => {
+        // status ERROR (0) + '463' in messageStubParameters is how a 463
+        // surfaces. We query the authoritative restriction state so a
+        // connection.update { reachoutTimeLock } reaches the consumer.
+        const handler = mockEventHandlers.get("messages.update")!;
+        await handler([
+          {
+            key: { id: "msg-1", remoteJid: "user@s.whatsapp.net" },
+            update: { status: 0, messageStubParameters: ["463"] },
+          },
+        ]);
+
+        expect(mockSocket.fetchAccountReachoutTimelock).toHaveBeenCalledTimes(
+          1,
+        );
+        // The messages.update itself is still forwarded.
+        const body = JSON.parse(fetchCalls[0].body);
+        expect(body.event).toBe("messages.update");
+      });
+
+      it("debounces a burst of 463 updates into a single fetch", async () => {
+        const handler = mockEventHandlers.get("messages.update")!;
+        await handler([
+          {
+            key: { id: "msg-1" },
+            update: { status: 0, messageStubParameters: ["463"] },
+          },
+        ]);
+        await handler([
+          {
+            key: { id: "msg-2" },
+            update: { status: 0, messageStubParameters: ["463"] },
+          },
+        ]);
+
+        expect(mockSocket.fetchAccountReachoutTimelock).toHaveBeenCalledTimes(
+          1,
+        );
+      });
+
+      it("does not fetch the reachout timelock for non-463 updates", async () => {
+        const handler = mockEventHandlers.get("messages.update")!;
+        // A delivery receipt (status SERVER_ACK) must not trigger the query.
+        await handler([{ key: { id: "msg-1" }, update: { status: 2 } }]);
+
+        expect(mockSocket.fetchAccountReachoutTimelock).not.toHaveBeenCalled();
+      });
     });
 
     describe("message-receipt.update", () => {
@@ -1154,6 +1254,28 @@ describe("BaileysConnection", () => {
         expect(fetchCalls.length).toBe(1);
         const body = JSON.parse(fetchCalls[0].body);
         expect(body.event).toBe("group-participants.update");
+      });
+    });
+
+    describe("message-capping.update", () => {
+      it("forwards the capping update to the webhook (handled, not gated by listenToEvents)", async () => {
+        // listenToEvents is empty in the test config, yet capping is delivered
+        // because it is a first-class handled event, not a generic forwarded one.
+        expect(config.baileys.listenToEvents.size).toBe(0);
+
+        const handler = mockEventHandlers.get("message-capping.update")!;
+        expect(handler).toBeDefined();
+
+        await handler({
+          total_quota: 100,
+          used_quota: 95,
+          capping_status: "SECOND_WARNING",
+        });
+
+        expect(fetchCalls.length).toBe(1);
+        const body = JSON.parse(fetchCalls[0].body);
+        expect(body.event).toBe("message-capping.update");
+        expect(body.data.capping_status).toBe("SECOND_WARNING");
       });
     });
   });

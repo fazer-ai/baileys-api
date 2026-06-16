@@ -587,6 +587,158 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .get(
+    "/:phoneNumber/reachout-timelock",
+    async ({ params }) => {
+      const { phoneNumber } = params;
+
+      try {
+        const reachoutTimelock = await baileys.getReachoutTimelock(phoneNumber);
+        return { data: reachoutTimelock };
+      } catch (e) {
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not connected", { status: 404 });
+        }
+        throw e;
+      }
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        description:
+          "Fetch the account's reach-out time-lock state — the restriction behind error 463 ('account restricted') that blocks starting new chats. Read-only: queries WhatsApp directly (MEX) without sending a message, so it is safe to call on a restricted account.",
+        responses: {
+          200: {
+            description: "Reach-out time-lock state retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        isActive: {
+                          type: "boolean",
+                          description:
+                            "Whether the reach-out time-lock is currently enforced",
+                          example: false,
+                        },
+                        timeEnforcementEnds: {
+                          type: "string",
+                          format: "date-time",
+                          nullable: true,
+                          description:
+                            "When the current enforcement window ends",
+                        },
+                        enforcementType: {
+                          type: "string",
+                          description:
+                            "Reason/type of enforcement. 'DEFAULT' means no restriction.",
+                          example: "DEFAULT",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Phone number not connected" },
+        },
+      },
+    },
+  )
+  .get(
+    "/:phoneNumber/new-chat-cap",
+    async ({ params }) => {
+      const { phoneNumber } = params;
+
+      try {
+        const newChatCap = await baileys.getNewChatMessageCap(phoneNumber);
+        return { data: newChatCap };
+      } catch (e) {
+        if (e instanceof BaileysNotConnectedError) {
+          return new Response("Phone number not connected", { status: 404 });
+        }
+        throw e;
+      }
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        description:
+          "Fetch the account's new-chat message cap and usage — an antecedent indicator of the 463 restriction (how many new conversations can still be started this cycle). Read-only: queries WhatsApp directly (MEX) without sending a message.",
+        responses: {
+          200: {
+            description: "New-chat message cap retrieved successfully",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        total_quota: {
+                          type: "number",
+                          description:
+                            "Total new-chat messages allowed in the current cycle",
+                          example: 100,
+                        },
+                        used_quota: {
+                          type: "number",
+                          description:
+                            "New-chat messages already used in the current cycle",
+                          example: 0,
+                        },
+                        cycle_start_timestamp: {
+                          type: "string",
+                          nullable: true,
+                          description: "Unix timestamp of the cycle start",
+                        },
+                        cycle_end_timestamp: {
+                          type: "string",
+                          nullable: true,
+                          description: "Unix timestamp of the cycle end",
+                        },
+                        server_sent_timestamp: {
+                          type: "string",
+                          nullable: true,
+                          description:
+                            "Unix timestamp when WhatsApp produced this snapshot",
+                        },
+                        ote_status: {
+                          type: "string",
+                          nullable: true,
+                          description:
+                            "One-time-engagement cap status (NOT_ELIGIBLE, ELIGIBLE, ACTIVE_IN_CURRENT_CYCLE, EXHAUSTED)",
+                        },
+                        mv_status: {
+                          type: "string",
+                          nullable: true,
+                          description:
+                            "Multi-vertical cap status (NOT_ELIGIBLE, NOT_ACTIVE, ACTIVE, ACTIVE_UPGRADE_AVAILABLE)",
+                        },
+                        capping_status: {
+                          type: "string",
+                          nullable: true,
+                          description:
+                            "Overall capping status (NONE, FIRST_WARNING, SECOND_WARNING, CAPPED)",
+                          example: "NONE",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Phone number not connected" },
+        },
+      },
+    },
+  )
   .post(
     "/:phoneNumber/on-whatsapp",
     async ({ params, body }) => {
