@@ -730,6 +730,88 @@ describe("BaileysConnectionsHandler", () => {
     });
   });
 
+  describe("wrong-phone teardown (requestLogout)", () => {
+    it("wires a requestLogout that tears the connection down through the lock", async () => {
+      await handler.connect("+5511999", defaultOptions);
+      const instance = mockConnectionInstances.get("+5511999")!;
+      expect(typeof instance.options.requestLogout).toBe("function");
+      mockLogout.mockClear();
+
+      // handleWrongPhoneNumber would call this callback.
+      instance.options.requestLogout();
+      // Fire-and-forget — drain it until the teardown removes the connection.
+      while (handler.hasConnection("+5511999")) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+      expect(handler.hasConnection("+5511999")).toBe(false);
+    });
+
+    it("does not run concurrently with an in-flight connect (issue #313)", async () => {
+      // A spawn holds the inFlightOps slot. The wrong-phone teardown must park
+      // on the lock instead of tearing down (and mutating connections) in
+      // parallel with the spawn.
+      let releaseConnect: () => void = () => {};
+      mockConnect.mockImplementationOnce(
+        () =>
+          new Promise<void>((res) => {
+            releaseConnect = res;
+          }),
+      );
+
+      const connectPromise = handler.connect("+5511999", defaultOptions);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      const instance = mockConnectionInstances.get("+5511999")!;
+      mockLogout.mockClear();
+      instance.options.requestLogout();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // Parked on the lock: the connection's logout has NOT run yet.
+      expect(mockLogout).not.toHaveBeenCalled();
+
+      releaseConnect();
+      await connectPromise;
+      while (handler.hasConnection("+5511999")) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // After serializing behind the spawn, the teardown ran exactly once.
+      expect(mockLogout).toHaveBeenCalledTimes(1);
+      expect(handler.hasConnection("+5511999")).toBe(false);
+    });
+
+    it("does not tear down a replacement that already took the slot", async () => {
+      // The old connection (the one that saw the wrong number) fires its
+      // teardown after a replacement has taken its place. The identity check
+      // must make it a no-op so the replacement (and the shared auth state it
+      // reuses) is left intact.
+      await handler.connect("+5511999", defaultOptions);
+      const oldInstance = mockConnectionInstances.get("+5511999")!;
+
+      // Force the recovery path so a replacement instance takes the slot.
+      mockSendPresenceUpdate.mockRejectedValueOnce(
+        new BaileysNotConnectedError(),
+      );
+      await handler.connect("+5511999", defaultOptions);
+      const newInstance = mockConnectionInstances.get("+5511999")!;
+      expect(newInstance).not.toBe(oldInstance);
+
+      mockLogout.mockClear();
+      // Old connection's wrong-phone teardown fires late.
+      oldInstance.options.requestLogout();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // No logout happened (neither old nor new); replacement still tracked.
+      expect(mockLogout).not.toHaveBeenCalled();
+      expect(handler.hasConnection("+5511999")).toBe(true);
+    });
+  });
+
   describe("#logoutAll", () => {
     it("calls logout on all connections and clears the handler", async () => {
       await handler.connect("+5511999", defaultOptions);

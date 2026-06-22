@@ -20,6 +20,11 @@ export interface BaileysConnectionOptions {
   // read back from Redis (a re-read could pick up a successor's epoch).
   leaseEpoch?: number | null;
   onConnectionClose?: () => void;
+  // Invoked by the connection when it must tear itself down via the handler
+  // (wrong-phone-number teardown) so the logout participates in the handler's
+  // inFlightOps lock instead of bypassing it. Wired by the handler, mirroring
+  // onConnectionClose. See issue #313.
+  requestLogout?: () => void;
 }
 
 export interface BaileysConnectionWebhookPayload {
