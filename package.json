@@ -37,7 +37,7 @@
     "pino-roll": "^4.0.0",
     "qrcode": "^1.5.4",
     "redis": "^6.0.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
