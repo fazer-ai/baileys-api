@@ -19,6 +19,7 @@ import type {
   MessageKeyWithId,
   SendReceiptsOptions,
 } from "@/baileys/types";
+import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 
 type ConnectionFactory = (
@@ -163,6 +164,28 @@ export class BaileysConnectionsHandler {
             Object.keys(this.connections).length,
           );
           options.onConnectionClose?.();
+        },
+        requestLogout: () => {
+          // Wrong-phone teardown must serialize through inFlightOps so it
+          // can't race a concurrent connect/logout/discard for this number
+          // (issue #313). Mirror onConnectionClose's identity check: a
+          // replacement may already hold the slot, and only the instance that
+          // saw the wrong number should be torn down — logout() clears the
+          // shared auth state, which we must not wipe out from under a live
+          // replacement.
+          void this.withInFlightOp(phoneNumber, async () => {
+            if (this.connections[phoneNumber] !== connection) {
+              return;
+            }
+            await connection.logout();
+            delete this.connections[phoneNumber];
+          }).catch((error) => {
+            logger.error(
+              "[%s] [requestLogout] %s",
+              phoneNumber,
+              errorToString(error),
+            );
+          });
         },
       });
       this.connections[phoneNumber] = connection;

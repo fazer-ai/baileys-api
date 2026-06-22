@@ -191,6 +191,52 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("wrong phone number", () => {
+    const wrongUserId = "5511888888888:0@s.whatsapp.net";
+
+    it("routes teardown through requestLogout when the handler wired one", async () => {
+      const requestLogout = mock(() => {});
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestLogout,
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      // Socket opened paired with a DIFFERENT number than the registered one.
+      mockSocket.user = { id: wrongUserId };
+      mockSocket.logout.mockClear();
+
+      await handler({ connection: "open" });
+
+      // The wrong-phone webhook fired...
+      expect(
+        fetchCalls.some((c) =>
+          c.body?.includes('"error":"wrong_phone_number"'),
+        ),
+      ).toBe(true);
+      // ...and teardown was delegated to the handler, NOT a direct socket logout.
+      expect(requestLogout).toHaveBeenCalledTimes(1);
+      expect(mockSocket.logout).not.toHaveBeenCalled();
+    });
+
+    it("falls back to a direct logout when no requestLogout is wired", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      mockSocket.user = { id: wrongUserId };
+      mockSocket.logout.mockClear();
+
+      await handler({ connection: "open" });
+
+      expect(
+        fetchCalls.some((c) =>
+          c.body?.includes('"error":"wrong_phone_number"'),
+        ),
+      ).toBe(true);
+      // No handler wired -> direct connection.logout() -> socket.logout().
+      expect(mockSocket.logout).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("#discard", () => {
     it("prevents subsequent connect() from opening a new socket", async () => {
       const makeSocket = ((await import("@whiskeysockets/baileys")) as any)

@@ -133,6 +133,7 @@ export class BaileysConnection {
   private includeMedia: boolean;
   private syncFullHistory: boolean;
   private onConnectionClose: (() => void) | null;
+  private requestLogout: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
@@ -165,6 +166,7 @@ export class BaileysConnection {
     this.webhookUrl = options.webhookUrl;
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.onConnectionClose = options.onConnectionClose || null;
+    this.requestLogout = options.requestLogout ?? null;
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
@@ -1125,7 +1127,15 @@ export class BaileysConnection {
       data: { error: "wrong_phone_number" },
     });
     this.socket?.ev.removeAllListeners("connection.update");
-    this.logout();
+    // Route teardown through the handler so the logout participates in
+    // inFlightOps (serializes with any concurrent connect/logout/discard for
+    // this number). Falls back to a direct logout when no handler wired a
+    // callback (e.g. a standalone BaileysConnection). See issue #313.
+    if (this.requestLogout) {
+      this.requestLogout();
+    } else {
+      this.logout();
+    }
   }
 
   private async handleReconnecting() {
