@@ -14,6 +14,11 @@ export interface BaileysConnectionOptions {
   autoPresenceSubscribe?: boolean;
   apiKeyHash?: string;
   isReconnect?: boolean;
+  // Import/takeover: discard any live socket and spawn a fresh one so the newly
+  // seeded creds are actually loaded. A reused in-memory socket (e.g. one still
+  // emitting QRs) would otherwise ignore the transplanted session. Transient —
+  // stripped in connect() and never persisted onto the connection.
+  forceRestart?: boolean;
   // Epoch of the lease under which this connection was claimed. Stamped onto
   // connection.update webhooks so the client can discard late events from a
   // previous owner. Threaded in by the coordinator's lease-claim path; never

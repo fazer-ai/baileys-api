@@ -291,6 +291,27 @@ describe("BaileysConnectionsHandler", () => {
       expect(mockConnect).not.toHaveBeenCalled();
     });
 
+    it("forceRestart discards a live connection and spawns a fresh one", async () => {
+      // An import re-seeds creds in Redis; a reused in-memory socket (e.g. one
+      // still emitting QRs) would ignore them, so forceRestart must replace it.
+      await handler.connect("+5511999", defaultOptions);
+      mockConnect.mockClear();
+      mockDiscard.mockClear();
+      mockSendPresenceUpdate.mockClear();
+      mockUpdateOptions.mockClear();
+
+      await handler.connect("+5511999", {
+        ...defaultOptions,
+        forceRestart: true,
+      });
+
+      // Old socket torn down, brand-new one spawned, no reuse via presence.
+      expect(mockDiscard).toHaveBeenCalledTimes(1);
+      expect(mockConnect).toHaveBeenCalledTimes(1);
+      expect(mockSendPresenceUpdate).not.toHaveBeenCalled();
+      expect(mockUpdateOptions).not.toHaveBeenCalled();
+    });
+
     it("handles inconsistent connection state when sendPresenceUpdate throws BaileysNotConnectedError", async () => {
       await handler.connect("+5511999", defaultOptions);
       mockConnect.mockClear();

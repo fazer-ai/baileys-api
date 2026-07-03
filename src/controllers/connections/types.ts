@@ -1,5 +1,15 @@
 import { t } from "elysia";
 
+// Base64-encoded binary field. importSession.ts decodes these via
+// Buffer.from(..., "base64"); validating the shape at the schema turns
+// malformed input into a clear 422 instead of silently corrupted creds that
+// only surface later as a failed handshake.
+const base64String = (description?: string) =>
+  t.String({
+    pattern: "^[A-Za-z0-9+/]+={0,2}$",
+    ...(description ? { description } : {}),
+  });
+
 export const userJid = (moreInfo?: string) =>
   t.String({
     description: `User JID${moreInfo ? ` [${moreInfo}]` : ""}`,
@@ -35,21 +45,24 @@ export const phoneNumberParams = t.Object({
 export const extractedSession = t.Object(
   {
     noiseCandidates: t.Array(
-      t.Object({ private: t.String(), public: t.String() }),
+      t.Object({ private: base64String(), public: base64String() }),
       {
         minItems: 1,
         description:
           "Noise keypair candidates (base64). Only one is the real pair; the server cycles them until the socket opens.",
       },
     ),
-    identityKey: t.Object({ private: t.String(), public: t.String() }),
+    identityKey: t.Object({
+      private: base64String(),
+      public: base64String(),
+    }),
     registrationId: t.Number(),
-    advSecretKey: t.String({ description: "ADV secret key (base64)" }),
+    advSecretKey: base64String("ADV secret key (base64)"),
     account: t.Object({
-      details: t.String(),
-      accountSignatureKey: t.String(),
-      accountSignature: t.String(),
-      deviceSignature: t.String(),
+      details: base64String(),
+      accountSignatureKey: base64String(),
+      accountSignature: base64String(),
+      deviceSignature: base64String(),
     }),
     id: t.String({
       description: "Companion device JID",
@@ -60,13 +73,13 @@ export const extractedSession = t.Object(
     signedPreKey: t.Optional(
       t.Object({
         keyId: t.Number(),
-        private: t.String(),
-        public: t.String(),
-        signature: t.String(),
+        private: base64String(),
+        public: base64String(),
+        signature: base64String(),
       }),
     ),
     pushName: t.Optional(t.String()),
-    routingInfo: t.Optional(t.String()),
+    routingInfo: t.Optional(base64String()),
   },
   {
     description:

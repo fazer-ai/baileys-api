@@ -862,10 +862,25 @@ export class BaileysConnection {
         // candidate (re-seeding creds) and reconnect, until one works or the
         // list is exhausted. A no-op for any connection with no candidates
         // seeded (i.e. everything but a just-imported session).
-        if (
-          !this.hasOpened &&
-          (await advanceImportCandidate(this.phoneNumber))
-        ) {
+        //
+        // Guarded: advanceImportCandidate hits Redis on every reconnect (not
+        // just imports). If that call throws (transient Redis failure) the
+        // rejection would propagate out of the withErrorHandling wrapper and
+        // skip the normal reconnect below, stranding the connection. Swallow
+        // it and fall through to the standard reconnect path instead.
+        let advancedCandidate = false;
+        if (!this.hasOpened) {
+          try {
+            advancedCandidate = await advanceImportCandidate(this.phoneNumber);
+          } catch (candidateError) {
+            logger.warn(
+              "[%s] [handleConnectionUpdate] advanceImportCandidate failed; falling back to normal reconnect (error=%s)",
+              this.phoneNumber,
+              errorToString(candidateError),
+            );
+          }
+        }
+        if (advancedCandidate) {
           logger.info(
             "[%s] [handleConnectionUpdate] imported session closed before open; trying next Noise candidate",
             this.phoneNumber,
@@ -947,7 +962,17 @@ export class BaileysConnection {
       this.reconnectCount = 0;
       this.hasOpened = true;
       // Healthy session — stop cycling Noise candidates on future reconnects.
-      void clearImportCandidates(this.phoneNumber);
+      // Not awaited (the open path must not block on it), but the rejection is
+      // handled so a Redis failure surfaces in logs instead of an unhandled
+      // rejection, leaving a stale cursor that a later reconnect would ignore
+      // anyway because hasOpened is now true.
+      clearImportCandidates(this.phoneNumber).catch((clearError) => {
+        logger.warn(
+          "[%s] [handleConnectionUpdate] clearImportCandidates failed; stale import cursor may remain (error=%s)",
+          this.phoneNumber,
+          errorToString(clearError),
+        );
+      });
       this.startGroupActivityFlush();
     }
 

@@ -717,10 +717,26 @@ export class ClusterCoordinator {
       }
       // Store the candidate cursor so the connection handler can cycle to the
       // next Noise key if this one fails the handshake (closes before opening).
-      await seedImportCandidates(phoneNumber, noiseCandidates, candidateIndex);
+      // Checked like seedRedisAuthCreds above: a fenced-off write means another
+      // instance grabbed the lease between forceAcquireLease and here, so the
+      // cursor never persists and candidate cycling would silently no-op. Bail
+      // and release the lease instead of connecting on a half-seeded import.
+      const candidatesSeeded = await seedImportCandidates(
+        phoneNumber,
+        noiseCandidates,
+        candidateIndex,
+      );
+      if (!candidatesSeeded) {
+        throw new Error(
+          "failed to seed import candidates (auth write fenced off)",
+        );
+      }
       await this.handler.connect(phoneNumber, {
         ...options,
         leaseEpoch: acquired.epoch,
+        // Replace any live socket (e.g. an in-progress QR pairing) so the seeded
+        // import creds are loaded on a fresh connection instead of ignored.
+        forceRestart: true,
       });
     } catch (error) {
       await this.releaseHeldLease(phoneNumber).catch(() => {});

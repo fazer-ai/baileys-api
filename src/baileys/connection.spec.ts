@@ -737,6 +737,62 @@ describe("BaileysConnection", () => {
       ) as { index: number };
       expect(stored.index).toBe(12);
     });
+
+    // advanceImportCandidate hits Redis on every reconnect, not just imports.
+    // A transient Redis failure there must not strand the connection: the error
+    // is swallowed and the normal reconnect proceeds.
+    it("falls back to a normal reconnect when advanceImportCandidate throws", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      (redis as any).__hashData.set(
+        authKey,
+        new Map<string, string>([
+          ["creds", JSON.stringify({})],
+          [
+            "import-candidates",
+            JSON.stringify({
+              candidates: [
+                { private: "cA==", public: "cB==" },
+                { private: "cC==", public: "cD==" },
+              ],
+              index: 0,
+            }),
+          ],
+        ]),
+      );
+
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+      const socketsBefore = makeSocket.mock.calls.length;
+
+      // The next hGet is the import-candidates read inside
+      // advanceImportCandidate; make it blow up.
+      (redis.hGet as any).mockImplementationOnce(() =>
+        Promise.reject(new Error("redis down")),
+      );
+
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // Despite the Redis failure, a normal reconnect still happened (a new
+      // socket was created) rather than the connection being stranded.
+      expect(makeSocket.mock.calls.length).toBeGreaterThan(socketsBefore);
+      expect(
+        fetchCalls.some((c) =>
+          c.body?.includes('"error":"reconnect_loop_detected"'),
+        ),
+      ).toBe(false);
+    });
   });
 
   describe("#sendMessage", () => {

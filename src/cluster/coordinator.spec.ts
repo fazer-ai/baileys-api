@@ -817,6 +817,7 @@ describe("ClusterCoordinator", () => {
       expect(handler.connect).toHaveBeenCalledWith("+5511999", {
         ...options,
         leaseEpoch: 1,
+        forceRestart: true,
       });
     });
 
@@ -862,6 +863,27 @@ describe("ClusterCoordinator", () => {
 
       expect(handler.connect).not.toHaveBeenCalled();
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 9);
+    });
+
+    it("releases the lease and does not connect when the candidate seed is fenced off", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+      seedRedisAuthCreds.mockResolvedValue(true);
+      seedImportCandidates.mockResolvedValue(false);
+
+      await expect(
+        coordinator.importSessionWithLease(
+          "+5511999",
+          creds,
+          candidates,
+          0,
+          options,
+        ),
+      ).rejects.toThrow(/candidates/i);
+
+      expect(handler.connect).not.toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 7);
     });
 
     it("refuses to steal a live instance's lease in worker role", async () => {
