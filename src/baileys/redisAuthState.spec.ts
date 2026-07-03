@@ -327,6 +327,14 @@ describe("import candidate cycling", () => {
     mockRedisData.set(authKey(phone), new Map(Object.entries(fields)));
   };
 
+  const mockStringData = (redis as any).__stringData as Map<string, string>;
+  const setLease = (phone: string, owner: string) => {
+    mockStringData.set(
+      `@baileys-api:cluster:lease:${phone}`,
+      JSON.stringify({ owner, epoch: 1 }),
+    );
+  };
+
   it("advanceImportCandidate swaps the noiseKey and bumps the cursor", async () => {
     setHash("adv-phone", {
       creds: JSON.stringify({ noiseKey: { private: "OLD" }, me: { id: "x" } }),
@@ -364,6 +372,47 @@ describe("import candidate cycling", () => {
     expect(await advanceImportCandidate("no-import-phone")).toBe(false);
   });
 
+  it("advanceImportCandidate writes when this instance owns the lease", async () => {
+    setHash("adv-owned", {
+      creds: JSON.stringify({ noiseKey: { private: "OLD" }, me: { id: "x" } }),
+      "import-candidates": JSON.stringify({
+        candidates: [
+          { private: "p0", public: "q0" },
+          { private: "p1", public: "q1" },
+        ],
+        index: 0,
+      }),
+    });
+    setLease("adv-owned", "test-instance");
+
+    expect(await advanceImportCandidate("adv-owned")).toBe(true);
+    expect(
+      JSON.parse(
+        mockRedisData.get(authKey("adv-owned"))!.get("import-candidates")!,
+      ).index,
+    ).toBe(1);
+  });
+
+  it("advanceImportCandidate is fenced off when another instance owns the lease", async () => {
+    setHash("adv-fenced", {
+      creds: JSON.stringify({ noiseKey: { private: "OLD" }, me: { id: "x" } }),
+      "import-candidates": JSON.stringify({
+        candidates: [
+          { private: "p0", public: "q0" },
+          { private: "p1", public: "q1" },
+        ],
+        index: 0,
+      }),
+    });
+    setLease("adv-fenced", "someone-else");
+
+    expect(await advanceImportCandidate("adv-fenced")).toBe(false);
+    // A fenced-off advance moves neither the cursor nor the noiseKey.
+    const hash = mockRedisData.get(authKey("adv-fenced"))!;
+    expect(JSON.parse(hash.get("import-candidates")!).index).toBe(0);
+    expect(JSON.parse(hash.get("creds")!).noiseKey.private).toBe("OLD");
+  });
+
   it("clearImportCandidates removes the cursor", async () => {
     setHash("clear-phone", {
       creds: JSON.stringify({ noiseKey: {} }),
@@ -375,6 +424,20 @@ describe("import candidate cycling", () => {
     expect(
       mockRedisData.get(authKey("clear-phone"))?.get("import-candidates"),
     ).toBeUndefined();
+  });
+
+  it("clearImportCandidates is fenced off when another instance owns the lease", async () => {
+    setHash("clear-fenced", {
+      creds: JSON.stringify({ noiseKey: {} }),
+      "import-candidates": JSON.stringify({ candidates: [], index: 0 }),
+    });
+    setLease("clear-fenced", "someone-else");
+
+    expect(await clearImportCandidates("clear-fenced")).toBe(false);
+    // The cursor survives a fenced-off clear.
+    expect(
+      mockRedisData.get(authKey("clear-fenced"))?.get("import-candidates"),
+    ).toBeDefined();
   });
 });
 

@@ -3,10 +3,13 @@ import { t } from "elysia";
 // Base64-encoded binary field. importSession.ts decodes these via
 // Buffer.from(..., "base64"); validating the shape at the schema turns
 // malformed input into a clear 422 instead of silently corrupted creds that
-// only surface later as a failed handshake.
+// only surface later as a failed handshake. The pattern enforces canonical
+// base64: non-empty, length a multiple of 4, with correct `=` padding only in
+// the final quad — not just an allowed-character check.
 const base64String = (description?: string) =>
   t.String({
-    pattern: "^[A-Za-z0-9+/]+={0,2}$",
+    pattern:
+      "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$",
     ...(description ? { description } : {}),
   });
 
