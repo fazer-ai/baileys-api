@@ -91,6 +91,89 @@ export async function writeAuthMetadata(
   return fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
 }
 
+// Seeds AuthenticationCreds directly into the auth hash before a connect. Used
+// by the session-import flow to transplant an already-linked WhatsApp Web
+// session so the next connect resumes it (creds.me set -> no QR). Goes through
+// the same owner fence as saveCreds, serialized identically, so useRedisAuthState
+// reads it back verbatim. The caller must hold the lease — the import path runs
+// this right after forceAcquireLease — otherwise the write is fenced off and
+// this returns false (do not connect: the socket would resume stale/empty creds).
+export async function seedRedisAuthCreds(
+  id: string,
+  creds: AuthenticationCreds,
+): Promise<boolean> {
+  return fencedAuthWrite(id, [
+    "creds",
+    JSON.stringify(creds, BufferJSON.replacer),
+  ]);
+}
+
+const IMPORT_CANDIDATES_FIELD = "import-candidates";
+
+interface ImportCandidateState {
+  candidates: { private: string; public: string }[];
+  index: number;
+}
+
+// Stores the extracted Noise key candidates next to the seeded creds. Only one
+// candidate is the real private->public pair; the extractor cannot tell which,
+// so the connection handler advances through them (advanceImportCandidate) when
+// an imported session closes before it ever opens. Fenced like every auth write.
+export async function seedImportCandidates(
+  id: string,
+  candidates: { private: string; public: string }[],
+  index: number,
+): Promise<boolean> {
+  return fencedAuthWrite(id, [
+    IMPORT_CANDIDATES_FIELD,
+    JSON.stringify({ candidates, index } satisfies ImportCandidateState),
+  ]);
+}
+
+// Advances a seeded import to the next Noise candidate: rewrites creds.noiseKey
+// and bumps the stored cursor so the next connect() (which re-reads creds from
+// Redis) resumes with the new key. Returns false when nothing is seeded or the
+// candidates are exhausted — the caller then falls back to the normal reconnect.
+export async function advanceImportCandidate(id: string): Promise<boolean> {
+  const key = `${redisKeyPrefix}:${id}:authState`;
+  const raw = await redis.hGet(key, IMPORT_CANDIDATES_FIELD);
+  if (!raw) {
+    return false;
+  }
+  const state = JSON.parse(raw) as ImportCandidateState;
+  const nextIndex = state.index + 1;
+  const next = state.candidates[nextIndex];
+  if (!next) {
+    return false;
+  }
+
+  const credsRaw = await redis.hGet(key, "creds");
+  if (!credsRaw) {
+    return false;
+  }
+  const creds = JSON.parse(credsRaw, BufferJSON.reviver) as AuthenticationCreds;
+  (creds as { noiseKey: unknown }).noiseKey = {
+    private: Buffer.from(next.private, "base64"),
+    public: Buffer.from(next.public, "base64"),
+  };
+
+  return fencedAuthWrite(id, [
+    "creds",
+    JSON.stringify(creds, BufferJSON.replacer),
+    IMPORT_CANDIDATES_FIELD,
+    JSON.stringify({
+      candidates: state.candidates,
+      index: nextIndex,
+    } satisfies ImportCandidateState),
+  ]);
+}
+
+// Clears the import candidate cursor once the session opens (or on teardown):
+// later reconnects of a healthy session must not cycle its Noise key.
+export async function clearImportCandidates(id: string): Promise<boolean> {
+  return fencedAuthWrite(id, [IMPORT_CANDIDATES_FIELD, DELETE_SENTINEL]);
+}
+
 // NOTE: Inspired by https://github.com/hbinduni/baileys-redis-auth
 export async function useRedisAuthState(
   id: string,

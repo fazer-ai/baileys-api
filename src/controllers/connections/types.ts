@@ -28,6 +28,52 @@ export const phoneNumberParams = t.Object({
   }),
 });
 
+// Session extracted from an already-linked WhatsApp Web tab by the browser
+// extension. All binary fields are base64 strings. Optional fields must be
+// omitted when absent (not sent as null). Mirrors ExtractedSession in
+// src/baileys/importSession.ts.
+export const extractedSession = t.Object(
+  {
+    noiseCandidates: t.Array(
+      t.Object({ private: t.String(), public: t.String() }),
+      {
+        minItems: 1,
+        description:
+          "Noise keypair candidates (base64). Only one is the real pair; the server cycles them until the socket opens.",
+      },
+    ),
+    identityKey: t.Object({ private: t.String(), public: t.String() }),
+    registrationId: t.Number(),
+    advSecretKey: t.String({ description: "ADV secret key (base64)" }),
+    account: t.Object({
+      details: t.String(),
+      accountSignatureKey: t.String(),
+      accountSignature: t.String(),
+      deviceSignature: t.String(),
+    }),
+    id: t.String({
+      description: "Companion device JID",
+      example: "551101234567:12@s.whatsapp.net",
+    }),
+    lid: t.Optional(t.String()),
+    platform: t.Optional(t.String()),
+    signedPreKey: t.Optional(
+      t.Object({
+        keyId: t.Number(),
+        private: t.String(),
+        public: t.String(),
+        signature: t.String(),
+      }),
+    ),
+    pushName: t.Optional(t.String()),
+    routingInfo: t.Optional(t.String()),
+  },
+  {
+    description:
+      "Impersonation credentials — never log this object. Transported over HTTPS only.",
+  },
+);
+
 export const iMessageKey = t.Object({
   id: t.Optional(t.String()),
   remoteJid: t.Optional(t.String()),

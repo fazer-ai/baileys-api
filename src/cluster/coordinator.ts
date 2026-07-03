@@ -1,7 +1,10 @@
+import type { AuthenticationCreds } from "@whiskeysockets/baileys";
 import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import {
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
+  seedImportCandidates,
+  seedRedisAuthCreds,
 } from "@/baileys/redisAuthState";
 import type { BaileysConnectionOptions } from "@/baileys/types";
 import { instanceId } from "@/cluster/identity";
@@ -673,6 +676,53 @@ export class ClusterCoordinator {
     } catch (error) {
       // A lease held without a socket would keep routing 421s here until the
       // TTL expires; release it so a retry can land anywhere.
+      await this.releaseHeldLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
+      throw error;
+    }
+  }
+
+  // Session import: same explicit-takeover semantics as connectWithLease, but
+  // seeds transplanted creds into the auth hash BETWEEN acquiring the lease and
+  // connecting. Ordering matters: seedRedisAuthCreds is owner-fenced, so it must
+  // run after forceAcquireLease (we now own the lease) or the write would be a
+  // silent no-op and connect() would resume empty creds and fall back to a QR.
+  async importSessionWithLease(
+    phoneNumber: string,
+    creds: AuthenticationCreds,
+    noiseCandidates: { private: string; public: string }[],
+    candidateIndex: number,
+    options: BaileysConnectionOptions,
+  ) {
+    if (config.cluster.role === "worker") {
+      const lease = await leaseStore.getLease(phoneNumber);
+      if (
+        lease &&
+        lease.owner !== instanceId &&
+        (await registry.isInstanceAlive(lease.owner))
+      ) {
+        throw new BaileysConnectionOwnedElsewhereError(lease.owner);
+      }
+    }
+    const acquired = await leaseStore.forceAcquireLease(phoneNumber);
+    this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
+    this.claimedAt.set(phoneNumber, this.now());
+    void registry.publishOwnershipChanged(phoneNumber);
+    try {
+      const seeded = await seedRedisAuthCreds(phoneNumber, creds);
+      if (!seeded) {
+        throw new Error(
+          "failed to seed imported creds (auth write fenced off)",
+        );
+      }
+      // Store the candidate cursor so the connection handler can cycle to the
+      // next Noise key if this one fails the handshake (closes before opening).
+      await seedImportCandidates(phoneNumber, noiseCandidates, candidateIndex);
+      await this.handler.connect(phoneNumber, {
+        ...options,
+        leaseEpoch: acquired.epoch,
+      });
+    } catch (error) {
       await this.releaseHeldLease(phoneNumber).catch(() => {});
       void registry.publishOwnershipChanged(phoneNumber);
       throw error;

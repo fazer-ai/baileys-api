@@ -4,6 +4,10 @@ import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
+import {
+  InvalidNoiseCandidateError,
+  mapSessionToCreds,
+} from "@/baileys/importSession";
 import coordinator from "@/cluster";
 import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
 import { resolveMisdirectedRequest } from "@/cluster/workerRouting";
@@ -18,6 +22,7 @@ import {
   anyMessageContent,
   chatModification,
   editableMessageContent,
+  extractedSession,
   groupJid,
   iMessageKey,
   iMessageKeyWithId,
@@ -61,11 +66,14 @@ const connectionsController = new Elysia({
     // lease transition the local metadata (apiKeyHash) can lag the new
     // owner's writes, and answering 403 off that stale copy would mask the
     // misdirect the proxy knows how to recover from.
-    // POST /connections/:phone is exempt — it is an explicit takeover and
-    // resolves ownership in connectWithLease (409 when the owner is alive).
+    // POST /connections/:phone and .../import-session are exempt — both are
+    // explicit takeovers and resolve ownership in the coordinator (409 when the
+    // owner is alive).
+    const decodedPath = decodeURIComponent(path);
     const isConnectTakeover =
       request.method === "POST" &&
-      decodeURIComponent(path) === `/connections/${phoneNumber}`;
+      (decodedPath === `/connections/${phoneNumber}` ||
+        decodedPath === `/connections/${phoneNumber}/import-session`);
     if (!isConnectTakeover) {
       const owner = await resolveMisdirectedRequest(phoneNumber);
       if (owner) {
@@ -174,6 +182,89 @@ const connectionsController = new Elysia({
                 schema: { type: "string" },
               },
             },
+          },
+        },
+      },
+    },
+  )
+  .post(
+    "/:phoneNumber/import-session",
+    async ({ params, body, apiKeyHash, set }) => {
+      const { phoneNumber } = params;
+      const { session, candidateIndex, ...options } = body;
+
+      // Transplant an already-linked WhatsApp Web session: map the extracted
+      // creds, seed them under the lease, and connect — the socket resumes as a
+      // registered companion (no QR). Like POST /:phoneNumber it is an explicit
+      // takeover, so a live owner elsewhere surfaces as 409.
+      try {
+        const index = candidateIndex ?? 0;
+        const creds = mapSessionToCreds(session, index);
+        await coordinator.importSessionWithLease(
+          phoneNumber,
+          creds,
+          session.noiseCandidates,
+          index,
+          { ...options, apiKeyHash: apiKeyHash ?? undefined },
+        );
+      } catch (e) {
+        if (e instanceof InvalidNoiseCandidateError) {
+          set.status = 422;
+          return { error: "Unprocessable Entity", message: e.message };
+        }
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another live instance",
+          };
+        }
+        throw e;
+      }
+      set.status = 202;
+    },
+    {
+      params: phoneNumberParams,
+      body: t.Object({
+        session: extractedSession,
+        candidateIndex: t.Optional(
+          t.Number({
+            minimum: 0,
+            default: 0,
+            description:
+              "Index into session.noiseCandidates to try first (only one candidate is the real pair).",
+          }),
+        ),
+        clientName: t.Optional(t.String()),
+        webhookUrl: t.String({
+          format: "uri",
+          description: "URL for receiving updates",
+          example: "http://localhost:3026/whatsapp/+1234567890",
+        }),
+        webhookVerifyToken: t.String({ minLength: 6 }),
+        includeMedia: t.Optional(t.Boolean({ default: true })),
+        syncFullHistory: t.Optional(t.Boolean({ default: false })),
+        groupsEnabled: t.Optional(t.Boolean({ default: true })),
+        autoPresenceSubscribe: t.Optional(t.Boolean({ default: false })),
+      }),
+      detail: {
+        summary: "Import an extracted WhatsApp Web session (no QR)",
+        responses: {
+          202: { description: "Session import accepted; connecting" },
+          409: {
+            description:
+              "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header).",
+            headers: {
+              "x-baileys-owner": {
+                description: "Instance id of the connection owner",
+                schema: { type: "string" },
+              },
+            },
+          },
+          422: {
+            description:
+              "Unprocessable Entity — the requested noise candidate index is out of range.",
           },
         },
       },

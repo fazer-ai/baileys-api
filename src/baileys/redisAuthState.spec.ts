@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { initAuthCreds } from "@whiskeysockets/baileys";
 import redis from "@/lib/redis";
 import {
+  advanceImportCandidate,
+  clearImportCandidates,
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
+  seedImportCandidates,
+  seedRedisAuthCreds,
   useRedisAuthState,
 } from "./redisAuthState";
 
@@ -247,6 +251,130 @@ describe("useRedisAuthState", () => {
       );
       expect(hash?.get("creds")).toBeDefined();
     });
+  });
+});
+
+describe("seedRedisAuthCreds", () => {
+  const mockStringData = (redis as any).__stringData as Map<string, string>;
+
+  it("writes the creds field when no lease exists", async () => {
+    const ok = await seedRedisAuthCreds("seed-phone", initAuthCreds());
+
+    expect(ok).toBe(true);
+    expect(
+      mockRedisData
+        .get("@baileys-api:connections:seed-phone:authState")
+        ?.get("creds"),
+    ).toBeDefined();
+  });
+
+  it("writes when this instance owns the lease", async () => {
+    mockStringData.set(
+      "@baileys-api:cluster:lease:seed-owned-phone",
+      JSON.stringify({ owner: "test-instance", epoch: 1 }),
+    );
+
+    const ok = await seedRedisAuthCreds("seed-owned-phone", initAuthCreds());
+
+    expect(ok).toBe(true);
+    expect(
+      mockRedisData
+        .get("@baileys-api:connections:seed-owned-phone:authState")
+        ?.get("creds"),
+    ).toBeDefined();
+  });
+
+  it("is fenced off (false, no write) when the lease is owned elsewhere", async () => {
+    mockStringData.set(
+      "@baileys-api:cluster:lease:seed-fenced-phone",
+      JSON.stringify({ owner: "someone-else", epoch: 2 }),
+    );
+
+    const ok = await seedRedisAuthCreds("seed-fenced-phone", initAuthCreds());
+
+    expect(ok).toBe(false);
+    expect(
+      mockRedisData
+        .get("@baileys-api:connections:seed-fenced-phone:authState")
+        ?.get("creds"),
+    ).toBeUndefined();
+  });
+});
+
+describe("import candidate cycling", () => {
+  const authKey = (phone: string) =>
+    `@baileys-api:connections:${phone}:authState`;
+
+  const setHash = (phone: string, fields: Record<string, string>) => {
+    mockRedisData.set(authKey(phone), new Map(Object.entries(fields)));
+  };
+
+  it("seedImportCandidates stores the candidate list and cursor", async () => {
+    const ok = await seedImportCandidates(
+      "cand-phone",
+      [{ private: "a", public: "b" }],
+      0,
+    );
+
+    expect(ok).toBe(true);
+    const stored = mockRedisData
+      .get(authKey("cand-phone"))
+      ?.get("import-candidates");
+    expect(stored).toBeDefined();
+    expect(JSON.parse(stored as string)).toEqual({
+      candidates: [{ private: "a", public: "b" }],
+      index: 0,
+    });
+  });
+
+  it("advanceImportCandidate swaps the noiseKey and bumps the cursor", async () => {
+    setHash("adv-phone", {
+      creds: JSON.stringify({ noiseKey: { private: "OLD" }, me: { id: "x" } }),
+      "import-candidates": JSON.stringify({
+        candidates: [
+          { private: "p0", public: "q0" },
+          { private: "p1", public: "q1" },
+        ],
+        index: 0,
+      }),
+    });
+
+    const advanced = await advanceImportCandidate("adv-phone");
+
+    expect(advanced).toBe(true);
+    const hash = mockRedisData.get(authKey("adv-phone"))!;
+    expect(JSON.parse(hash.get("import-candidates")!).index).toBe(1);
+    // The old candidate's noiseKey must have been replaced.
+    expect(JSON.parse(hash.get("creds")!).noiseKey.private).not.toBe("OLD");
+  });
+
+  it("advanceImportCandidate returns false when the candidates are exhausted", async () => {
+    setHash("exhaust-phone", {
+      creds: JSON.stringify({ noiseKey: {} }),
+      "import-candidates": JSON.stringify({
+        candidates: [{ private: "only", public: "only" }],
+        index: 0,
+      }),
+    });
+
+    expect(await advanceImportCandidate("exhaust-phone")).toBe(false);
+  });
+
+  it("advanceImportCandidate returns false when nothing was seeded", async () => {
+    expect(await advanceImportCandidate("no-import-phone")).toBe(false);
+  });
+
+  it("clearImportCandidates removes the cursor", async () => {
+    setHash("clear-phone", {
+      creds: JSON.stringify({ noiseKey: {} }),
+      "import-candidates": JSON.stringify({ candidates: [], index: 0 }),
+    });
+
+    await clearImportCandidates("clear-phone");
+
+    expect(
+      mockRedisData.get(authKey("clear-phone"))?.get("import-candidates"),
+    ).toBeUndefined();
   });
 });
 
