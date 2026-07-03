@@ -793,6 +793,63 @@ describe("BaileysConnection", () => {
         ),
       ).toBe(false);
     });
+
+    // A connectionReplaced kick is a legitimate takeover signal, not a wrong
+    // -candidate one. A not-yet-open imported session must yield to the lease
+    // owner instead of consuming a candidate and fighting the owner.
+    it("does not cycle a candidate on connectionReplaced; yields to the lease owner", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
+      const candidates = [
+        { private: "cGE=", public: "cWE=" },
+        { private: "cGI=", public: "cWI=" },
+      ];
+      (redis as any).__hashData.set(
+        authKey,
+        new Map<string, string>([
+          ["creds", JSON.stringify({})],
+          ["import-candidates", JSON.stringify({ candidates, index: 0 })],
+        ]),
+      );
+      // Lease owned by a live peer → the replaced kick is a legitimate takeover.
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "other-instance", epoch: 7 }),
+      );
+
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+      const callsBefore = makeSocket.mock.calls.length;
+
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: { statusCode: 440, payload: {} },
+            message: "Stream Errored (conflict)",
+          },
+        },
+      });
+      stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // Yielded: no new socket spawned, and the candidate cursor was untouched.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      const stored = JSON.parse(
+        (redis as any).__hashData.get(authKey)!.get("import-candidates")!,
+      ) as { index: number };
+      expect(stored.index).toBe(0);
+    });
   });
 
   describe("#sendMessage", () => {

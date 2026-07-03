@@ -868,8 +868,16 @@ export class BaileysConnection {
         // rejection would propagate out of the withErrorHandling wrapper and
         // skip the normal reconnect below, stranding the connection. Swallow
         // it and fall through to the standard reconnect path instead.
+        //
+        // A connectionReplaced kick is NOT a wrong-Noise-candidate signal: it
+        // means another instance may legitimately own this identity. Exclude it
+        // so it falls through to the shouldYieldToLeaseOwner fence below instead
+        // of consuming candidates and fighting the owner until the list runs out.
         let advancedCandidate = false;
-        if (!this.hasOpened) {
+        if (
+          !this.hasOpened &&
+          statusCode !== DisconnectReason.connectionReplaced
+        ) {
           try {
             advancedCandidate = await advanceImportCandidate(this.phoneNumber);
           } catch (candidateError) {
