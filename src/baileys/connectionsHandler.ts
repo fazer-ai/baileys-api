@@ -195,6 +195,13 @@ export class BaileysConnectionsHandler {
       if (existing && forceRestart) {
         existing.discard();
         delete this.connections[phoneNumber];
+        // Keep shutdown-drain accounting exactly like discardConnection: a
+        // discarded connection with pending webhook deliveries (e.g. a QR
+        // socket mid-retry) must stay counted so a graceful shutdown waits for
+        // them instead of exiting mid-delivery.
+        if (existing.inFlightWebhooks > 0) {
+          this.drainingWebhooks.add(existing);
+        }
         await this.spawnConnection(phoneNumber, connectOptions);
         return;
       }

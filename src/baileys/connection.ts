@@ -960,19 +960,23 @@ export class BaileysConnection {
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      const isFirstOpen = !this.hasOpened;
       this.hasOpened = true;
-      // Healthy session — stop cycling Noise candidates on future reconnects.
-      // Not awaited (the open path must not block on it), but the rejection is
-      // handled so a Redis failure surfaces in logs instead of an unhandled
-      // rejection, leaving a stale cursor that a later reconnect would ignore
-      // anyway because hasOpened is now true.
-      clearImportCandidates(this.phoneNumber).catch((clearError) => {
-        logger.warn(
-          "[%s] [handleConnectionUpdate] clearImportCandidates failed; stale import cursor may remain (error=%s)",
-          this.phoneNumber,
-          errorToString(clearError),
-        );
-      });
+      if (isFirstOpen) {
+        // First healthy open — stop cycling Noise candidates on future
+        // reconnects. Gated to the first open so later reconnects don't repeat
+        // the fenced Redis write; a stale cursor is already harmless once
+        // hasOpened is true. Not awaited (the open path must not block on it),
+        // but the rejection is handled so a Redis failure surfaces in logs
+        // instead of an unhandled rejection.
+        clearImportCandidates(this.phoneNumber).catch((clearError) => {
+          logger.warn(
+            "[%s] [handleConnectionUpdate] clearImportCandidates failed; stale import cursor may remain (error=%s)",
+            this.phoneNumber,
+            errorToString(clearError),
+          );
+        });
+      }
       this.startGroupActivityFlush();
     }
 

@@ -21,6 +21,7 @@ import {
   anyJid,
   anyMessageContent,
   chatModification,
+  connectionOptionsSchema,
   editableMessageContent,
   extractedSession,
   groupJid,
@@ -123,50 +124,7 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       body: t.Object({
-        clientName: t.Optional(
-          t.String({
-            description: "Name of the client to be used on WhatsApp connection",
-            example: "My WhatsApp Client",
-          }),
-        ),
-        webhookUrl: t.String({
-          format: "uri",
-          description: "URL for receiving updates",
-          example: "http://localhost:3026/whatsapp/+1234567890",
-        }),
-        webhookVerifyToken: t.String({
-          minLength: 6,
-          description: "Token for verifying webhook",
-          example: "a3f4b2",
-        }),
-        includeMedia: t.Optional(
-          t.Boolean({
-            description:
-              "Include media in messages.upsert event payload as base64 string",
-            // TODO(v2): Change default to false.
-            default: true,
-          }),
-        ),
-        syncFullHistory: t.Optional(
-          t.Boolean({
-            description: "Sync full history of messages on connection.",
-            default: false,
-          }),
-        ),
-        groupsEnabled: t.Optional(
-          t.Boolean({
-            description:
-              "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
-            default: true,
-          }),
-        ),
-        autoPresenceSubscribe: t.Optional(
-          t.Boolean({
-            description:
-              "Automatically subscribe to presence updates when sending/receiving messages or typing status to/from a contact. Subscriptions are ephemeral and re-established automatically.",
-            default: false,
-          }),
-        ),
+        ...connectionOptionsSchema,
       }),
       detail: {
         responses: {
@@ -236,17 +194,7 @@ const connectionsController = new Elysia({
               "Index into session.noiseCandidates to try first (only one candidate is the real pair).",
           }),
         ),
-        clientName: t.Optional(t.String()),
-        webhookUrl: t.String({
-          format: "uri",
-          description: "URL for receiving updates",
-          example: "http://localhost:3026/whatsapp/+1234567890",
-        }),
-        webhookVerifyToken: t.String({ minLength: 6 }),
-        includeMedia: t.Optional(t.Boolean({ default: true })),
-        syncFullHistory: t.Optional(t.Boolean({ default: false })),
-        groupsEnabled: t.Optional(t.Boolean({ default: true })),
-        autoPresenceSubscribe: t.Optional(t.Boolean({ default: false })),
+        ...connectionOptionsSchema,
       }),
       detail: {
         summary: "Import an extracted WhatsApp Web session (no QR)",

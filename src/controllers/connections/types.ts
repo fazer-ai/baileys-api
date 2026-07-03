@@ -94,6 +94,56 @@ export const extractedSession = t.Object(
   },
 );
 
+// Shared connection-options request fields. Spread into both POST /:phoneNumber
+// and POST /:phoneNumber/import-session so the two bodies cannot drift apart as
+// options are added or their descriptions/defaults change.
+export const connectionOptionsSchema = {
+  clientName: t.Optional(
+    t.String({
+      description: "Name of the client to be used on WhatsApp connection",
+      example: "My WhatsApp Client",
+    }),
+  ),
+  webhookUrl: t.String({
+    format: "uri",
+    description: "URL for receiving updates",
+    example: "http://localhost:3026/whatsapp/+1234567890",
+  }),
+  webhookVerifyToken: t.String({
+    minLength: 6,
+    description: "Token for verifying webhook",
+    example: "a3f4b2",
+  }),
+  includeMedia: t.Optional(
+    t.Boolean({
+      description:
+        "Include media in messages.upsert event payload as base64 string",
+      // TODO(v2): Change default to false.
+      default: true,
+    }),
+  ),
+  syncFullHistory: t.Optional(
+    t.Boolean({
+      description: "Sync full history of messages on connection.",
+      default: false,
+    }),
+  ),
+  groupsEnabled: t.Optional(
+    t.Boolean({
+      description:
+        "Enable full group message processing. When false, group messages are accumulated and sent as activity summaries.",
+      default: true,
+    }),
+  ),
+  autoPresenceSubscribe: t.Optional(
+    t.Boolean({
+      description:
+        "Automatically subscribe to presence updates when sending/receiving messages or typing status to/from a contact. Subscriptions are ephemeral and re-established automatically.",
+      default: false,
+    }),
+  ),
+} as const;
+
 export const iMessageKey = t.Object({
   id: t.Optional(t.String()),
   remoteJid: t.Optional(t.String()),

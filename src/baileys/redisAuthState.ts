@@ -55,6 +55,25 @@ end
 return redis.call('DEL', KEYS[1])
 `;
 
+// Owner-fenced compare-and-swap for advancing an import candidate. The caller
+// mutates creds.noiseKey in JS (BufferJSON, which Redis-side cjson cannot round
+// -trip without corrupting empty arrays like processedHistoryMessages) and then
+// commits here ONLY if the stored creds still byte-match what it read — so a
+// concurrent saveCreds is never clobbered. KEYS=[hash, lease],
+// ARGV=[owner, expectedCreds, newCreds, newCursor].
+// Returns: 0 fenced off, 1 written, 2 creds changed under us (caller retries).
+const ADVANCE_CANDIDATE_CAS_SCRIPT = `
+-- advance-candidate-cas
+local raw = redis.call('GET', KEYS[2])
+if raw then
+  local lease = cjson.decode(raw)
+  if lease.owner ~= ARGV[1] then return 0 end
+end
+if redis.call('HGET', KEYS[1], 'creds') ~= ARGV[2] then return 2 end
+redis.call('HSET', KEYS[1], 'creds', ARGV[3], 'import-candidates', ARGV[4])
+return 1
+`;
+
 // `pairs` alternates field, value (value = DELETE_SENTINEL deletes the field).
 // Returns false when the write was fenced off (lease owned by someone else).
 async function fencedAuthWrite(id: string, pairs: string[]): Promise<boolean> {
@@ -127,38 +146,72 @@ export async function seedImportedSession(
 // and bumps the stored cursor so the next connect() (which re-reads creds from
 // Redis) resumes with the new key. Returns false when nothing is seeded or the
 // candidates are exhausted — the caller then falls back to the normal reconnect.
+//
+// The read-modify-write of creds is committed via an owner-fenced compare-and
+// -swap: the noiseKey mutation happens in JS (BufferJSON), then the write lands
+// only if the stored creds still match what we read. This keeps a concurrent
+// saveCreds (which also writes the creds field) from being clobbered by our
+// stale-but-for-noiseKey copy; on a mismatch we re-read and recompute. A few
+// attempts is ample — the only writer that can race here is this connection's
+// own saveCreds during a pre-open reconnect, not a hot loop.
 export async function advanceImportCandidate(id: string): Promise<boolean> {
   const key = `${redisKeyPrefix}:${id}:authState`;
-  const raw = await redis.hGet(key, IMPORT_CANDIDATES_FIELD);
-  if (!raw) {
-    return false;
-  }
-  const state = JSON.parse(raw) as ImportCandidateState;
-  const nextIndex = state.index + 1;
-  const next = state.candidates[nextIndex];
-  if (!next) {
-    return false;
-  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const raw = await redis.hGet(key, IMPORT_CANDIDATES_FIELD);
+    if (!raw) {
+      return false;
+    }
+    const state = JSON.parse(raw) as ImportCandidateState;
+    const nextIndex = state.index + 1;
+    const next = state.candidates[nextIndex];
+    if (!next) {
+      return false;
+    }
 
-  const credsRaw = await redis.hGet(key, "creds");
-  if (!credsRaw) {
-    return false;
-  }
-  const creds = JSON.parse(credsRaw, BufferJSON.reviver) as AuthenticationCreds;
-  (creds as { noiseKey: unknown }).noiseKey = {
-    private: Buffer.from(next.private, "base64"),
-    public: Buffer.from(next.public, "base64"),
-  };
+    const credsRaw = await redis.hGet(key, "creds");
+    if (!credsRaw) {
+      return false;
+    }
+    const creds = JSON.parse(
+      credsRaw,
+      BufferJSON.reviver,
+    ) as AuthenticationCreds;
+    (creds as { noiseKey: unknown }).noiseKey = {
+      private: Buffer.from(next.private, "base64"),
+      public: Buffer.from(next.public, "base64"),
+    };
 
-  return fencedAuthWrite(id, [
-    "creds",
-    JSON.stringify(creds, BufferJSON.replacer),
-    IMPORT_CANDIDATES_FIELD,
-    JSON.stringify({
-      candidates: state.candidates,
-      index: nextIndex,
-    } satisfies ImportCandidateState),
-  ]);
+    const result = await redis.eval(ADVANCE_CANDIDATE_CAS_SCRIPT, {
+      keys: [key, clusterKeys.lease(id)],
+      arguments: [
+        instanceId,
+        credsRaw,
+        JSON.stringify(creds, BufferJSON.replacer),
+        JSON.stringify({
+          candidates: state.candidates,
+          index: nextIndex,
+        } satisfies ImportCandidateState),
+      ],
+    });
+
+    if (result === 1) {
+      return true;
+    }
+    if (result === 0) {
+      // Fenced off — another instance owns the lease; do not retry.
+      logger.warn(
+        "[%s] [advanceImportCandidate] write rejected — lease is owned by another instance",
+        id,
+      );
+      return false;
+    }
+    // result === 2: creds changed under us (concurrent saveCreds) — re-read.
+  }
+  logger.warn(
+    "[%s] [advanceImportCandidate] creds kept changing under the compare-and-swap; skipping candidate advance this cycle",
+    id,
+  );
+  return false;
 }
 
 // Clears the import candidate cursor once the session opens (or on teardown):
