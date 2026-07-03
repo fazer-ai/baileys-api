@@ -1,7 +1,9 @@
+import type { AuthenticationCreds } from "@whiskeysockets/baileys";
 import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import {
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
+  seedImportedSession,
 } from "@/baileys/redisAuthState";
 import type { BaileysConnectionOptions } from "@/baileys/types";
 import { instanceId } from "@/cluster/identity";
@@ -640,17 +642,16 @@ export class ClusterCoordinator {
     }
   }
 
-  // Explicit user intent (POST /connections) — takes the identity over even
-  // if a lease exists. In standalone this matches today's single-instance
-  // semantics (the request is authoritative). In worker role, a lease held
-  // by another LIVE instance is not stolen: the caller gets
-  // BaileysConnectionOwnedElsewhereError and the proxy re-routes the request
-  // to the owner. A dead owner's lease is force-taken immediately instead of
-  // waiting for the TTL.
-  async connectWithLease(
+  // Shared lease-takeover setup for the explicit-intent paths
+  // (connectWithLease / importSessionWithLease): the worker-role live-owner
+  // guard, the force-acquire, and the in-memory bookkeeping. Kept in one place
+  // so the two callers cannot drift apart. In worker role, a lease held by
+  // another LIVE instance is not stolen — the caller gets
+  // BaileysConnectionOwnedElsewhereError and the proxy re-routes to the owner;
+  // a dead owner's lease is force-taken immediately instead of waiting for TTL.
+  private async acquireExplicitLease(
     phoneNumber: string,
-    options: BaileysConnectionOptions,
-  ) {
+  ): Promise<{ epoch: number }> {
     if (config.cluster.role === "worker") {
       const lease = await leaseStore.getLease(phoneNumber);
       if (
@@ -665,18 +666,79 @@ export class ClusterCoordinator {
     this.heldLeaseEpochs.set(phoneNumber, acquired.epoch);
     this.claimedAt.set(phoneNumber, this.now());
     void registry.publishOwnershipChanged(phoneNumber);
+    return acquired;
+  }
+
+  // Runs work under a just-acquired explicit lease, releasing it if the work
+  // throws. A lease held without a live socket would keep routing 421s here
+  // until the TTL expires; releasing lets a retry land anywhere.
+  private async runUnderExplicitLease<T>(
+    phoneNumber: string,
+    work: () => Promise<T>,
+  ): Promise<T> {
     try {
-      await this.handler.connect(phoneNumber, {
-        ...options,
-        leaseEpoch: acquired.epoch,
-      });
+      return await work();
     } catch (error) {
-      // A lease held without a socket would keep routing 421s here until the
-      // TTL expires; release it so a retry can land anywhere.
       await this.releaseHeldLease(phoneNumber).catch(() => {});
       void registry.publishOwnershipChanged(phoneNumber);
       throw error;
     }
+  }
+
+  // Explicit user intent (POST /connections) — takes the identity over even if
+  // a lease exists. In standalone this matches today's single-instance
+  // semantics (the request is authoritative).
+  async connectWithLease(
+    phoneNumber: string,
+    options: BaileysConnectionOptions,
+  ) {
+    const acquired = await this.acquireExplicitLease(phoneNumber);
+    await this.runUnderExplicitLease(phoneNumber, () =>
+      this.handler.connect(phoneNumber, {
+        ...options,
+        leaseEpoch: acquired.epoch,
+      }),
+    );
+  }
+
+  // Session import: same explicit-takeover semantics as connectWithLease, but
+  // seeds the transplanted creds + Noise-candidate cursor into the auth hash
+  // BETWEEN acquiring the lease and connecting. Ordering matters:
+  // seedImportedSession is owner-fenced, so it must run after acquiring the
+  // lease (we now own it) or the write would be a silent no-op and connect()
+  // would resume empty creds and fall back to a QR.
+  async importSessionWithLease(
+    phoneNumber: string,
+    creds: AuthenticationCreds,
+    noiseCandidates: { private: string; public: string }[],
+    candidateIndex: number,
+    options: BaileysConnectionOptions,
+  ) {
+    const acquired = await this.acquireExplicitLease(phoneNumber);
+    await this.runUnderExplicitLease(phoneNumber, async () => {
+      // Creds and the candidate cursor are written together (single fenced
+      // write), so an import never lands with one persisted but not the other.
+      // A fenced-off write means another instance grabbed the lease between
+      // acquiring it and here; bail and release instead of connecting empty.
+      const seeded = await seedImportedSession(
+        phoneNumber,
+        creds,
+        noiseCandidates,
+        candidateIndex,
+      );
+      if (!seeded) {
+        throw new Error(
+          "failed to seed imported session (auth write fenced off)",
+        );
+      }
+      await this.handler.connect(phoneNumber, {
+        ...options,
+        leaseEpoch: acquired.epoch,
+        // Replace any live socket (e.g. an in-progress QR pairing) so the seeded
+        // import creds are loaded on a fresh connection instead of ignored.
+        forceRestart: true,
+      });
+    });
   }
 
   get isDraining(): boolean {

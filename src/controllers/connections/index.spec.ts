@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import Elysia from "elysia";
 import baileys from "@/baileys";
+import coordinator from "@/cluster";
+import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
 import config from "@/config";
 import connectionsController from "./index";
 
@@ -143,5 +145,122 @@ describe("connectionsController restriction diagnostics", () => {
 
       expect(res.status).toBe(404);
     });
+  });
+});
+
+describe("connectionsController import-session", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+
+  beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
+    config.env = "development";
+    config.cluster.role = "standalone";
+  });
+
+  afterEach(() => {
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
+  });
+
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+
+  const validSession = () => ({
+    noiseCandidates: [
+      { private: b64("np0"), public: b64("nb0") },
+      { private: b64("np1"), public: b64("nb1") },
+    ],
+    identityKey: { private: b64("ip"), public: b64("ib") },
+    registrationId: 42,
+    advSecretKey: b64("adv"),
+    account: {
+      details: b64("d"),
+      accountSignatureKey: b64("ask"),
+      accountSignature: b64("as"),
+      deviceSignature: b64("ds"),
+    },
+    id: "551101234567:12@s.whatsapp.net",
+    lid: "551101234567@s.whatsapp.net",
+  });
+
+  const validBody = () => ({
+    session: validSession(),
+    webhookUrl: "http://localhost:3026/whatsapp/+551234567890",
+    webhookVerifyToken: "verify",
+  });
+
+  const importRequest = (phone: string, body: unknown) =>
+    new Request(`http://localhost/connections/${phone}/import-session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("maps the session and hands off to the coordinator (202)", async () => {
+    const spy = spyOn(coordinator, "importSessionWithLease").mockResolvedValue(
+      undefined,
+    );
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(importRequest("+551234567890", validBody()));
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith(
+        "+551234567890",
+        expect.objectContaining({ registered: true }),
+        expect.arrayContaining([
+          expect.objectContaining({ private: expect.any(String) }),
+        ]),
+        0,
+        expect.objectContaining({
+          webhookUrl: "http://localhost:3026/whatsapp/+551234567890",
+          webhookVerifyToken: "verify",
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("returns 422 when the noise candidate index is out of range", async () => {
+    const spy = spyOn(coordinator, "importSessionWithLease");
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        importRequest("+551234567890", { ...validBody(), candidateIndex: 9 }),
+      );
+
+      expect(res.status).toBe(422);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("surfaces a live owner elsewhere as 409 with x-baileys-owner", async () => {
+    const spy = spyOn(coordinator, "importSessionWithLease").mockImplementation(
+      async () => {
+        throw new BaileysConnectionOwnedElsewhereError("owner-2");
+      },
+    );
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(importRequest("+551234567890", validBody()));
+
+      expect(res.status).toBe(409);
+      expect(res.headers.get("x-baileys-owner")).toBe("owner-2");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("rejects a body missing the webhook fields", async () => {
+    const app = new Elysia().use(connectionsController);
+    const res = await app.handle(
+      importRequest("+551234567890", { session: validSession() }),
+    );
+
+    expect(res.status).toBe(422);
   });
 });

@@ -125,6 +125,21 @@ const mockRedis = {
         return 0;
       }
 
+      // advance-candidate-cas (owner-fenced compare-and-swap on creds):
+      // KEYS=[hash, lease], ARGV=[owner, expectedCreds, newCreds, newCursor].
+      // Checked before the generic HSET branch because this script also HSETs.
+      if (script.includes("advance-candidate-cas")) {
+        const [hashKey, leaseKey] = keys;
+        const [owner, expectedCreds, newCreds, newCursor] = args;
+        const rawLease = stringData.get(leaseKey);
+        if (rawLease && JSON.parse(rawLease).owner !== owner) return 0;
+        if (hashData.get(hashKey)?.get("creds") !== expectedCreds) return 2;
+        if (!hashData.has(hashKey)) hashData.set(hashKey, new Map());
+        hashData.get(hashKey)!.set("creds", newCreds);
+        hashData.get(hashKey)!.set("import-candidates", newCursor);
+        return 1;
+      }
+
       // write-if-owner (auth state fencing): KEYS=[hash, lease], ARGV=[owner, ...pairs]
       if (script.includes("HSET")) {
         const [hashKey, leaseKey] = keys;

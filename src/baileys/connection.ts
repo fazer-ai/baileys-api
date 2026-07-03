@@ -25,7 +25,12 @@ import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientV
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
-import { useRedisAuthState, writeAuthMetadata } from "@/baileys/redisAuthState";
+import {
+  advanceImportCandidate,
+  clearImportCandidates,
+  useRedisAuthState,
+  writeAuthMetadata,
+} from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   BaileysConnectionWebhookPayload,
@@ -141,6 +146,10 @@ export class BaileysConnection {
   private reconnectCount = 0;
   private connectionReplacedTimestamps: number[] = [];
   private isDiscarded = false;
+  // Tracks whether this connection ever reached `open`. Imported sessions cycle
+  // Noise candidates only while they have never opened; a close after opening
+  // is a normal disconnect, not a wrong-key handshake failure.
+  private hasOpened = false;
   private _inFlightWebhooks = 0;
   private leaseEpoch: number | null = null;
   // Monotonic timestamp of the last message-level traffic (received message,
@@ -850,6 +859,53 @@ export class BaileysConnection {
         message !== "QR refs attempts ended";
 
       if (shouldReconnect) {
+        // Imported session with a wrong Noise candidate: the handshake fails
+        // and the socket closes before ever opening. Advance to the next
+        // candidate (re-seeding creds) and reconnect, until one works or the
+        // list is exhausted. A no-op for any connection with no candidates
+        // seeded (i.e. everything but a just-imported session).
+        //
+        // Guarded: advanceImportCandidate hits Redis on every reconnect (not
+        // just imports). If that call throws (transient Redis failure) the
+        // rejection would propagate out of the withErrorHandling wrapper and
+        // skip the normal reconnect below, stranding the connection. Swallow
+        // it and fall through to the standard reconnect path instead.
+        //
+        // A connectionReplaced kick is NOT a wrong-Noise-candidate signal: it
+        // means another instance may legitimately own this identity. Exclude it
+        // so it falls through to the shouldYieldToLeaseOwner fence below instead
+        // of consuming candidates and fighting the owner until the list runs out.
+        let advancedCandidate = false;
+        if (
+          !this.hasOpened &&
+          statusCode !== DisconnectReason.connectionReplaced
+        ) {
+          try {
+            advancedCandidate = await advanceImportCandidate(this.phoneNumber);
+          } catch (candidateError) {
+            logger.warn(
+              "[%s] [handleConnectionUpdate] advanceImportCandidate failed; falling back to normal reconnect (error=%s)",
+              this.phoneNumber,
+              errorToString(candidateError),
+            );
+          }
+        }
+        if (advancedCandidate) {
+          logger.info(
+            "[%s] [handleConnectionUpdate] imported session closed before open; trying next Noise candidate",
+            this.phoneNumber,
+          );
+          // Cycling Noise candidates is a bounded iteration (advanceImportCandidate
+          // returns false once the list is exhausted), not a reconnect loop, so it
+          // must not count against the reconnect-loop guard. Without this reset a
+          // list longer than the guard threshold (10) aborts before reaching a
+          // candidate past that index, and only a coordinator re-claim can resume it.
+          this.reconnectCount = 0;
+          await this.handleReconnecting();
+          this.socket = null;
+          this.connect();
+          return;
+        }
         // Distributed fence: a conflict/replaced kick may mean another
         // instance legitimately took this identity over (its lease says so).
         // Yield instead of stealing the connection back — the in-memory
@@ -914,6 +970,23 @@ export class BaileysConnection {
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      const isFirstOpen = !this.hasOpened;
+      this.hasOpened = true;
+      if (isFirstOpen) {
+        // First healthy open — stop cycling Noise candidates on future
+        // reconnects. Gated to the first open so later reconnects don't repeat
+        // the fenced Redis write; a stale cursor is already harmless once
+        // hasOpened is true. Not awaited (the open path must not block on it),
+        // but the rejection is handled so a Redis failure surfaces in logs
+        // instead of an unhandled rejection.
+        clearImportCandidates(this.phoneNumber).catch((clearError) => {
+          logger.warn(
+            "[%s] [handleConnectionUpdate] clearImportCandidates failed; stale import cursor may remain (error=%s)",
+            this.phoneNumber,
+            errorToString(clearError),
+          );
+        });
+      }
       this.startGroupActivityFlush();
     }
 

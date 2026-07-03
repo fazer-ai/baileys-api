@@ -722,6 +722,182 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("import Noise candidate cycling", () => {
+    // A just-imported session cycles through its seeded Noise candidates when it
+    // closes before opening (only one candidate is the real key). That cycling
+    // is a bounded iteration, NOT a reconnect loop, so it must not count against
+    // the >10 reconnect-loop guard — otherwise a candidate list longer than the
+    // threshold aborts before the winning candidate (here index 12) is reached,
+    // and only a coordinator re-claim could resume it.
+    it("does not trip the reconnect-loop guard while cycling candidates past the threshold", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      const candidates = Array.from({ length: 13 }, (_, i) => ({
+        private: Buffer.from(`private-key-${i}`.padEnd(32, "0")).toString(
+          "base64",
+        ),
+        public: Buffer.from(`public-key-${i}`.padEnd(32, "0")).toString(
+          "base64",
+        ),
+      }));
+      (redis as any).__hashData.set(
+        authKey,
+        new Map<string, string>([
+          ["creds", JSON.stringify({})],
+          ["import-candidates", JSON.stringify({ candidates, index: 0 })],
+        ]),
+      );
+
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+
+      // Drive 12 close-before-open events → 12 candidate advances (cursor 0->12).
+      // Without the guard reset in the candidate-advance branch, the 11th advance
+      // would push reconnectCount past 10 and abort with reconnect_loop_detected.
+      for (let i = 0; i < 12; i++) {
+        await handler({
+          connection: "close" as const,
+          lastDisconnect: {
+            error: { output: { statusCode: 500, payload: {} }, message: "x" },
+          },
+        });
+        let stable = -1;
+        while (stable !== makeSocket.mock.calls.length) {
+          stable = makeSocket.mock.calls.length;
+          await new Promise((r) => setImmediate(r));
+        }
+      }
+
+      // The reconnect-loop guard must not have fired while cycling candidates.
+      expect(
+        fetchCalls.some((c) =>
+          c.body?.includes('"error":"reconnect_loop_detected"'),
+        ),
+      ).toBe(false);
+      // Auth state is preserved throughout (never destructively cleared).
+      expect((redis.del as any).mock.calls.length).toBe(0);
+      // The cursor advanced through every candidate we drove.
+      const stored = JSON.parse(
+        (redis as any).__hashData.get(authKey)!.get("import-candidates")!,
+      ) as { index: number };
+      expect(stored.index).toBe(12);
+    });
+
+    // advanceImportCandidate hits Redis on every reconnect, not just imports.
+    // A transient Redis failure there must not strand the connection: the error
+    // is swallowed and the normal reconnect proceeds.
+    it("falls back to a normal reconnect when advanceImportCandidate throws", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      (redis as any).__hashData.set(
+        authKey,
+        new Map<string, string>([
+          ["creds", JSON.stringify({})],
+          [
+            "import-candidates",
+            JSON.stringify({
+              candidates: [
+                { private: "cA==", public: "cB==" },
+                { private: "cC==", public: "cD==" },
+              ],
+              index: 0,
+            }),
+          ],
+        ]),
+      );
+
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileys.default as ReturnType<typeof mock>;
+      const socketsBefore = makeSocket.mock.calls.length;
+
+      // The next hGet is the import-candidates read inside
+      // advanceImportCandidate; make it blow up.
+      (redis.hGet as any).mockImplementationOnce(() =>
+        Promise.reject(new Error("redis down")),
+      );
+
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // Despite the Redis failure, a normal reconnect still happened (a new
+      // socket was created) rather than the connection being stranded.
+      expect(makeSocket.mock.calls.length).toBeGreaterThan(socketsBefore);
+      expect(
+        fetchCalls.some((c) =>
+          c.body?.includes('"error":"reconnect_loop_detected"'),
+        ),
+      ).toBe(false);
+    });
+
+    // A connectionReplaced kick is a legitimate takeover signal, not a wrong
+    // -candidate one. A not-yet-open imported session must yield to the lease
+    // owner instead of consuming a candidate and fighting the owner.
+    it("does not cycle a candidate on connectionReplaced; yields to the lease owner", async () => {
+      const authKey = "@baileys-api:connections:+5511999999999:authState";
+      const leaseKey = "@baileys-api:cluster:lease:+5511999999999";
+      const candidates = [
+        { private: "cGE=", public: "cWE=" },
+        { private: "cGI=", public: "cWI=" },
+      ];
+      (redis as any).__hashData.set(
+        authKey,
+        new Map<string, string>([
+          ["creds", JSON.stringify({})],
+          ["import-candidates", JSON.stringify({ candidates, index: 0 })],
+        ]),
+      );
+      // Lease owned by a live peer → the replaced kick is a legitimate takeover.
+      (redis as any).__stringData.set(
+        leaseKey,
+        JSON.stringify({ owner: "other-instance", epoch: 7 }),
+      );
+
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+        .default as ReturnType<typeof mock>;
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+      const callsBefore = makeSocket.mock.calls.length;
+
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: { statusCode: 440, payload: {} },
+            message: "Stream Errored (conflict)",
+          },
+        },
+      });
+      stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+
+      // Yielded: no new socket spawned, and the candidate cursor was untouched.
+      expect(makeSocket.mock.calls.length).toBe(callsBefore);
+      const stored = JSON.parse(
+        (redis as any).__hashData.get(authKey)!.get("import-candidates")!,
+      ) as { index: number };
+      expect(stored.index).toBe(0);
+    });
+  });
+
   describe("#sendMessage", () => {
     it("throws BaileysNotConnectedError if not connected", async () => {
       await expect(

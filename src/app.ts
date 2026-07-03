@@ -7,6 +7,7 @@ import clusterController from "@/controllers/cluster";
 import connectionsController from "@/controllers/connections";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
+import { errorForLog } from "@/helpers/errorForLog";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 
@@ -32,7 +33,7 @@ const app = new Elysia()
     }
   })
   .onError(({ path, error, code }) => {
-    logger.error("%s\n%s", path, errorToString(error));
+    logger.error("%s\n%s", path, errorForLog(code, error));
     switch (code) {
       case "INTERNAL_SERVER_ERROR": {
         const message =
