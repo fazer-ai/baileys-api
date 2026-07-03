@@ -290,11 +290,15 @@ describe("seedImportedSession", () => {
     );
 
     expect(ok).toBe(true);
-    expect(
-      mockRedisData
-        .get("@baileys-api:connections:seed-owned-phone:authState")
-        ?.get("creds"),
-    ).toBeDefined();
+    const hash = mockRedisData.get(
+      "@baileys-api:connections:seed-owned-phone:authState",
+    );
+    expect(hash?.get("creds")).toBeDefined();
+    // The candidate cursor is part of the same atomic write, not just creds.
+    expect(JSON.parse(hash?.get("import-candidates") as string)).toEqual({
+      candidates,
+      index: 0,
+    });
   });
 
   it("is fenced off (false, no write) when the lease is owned elsewhere", async () => {

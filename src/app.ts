@@ -7,27 +7,9 @@ import clusterController from "@/controllers/cluster";
 import connectionsController from "@/controllers/connections";
 import mediaController from "@/controllers/media";
 import statusController from "@/controllers/status";
+import { errorForLog } from "@/helpers/errorForLog";
 import { errorToString } from "@/helpers/errorToString";
 import logger, { deepSanitizeObject } from "@/lib/logger";
-
-// Validation errors can carry the rejected request VALUE in their message/stack
-// (Elysia surfaces the offending payload). For import-session that payload is
-// impersonation credentials, so never log the raw error for a VALIDATION code:
-// emit only which fields failed and the schema-derived reason, not the value.
-function errorForLog(code: string | number, error: unknown): string {
-  if (code !== "VALIDATION") {
-    return errorToString(error);
-  }
-  const all = (error as { all?: Array<{ path?: string; message?: string }> })
-    ?.all;
-  if (Array.isArray(all) && all.length > 0) {
-    const details = all
-      .map((e) => `${e.path ?? "?"} (${e.message ?? "invalid"})`)
-      .join("; ");
-    return `Validation failed: ${details}`;
-  }
-  return "Validation failed";
-}
 
 const app = new Elysia()
   .onAfterResponse(({ request, response, set }) => {
