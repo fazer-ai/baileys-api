@@ -24,8 +24,7 @@ const getRedisSavedAuthStateIds = spyOn(
   "getRedisSavedAuthStateIds",
 );
 const isRedisAuthStatePaired = spyOn(redisAuthState, "isRedisAuthStatePaired");
-const seedRedisAuthCreds = spyOn(redisAuthState, "seedRedisAuthCreds");
-const seedImportCandidates = spyOn(redisAuthState, "seedImportCandidates");
+const seedImportedSession = spyOn(redisAuthState, "seedImportedSession");
 const listLiveInstances = spyOn(registry, "listLiveInstances");
 const heartbeat = spyOn(registry, "heartbeat");
 const deregister = spyOn(registry, "deregister");
@@ -43,8 +42,7 @@ const getHandoffTarget = spyOn(leaseStore, "getHandoffTarget");
 afterAll(() => {
   getRedisSavedAuthStateIds.mockRestore();
   isRedisAuthStatePaired.mockRestore();
-  seedRedisAuthCreds.mockRestore();
-  seedImportCandidates.mockRestore();
+  seedImportedSession.mockRestore();
   listLiveInstances.mockRestore();
   heartbeat.mockRestore();
   deregister.mockRestore();
@@ -121,8 +119,7 @@ describe("ClusterCoordinator", () => {
   beforeEach(() => {
     getRedisSavedAuthStateIds.mockReset();
     isRedisAuthStatePaired.mockReset();
-    seedRedisAuthCreds.mockReset();
-    seedImportCandidates.mockReset();
+    seedImportedSession.mockReset();
     listLiveInstances.mockReset();
     heartbeat.mockReset();
     deregister.mockReset();
@@ -139,8 +136,7 @@ describe("ClusterCoordinator", () => {
 
     getRedisSavedAuthStateIds.mockResolvedValue([]);
     isRedisAuthStatePaired.mockResolvedValue(true);
-    seedRedisAuthCreds.mockResolvedValue(true);
-    seedImportCandidates.mockResolvedValue(true);
+    seedImportedSession.mockResolvedValue(true);
     listLiveInstances.mockResolvedValue([instanceEntry("test-instance")]);
     heartbeat.mockResolvedValue(undefined);
     deregister.mockResolvedValue(undefined);
@@ -795,7 +791,7 @@ describe("ClusterCoordinator", () => {
     ];
     const options = { webhookUrl: "https://h.com", webhookVerifyToken: "t" };
 
-    it("acquires the lease, seeds creds + candidates, then connects", async () => {
+    it("acquires the lease, seeds the imported session, then connects", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
 
@@ -808,9 +804,9 @@ describe("ClusterCoordinator", () => {
       );
 
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
-      expect(seedRedisAuthCreds).toHaveBeenCalledWith("+5511999", creds);
-      expect(seedImportCandidates).toHaveBeenCalledWith(
+      expect(seedImportedSession).toHaveBeenCalledWith(
         "+5511999",
+        creds,
         candidates,
         0,
       );
@@ -829,7 +825,7 @@ describe("ClusterCoordinator", () => {
         order.push("acquire");
         return { owner: "test-instance", epoch: 1 };
       });
-      seedRedisAuthCreds.mockImplementation(async () => {
+      seedImportedSession.mockImplementation(async () => {
         order.push("seed");
         return true;
       });
@@ -849,7 +845,7 @@ describe("ClusterCoordinator", () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
       forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 9 });
-      seedRedisAuthCreds.mockResolvedValue(false);
+      seedImportedSession.mockResolvedValue(false);
 
       await expect(
         coordinator.importSessionWithLease(
@@ -865,12 +861,11 @@ describe("ClusterCoordinator", () => {
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 9);
     });
 
-    it("releases the lease and does not connect when the candidate seed is fenced off", async () => {
+    it("releases the lease when connect throws after a successful seed", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
-      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
-      seedRedisAuthCreds.mockResolvedValue(true);
-      seedImportCandidates.mockResolvedValue(false);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 4 });
+      handler.connect.mockRejectedValueOnce(new Error("connect boom"));
 
       await expect(
         coordinator.importSessionWithLease(
@@ -880,10 +875,12 @@ describe("ClusterCoordinator", () => {
           0,
           options,
         ),
-      ).rejects.toThrow(/candidates/i);
+      ).rejects.toThrow("connect boom");
 
-      expect(handler.connect).not.toHaveBeenCalled();
-      expect(releaseLease).toHaveBeenCalledWith("+5511999", 7);
+      // The release-on-failure rollback holds even after the lease AND the seed
+      // both succeed, not just on the pre-connect fencing paths.
+      expect(seedImportedSession).toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 4);
     });
 
     it("refuses to steal a live instance's lease in worker role", async () => {
@@ -905,7 +902,7 @@ describe("ClusterCoordinator", () => {
         ).rejects.toThrow(BaileysConnectionOwnedElsewhereError);
 
         expect(forceAcquireLease).not.toHaveBeenCalled();
-        expect(seedRedisAuthCreds).not.toHaveBeenCalled();
+        expect(seedImportedSession).not.toHaveBeenCalled();
       } finally {
         config.cluster.role = "standalone";
       }

@@ -53,13 +53,15 @@ describe("mapSessionToCreds", () => {
     );
   });
 
-  it("marks the session as registered and sets me", () => {
+  it("marks the session as registered and sets me with a normalized @lid", () => {
     const creds = mapSessionToCreds(baseSession());
     expect(creds.registered).toBe(true);
+    // me.lid is normalized to the @lid domain (like signalIdentities), not left
+    // as the raw @s.whatsapp.net JID the extractor hands over.
     expect(creds.me).toEqual({
       id: "551101234567:12@s.whatsapp.net",
       name: "Alice",
-      lid: "551101234567@s.whatsapp.net",
+      lid: "551101234567@lid",
     });
   });
 

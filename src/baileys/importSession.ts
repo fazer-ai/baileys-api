@@ -76,19 +76,28 @@ export function mapSessionToCreds(
 
   const base = initAuthCreds();
 
-  const signalIdentities: AuthenticationCreds["signalIdentities"] = session.lid
-    ? [
-        {
-          identifier: {
-            name: session.lid.replace("@s.whatsapp.net", "@lid"),
-            deviceId: 0,
+  // The extractor hands the LID over as a `@s.whatsapp.net` JID, but Baileys
+  // addresses linked identities on the `@lid` domain. Normalize once and use
+  // the same value for both signalIdentities and me.lid so downstream identity
+  // and LID lookups stay consistent (they must resolve to the same JID).
+  const normalizedLid = session.lid
+    ? session.lid.replace("@s.whatsapp.net", "@lid")
+    : undefined;
+
+  const signalIdentities: AuthenticationCreds["signalIdentities"] =
+    normalizedLid
+      ? [
+          {
+            identifier: {
+              name: normalizedLid,
+              deviceId: 0,
+            },
+            identifierKey: toSignalIdentityKey(
+              session.account.accountSignatureKey,
+            ),
           },
-          identifierKey: toSignalIdentityKey(
-            session.account.accountSignatureKey,
-          ),
-        },
-      ]
-    : [];
+        ]
+      : [];
 
   return {
     ...base,
@@ -112,7 +121,7 @@ export function mapSessionToCreds(
     me: {
       id: session.id,
       name: session.pushName ?? undefined,
-      lid: session.lid ?? undefined,
+      lid: normalizedLid,
     },
     signalIdentities,
     platform: session.platform ?? undefined,

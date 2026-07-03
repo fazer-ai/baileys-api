@@ -48,6 +48,10 @@ export const extractedSession = t.Object(
       t.Object({ private: base64String(), public: base64String() }),
       {
         minItems: 1,
+        // Bounded like the other array bodies in this controller: the list is
+        // persisted to Redis and iterated during candidate cycling, so an
+        // unbounded array is needless load. The extractor yields a handful.
+        maxItems: 20,
         description:
           "Noise keypair candidates (base64). Only one is the real pair; the server cycles them until the socket opens.",
       },

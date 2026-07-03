@@ -91,23 +91,6 @@ export async function writeAuthMetadata(
   return fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
 }
 
-// Seeds AuthenticationCreds directly into the auth hash before a connect. Used
-// by the session-import flow to transplant an already-linked WhatsApp Web
-// session so the next connect resumes it (creds.me set -> no QR). Goes through
-// the same owner fence as saveCreds, serialized identically, so useRedisAuthState
-// reads it back verbatim. The caller must hold the lease — the import path runs
-// this right after forceAcquireLease — otherwise the write is fenced off and
-// this returns false (do not connect: the socket would resume stale/empty creds).
-export async function seedRedisAuthCreds(
-  id: string,
-  creds: AuthenticationCreds,
-): Promise<boolean> {
-  return fencedAuthWrite(id, [
-    "creds",
-    JSON.stringify(creds, BufferJSON.replacer),
-  ]);
-}
-
 const IMPORT_CANDIDATES_FIELD = "import-candidates";
 
 interface ImportCandidateState {
@@ -115,16 +98,26 @@ interface ImportCandidateState {
   index: number;
 }
 
-// Stores the extracted Noise key candidates next to the seeded creds. Only one
-// candidate is the real private->public pair; the extractor cannot tell which,
-// so the connection handler advances through them (advanceImportCandidate) when
-// an imported session closes before it ever opens. Fenced like every auth write.
-export async function seedImportCandidates(
+// Transplants an already-linked WhatsApp Web session before a connect: writes
+// the mapped creds AND the Noise-candidate cursor in a SINGLE fenced write, so
+// an import can never land with creds persisted but no candidates (or vice
+// versa) if the process dies between two writes. The next connect resumes the
+// session (creds.me set -> no QR) and can cycle candidates if the seeded Noise
+// key is the wrong one (only one candidate is the real private->public pair;
+// the extractor cannot tell which). Serialized identically to saveCreds so
+// useRedisAuthState reads it back verbatim. The caller must hold the lease —
+// the import path runs this right after forceAcquireLease — otherwise the write
+// is fenced off and this returns false (do not connect: the socket would resume
+// stale/empty creds).
+export async function seedImportedSession(
   id: string,
+  creds: AuthenticationCreds,
   candidates: { private: string; public: string }[],
   index: number,
 ): Promise<boolean> {
   return fencedAuthWrite(id, [
+    "creds",
+    JSON.stringify(creds, BufferJSON.replacer),
     IMPORT_CANDIDATES_FIELD,
     JSON.stringify({ candidates, index } satisfies ImportCandidateState),
   ]);

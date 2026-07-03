@@ -6,8 +6,7 @@ import {
   clearImportCandidates,
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
-  seedImportCandidates,
-  seedRedisAuthCreds,
+  seedImportedSession,
   useRedisAuthState,
 } from "./redisAuthState";
 
@@ -254,18 +253,27 @@ describe("useRedisAuthState", () => {
   });
 });
 
-describe("seedRedisAuthCreds", () => {
+describe("seedImportedSession", () => {
   const mockStringData = (redis as any).__stringData as Map<string, string>;
+  const candidates = [{ private: "a", public: "b" }];
 
-  it("writes the creds field when no lease exists", async () => {
-    const ok = await seedRedisAuthCreds("seed-phone", initAuthCreds());
+  it("writes creds + candidate cursor together when no lease exists", async () => {
+    const ok = await seedImportedSession(
+      "seed-phone",
+      initAuthCreds(),
+      candidates,
+      0,
+    );
 
     expect(ok).toBe(true);
-    expect(
-      mockRedisData
-        .get("@baileys-api:connections:seed-phone:authState")
-        ?.get("creds"),
-    ).toBeDefined();
+    const hash = mockRedisData.get(
+      "@baileys-api:connections:seed-phone:authState",
+    );
+    expect(hash?.get("creds")).toBeDefined();
+    expect(JSON.parse(hash?.get("import-candidates") as string)).toEqual({
+      candidates,
+      index: 0,
+    });
   });
 
   it("writes when this instance owns the lease", async () => {
@@ -274,7 +282,12 @@ describe("seedRedisAuthCreds", () => {
       JSON.stringify({ owner: "test-instance", epoch: 1 }),
     );
 
-    const ok = await seedRedisAuthCreds("seed-owned-phone", initAuthCreds());
+    const ok = await seedImportedSession(
+      "seed-owned-phone",
+      initAuthCreds(),
+      candidates,
+      0,
+    );
 
     expect(ok).toBe(true);
     expect(
@@ -290,7 +303,12 @@ describe("seedRedisAuthCreds", () => {
       JSON.stringify({ owner: "someone-else", epoch: 2 }),
     );
 
-    const ok = await seedRedisAuthCreds("seed-fenced-phone", initAuthCreds());
+    const ok = await seedImportedSession(
+      "seed-fenced-phone",
+      initAuthCreds(),
+      candidates,
+      0,
+    );
 
     expect(ok).toBe(false);
     expect(
@@ -308,24 +326,6 @@ describe("import candidate cycling", () => {
   const setHash = (phone: string, fields: Record<string, string>) => {
     mockRedisData.set(authKey(phone), new Map(Object.entries(fields)));
   };
-
-  it("seedImportCandidates stores the candidate list and cursor", async () => {
-    const ok = await seedImportCandidates(
-      "cand-phone",
-      [{ private: "a", public: "b" }],
-      0,
-    );
-
-    expect(ok).toBe(true);
-    const stored = mockRedisData
-      .get(authKey("cand-phone"))
-      ?.get("import-candidates");
-    expect(stored).toBeDefined();
-    expect(JSON.parse(stored as string)).toEqual({
-      candidates: [{ private: "a", public: "b" }],
-      index: 0,
-    });
-  });
 
   it("advanceImportCandidate swaps the noiseKey and bumps the cursor", async () => {
     setHash("adv-phone", {
