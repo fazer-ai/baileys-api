@@ -19,7 +19,7 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Cache Dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-deps-v2-${{ hashFiles('bun.lock') }}
