@@ -47,7 +47,7 @@
     "bun-git-hooks": "^0.3.2",
     "bun-types": "latest",
     "pino-caller": "^4.0.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "patchedDependencies": {
     "@whiskeysockets/baileys@7.0.0-rc13": "patches/@whiskeysockets%2Fbaileys@7.0.0-rc13.patch"
