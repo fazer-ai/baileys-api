@@ -12,10 +12,10 @@ index 311fb3ef977e3f8bd091650e2f484ce57f12e91c..b1d29fdf662b7afb2649ff876f359a3d
              this.socket?.on(event, (...args) => this.emit(event, ...args));
          }
 diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
-index 6357f9ee191bb76873b3c2777d7da1b68dd36fdd..b3f8b0e37eca27925302f3a2b43b4c401d2166ba 100644
+index ae34a8f315a0b9fd101472cc69e59624c6c63861..c4ddb74ddb49d1e161e6746147fca17e949e4b35 100644
 --- a/lib/Socket/socket.js
 +++ b/lib/Socket/socket.js
-@@ -274,6 +274,9 @@ export const makeSocket = (config) => {
+@@ -277,6 +277,9 @@ export const makeSocket = (config) => {
      const socketEndHandlers = [];
      /** log & process any unexpected errors */
      const onUnexpectedError = (err, msg) => {
