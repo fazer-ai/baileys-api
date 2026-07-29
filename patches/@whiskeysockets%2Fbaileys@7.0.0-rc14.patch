@@ -12,10 +12,10 @@ index 311fb3ef977e3f8bd091650e2f484ce57f12e91c..b1d29fdf662b7afb2649ff876f359a3d
              this.socket?.on(event, (...args) => this.emit(event, ...args));
          }
 diff --git a/lib/Socket/socket.js b/lib/Socket/socket.js
-index 6357f9ee191bb76873b3c2777d7da1b68dd36fdd..b3f8b0e37eca27925302f3a2b43b4c401d2166ba 100644
+index ae34a8f315a0b9fd101472cc69e59624c6c63861..c4ddb74ddb49d1e161e6746147fca17e949e4b35 100644
 --- a/lib/Socket/socket.js
 +++ b/lib/Socket/socket.js
-@@ -274,6 +274,9 @@ export const makeSocket = (config) => {
+@@ -277,6 +277,9 @@ export const makeSocket = (config) => {
      const socketEndHandlers = [];
      /** log & process any unexpected errors */
      const onUnexpectedError = (err, msg) => {
@@ -47,10 +47,10 @@ index 0004fb678bf732ec3fd5ec35ae48594bd5960c43..c0802d9e512724d06ef8f3bdd52f0325
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..840dd0d7e0c78ceab41dfa8e224990730797e136 100644
+index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf71e7be00 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
-@@ -1,6 +1,53 @@
+@@ -1,6 +1,52 @@
  import { prepareWAMessageMedia } from './messages.js';
  import { extractImageThumb, getHttpStream } from './messages-media.js';
  const THUMBNAIL_WIDTH_PX = 192;
@@ -92,11 +92,10 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..840dd0d7e0c78ceab41dfa8e22499073
 +        description: `${data.author_name}`,
 +        mediaType: 'video.other',
 +        contentType: 'text/html; charset=utf-8',
-+        images: [
-+            `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-+            `https://img.youtube.com/vi/${videoId}/sddefault.jpg`,
-+            data.thumbnail_url
-+        ],
++        // getUrlInfo reads only images[0] and downscales it to thumbnailWidth
++        // (192px by default), so prefer the variant that always exists over
++        // higher-resolution ones that 404 on older or low-quality uploads.
++        images: [data.thumbnail_url || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`],
 +        videos: [],
 +        favicons: ['https://www.youtube.com/favicon.ico']
 +    };
@@ -104,7 +103,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..840dd0d7e0c78ceab41dfa8e22499073
  /** Fetches an image and generates a thumbnail for it */
  const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
      const stream = await getHttpStream(url, fetchOpts);
-@@ -26,27 +73,33 @@ export const getUrlInfo = async (text, opts = {
+@@ -26,27 +72,36 @@ export const getUrlInfo = async (text, opts = {
          if (!text.startsWith('https://') && !text.startsWith('http://')) {
              previewLink = 'https://' + previewLink;
          }
@@ -130,7 +129,10 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..840dd0d7e0c78ceab41dfa8e22499073
 -            headers: opts.fetchOpts?.headers
 -        });
 +        let info;
-+        if (isYouTubeUrl(previewLink)) {
++        // isYouTubeUrl matches on a substring, so a host like notyoutube.com
++        // passes it. getVideoId validates the hostname; gating on it keeps such
++        // URLs on the generic path instead of throwing 'Invalid YouTube URL'.
++        if (isYouTubeUrl(previewLink) && getVideoId(previewLink)) {
 +            info = await getYouTubeLinkPreview(previewLink, opts.fetchOpts);
 +        }
 +        else {
