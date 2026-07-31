@@ -4,6 +4,7 @@ import redis from "@/lib/redis";
 import {
   advanceImportCandidate,
   clearImportCandidates,
+  clearRedisAuthState,
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
   seedImportedSession,
@@ -512,5 +513,48 @@ describe("getRedisSavedAuthStateIds", () => {
 
     const result = await getRedisSavedAuthStateIds();
     expect(result).toEqual([]);
+  });
+});
+
+describe("clearRedisAuthState", () => {
+  const mockStringData = (redis as any).__stringData as Map<string, string>;
+
+  beforeEach(() => {
+    mockRedisData.clear();
+    mockStringData.clear();
+  });
+
+  it("removes the hash when this instance holds the lease", async () => {
+    const key = "@baileys-api:connections:offline-phone:authState";
+    mockRedisData.set(
+      key,
+      new Map([["creds", JSON.stringify({ registrationId: 1 })]]),
+    );
+    mockStringData.set(
+      "@baileys-api:cluster:lease:offline-phone",
+      JSON.stringify({ owner: "test-instance", epoch: 2 }),
+    );
+
+    expect(await clearRedisAuthState("offline-phone")).toBe(true);
+    expect(mockRedisData.has(key)).toBe(false);
+  });
+
+  it("is fenced off when another instance holds the lease", async () => {
+    const key = "@baileys-api:connections:foreign-phone:authState";
+    mockRedisData.set(
+      key,
+      new Map([["creds", JSON.stringify({ registrationId: 1 })]]),
+    );
+    mockStringData.set(
+      "@baileys-api:cluster:lease:foreign-phone",
+      JSON.stringify({ owner: "someone-else", epoch: 2 }),
+    );
+
+    expect(await clearRedisAuthState("foreign-phone")).toBe(false);
+    expect(mockRedisData.has(key)).toBe(true);
+  });
+
+  it("treats a phone with no stored session as already cleared", async () => {
+    expect(await clearRedisAuthState("ghost-phone")).toBe(true);
   });
 });

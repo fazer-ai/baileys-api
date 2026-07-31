@@ -110,6 +110,25 @@ export async function writeAuthMetadata(
   return fencedAuthWrite(id, ["metadata", JSON.stringify(metadata)]);
 }
 
+// Offline logout: clears the persisted auth state when there is no live
+// socket to run the logout RPC through — the session is being discarded by
+// explicit intent (DELETE /connections) and must not survive to be resumed
+// by the next connect. Same owner fence as the in-connection clear; the
+// caller must hold the lease (acquireExplicitLease) or the DEL no-ops.
+export async function clearRedisAuthState(id: string): Promise<boolean> {
+  const key = `${redisKeyPrefix}:${id}:authState`;
+  const result = await redis.eval(CLEAR_IF_OWNER_SCRIPT, {
+    keys: [key, clusterKeys.lease(id)],
+    arguments: [instanceId],
+  });
+  if (result !== 0) {
+    return true;
+  }
+  // A 0 is ambiguous: fenced off OR nothing to delete. Only fencing is a
+  // failure — a logout for a phone with no stored session is a no-op.
+  return !(await redis.exists(key));
+}
+
 const IMPORT_CANDIDATES_FIELD = "import-candidates";
 
 interface ImportCandidateState {

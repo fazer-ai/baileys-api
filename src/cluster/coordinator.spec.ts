@@ -7,6 +7,7 @@ import {
   mock,
   spyOn,
 } from "bun:test";
+import { BaileysNotConnectedError } from "@/baileys/connection";
 import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import * as redisAuthState from "@/baileys/redisAuthState";
 import * as registry from "@/cluster/instanceRegistry";
@@ -26,6 +27,7 @@ const getRedisSavedAuthStateIds = spyOn(
 );
 const isRedisAuthStatePaired = spyOn(redisAuthState, "isRedisAuthStatePaired");
 const seedImportedSession = spyOn(redisAuthState, "seedImportedSession");
+const clearRedisAuthState = spyOn(redisAuthState, "clearRedisAuthState");
 const listLiveInstances = spyOn(registry, "listLiveInstances");
 const heartbeat = spyOn(registry, "heartbeat");
 const deregister = spyOn(registry, "deregister");
@@ -46,6 +48,7 @@ afterAll(() => {
   getRedisSavedAuthStateIds.mockRestore();
   isRedisAuthStatePaired.mockRestore();
   seedImportedSession.mockRestore();
+  clearRedisAuthState.mockRestore();
   listLiveInstances.mockRestore();
   heartbeat.mockRestore();
   deregister.mockRestore();
@@ -140,6 +143,7 @@ describe("ClusterCoordinator", () => {
     getHandoffTarget.mockReset();
     isQuarantined.mockReset();
     clearQuarantine.mockReset();
+    clearRedisAuthState.mockReset();
 
     getRedisSavedAuthStateIds.mockResolvedValue([]);
     isRedisAuthStatePaired.mockResolvedValue(true);
@@ -162,6 +166,7 @@ describe("ClusterCoordinator", () => {
     getHandoffTarget.mockResolvedValue(null);
     isQuarantined.mockResolvedValue(false);
     clearQuarantine.mockResolvedValue(undefined);
+    clearRedisAuthState.mockResolvedValue(true);
   });
 
   describe("#runClaimCycle", () => {
@@ -996,11 +1001,11 @@ describe("ClusterCoordinator", () => {
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 8);
     });
 
-    it("falls back to the stored lease epoch when none is tracked locally", async () => {
+    it("releases under the epoch of the takeover the logout itself acquired", async () => {
       const handler = makeHandlerMock();
       handler.connections.add("+5511999");
       const coordinator = makeCoordinator(handler);
-      getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
 
       await coordinator.logoutWithLease("+5511999");
 
@@ -1008,26 +1013,81 @@ describe("ClusterCoordinator", () => {
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 5);
     });
 
-    it("skips the release when the lease belongs to another instance", async () => {
+    it("force-takes a foreign lease in standalone — an explicit DELETE is authoritative", async () => {
       const handler = makeHandlerMock();
       handler.connections.add("+5511999");
       const coordinator = makeCoordinator(handler);
       getLease.mockResolvedValue({ owner: "other-instance", epoch: 5 });
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 6 });
 
       await coordinator.logoutWithLease("+5511999");
 
-      expect(releaseLease).not.toHaveBeenCalled();
+      expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 6);
     });
 
-    it("releases the lease even when logout throws", async () => {
+    it("refuses to steal a live peer's lease in worker role", async () => {
+      config.cluster.role = "worker";
+      try {
+        const handler = makeHandlerMock();
+        const coordinator = makeCoordinator(handler);
+        getLease.mockResolvedValue({ owner: "peer-instance", epoch: 3 });
+        isInstanceAlive.mockResolvedValue(true);
+
+        await expect(coordinator.logoutWithLease("+5511999")).rejects.toThrow(
+          BaileysConnectionOwnedElsewhereError,
+        );
+        expect(handler.logout).not.toHaveBeenCalled();
+      } finally {
+        config.cluster.role = "standalone";
+      }
+    });
+
+    it("clears the persisted auth state on an offline logout (no live socket)", async () => {
       const handler = makeHandlerMock();
-      handler.logout.mockRejectedValueOnce(new Error("not connected"));
+      handler.logout.mockRejectedValueOnce(new BaileysNotConnectedError());
       const coordinator = makeCoordinator(handler);
-      getLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(clearRedisAuthState).toHaveBeenCalledWith("+5511999");
+      expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
+      expect(releaseLease).toHaveBeenCalled();
+    });
+
+    it("throws when the offline clear is fenced off", async () => {
+      const handler = makeHandlerMock();
+      handler.logout.mockRejectedValueOnce(new BaileysNotConnectedError());
+      clearRedisAuthState.mockResolvedValueOnce(false);
+      const coordinator = makeCoordinator(handler);
 
       await expect(coordinator.logoutWithLease("+5511999")).rejects.toThrow(
-        "not connected",
+        "fenced off",
       );
+      expect(releaseLease).toHaveBeenCalled();
+    });
+
+    it("does not touch the persisted auth state on a normal online logout", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(clearRedisAuthState).not.toHaveBeenCalled();
+    });
+
+    it("releases the takeover lease even when logout throws a non-offline error", async () => {
+      const handler = makeHandlerMock();
+      handler.logout.mockRejectedValueOnce(new Error("socket exploded"));
+      const coordinator = makeCoordinator(handler);
+      forceAcquireLease.mockResolvedValue({ owner: "test-instance", epoch: 5 });
+
+      await expect(coordinator.logoutWithLease("+5511999")).rejects.toThrow(
+        "socket exploded",
+      );
+      // A plain Error is NOT the offline path — no destructive clear.
+      expect(clearRedisAuthState).not.toHaveBeenCalled();
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 5);
     });
   });

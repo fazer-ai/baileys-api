@@ -1738,14 +1738,23 @@ const connectionsController = new Elysia({
   )
   .delete(
     "/:phoneNumber",
-    async ({ params }) => {
+    async ({ params, set }) => {
       const { phoneNumber } = params;
 
+      // No 404 for a phone without a live socket: logoutWithLease clears the
+      // persisted auth state on the offline path, so an explicit DELETE is
+      // idempotent — a dead session (the exact state a logout is meant to
+      // discard) must not survive just because no socket was up.
       try {
         await coordinator.logoutWithLease(phoneNumber);
       } catch (e) {
-        if (e instanceof BaileysNotConnectedError) {
-          return new Response("Phone number not found", { status: 404 });
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another live instance",
+          };
         }
         throw e;
       }
@@ -1755,10 +1764,10 @@ const connectionsController = new Elysia({
       detail: {
         responses: {
           200: {
-            description: "Disconnected",
+            description: "Disconnected (auth state cleared)",
           },
-          404: {
-            description: "Phone number not found",
+          409: {
+            description: "Owned by another live instance (worker role)",
           },
         },
       },
