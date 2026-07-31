@@ -4,6 +4,7 @@ import {
   type BaileysEventMap,
   downloadContentFromMessage,
   type MediaType,
+  normalizeMessageContent,
   type proto,
 } from "@whiskeysockets/baileys";
 import { file } from "bun";
@@ -60,9 +61,11 @@ export async function downloadMediaFromMessages(
         );
         let fileBuffer = await streamToBuffer(stream);
 
-        if (message.audioMessage) {
+        if (mediaType === "audio") {
           fileBuffer = await preprocessAudio(fileBuffer, "ogg-low");
-          message.audioMessage.mimetype = "audio/ogg; codecs=opus";
+          // Mutating the extracted node also updates the webhook payload for
+          // wrapped audio (e.g. ephemeral), since it is the same reference.
+          mediaMessage.mimetype = "audio/ogg; codecs=opus";
         }
 
         const filePath = path.join(mediaDir, `${key.id}`);
@@ -128,32 +131,40 @@ export async function downloadMediaFromMessages(
   return Object.keys(downloadedMedia).length > 0 ? downloadedMedia : null;
 }
 
+// normalizeMessageContent unwraps ephemeral, view-once, edited,
+// documentWithCaption and album child (associatedChildMessage) containers.
+// lottieStickerMessage is not in its wrapper list on 7.0.0-rc14, so unwrap
+// it manually afterwards.
+function unwrapMessageContent(message: proto.IMessage): proto.IMessage {
+  const normalized = normalizeMessageContent(message) ?? message;
+  return normalized.lottieStickerMessage?.message ?? normalized;
+}
+
 function extractMediaMessage(message: proto.IMessage): {
   mediaMessage: MediaMessage | null;
   mediaType: MediaType | null;
 } {
+  const content = unwrapMessageContent(message);
+
   const mediaMapping: [keyof proto.IMessage, MediaType][] = [
     ["imageMessage", "image"],
     ["stickerMessage", "sticker"],
     ["videoMessage", "video"],
     ["audioMessage", "audio"],
     ["documentMessage", "document"],
-    ["documentWithCaptionMessage", "document"],
   ];
 
   for (const [field, type] of mediaMapping) {
-    if (message[field]) {
+    if (content[field]) {
       return {
-        mediaMessage: (field === "documentWithCaptionMessage"
-          ? message[field]?.message?.documentMessage
-          : message[field]) as MediaMessage,
+        mediaMessage: content[field] as MediaMessage,
         mediaType: type,
       };
     }
   }
 
   return (
-    extractHeaderMediaMessage(message) ?? {
+    extractHeaderMediaMessage(content) ?? {
       mediaMessage: null,
       mediaType: null,
     }
