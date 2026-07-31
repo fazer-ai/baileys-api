@@ -11,6 +11,7 @@ import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import * as redisAuthState from "@/baileys/redisAuthState";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
+import * as quarantineStore from "@/cluster/quarantineStore";
 import config from "@/config";
 import {
   BaileysConnectionOwnedElsewhereError,
@@ -38,6 +39,8 @@ const isOnOwnReleaseCooldown = spyOn(leaseStore, "isOnOwnReleaseCooldown");
 const setReleaseCooldown = spyOn(leaseStore, "setReleaseCooldown");
 const setHandoffTarget = spyOn(leaseStore, "setHandoffTarget");
 const getHandoffTarget = spyOn(leaseStore, "getHandoffTarget");
+const isQuarantined = spyOn(quarantineStore, "isQuarantined");
+const clearQuarantine = spyOn(quarantineStore, "clearQuarantine");
 
 afterAll(() => {
   getRedisSavedAuthStateIds.mockRestore();
@@ -56,6 +59,8 @@ afterAll(() => {
   setReleaseCooldown.mockRestore();
   setHandoffTarget.mockRestore();
   getHandoffTarget.mockRestore();
+  isQuarantined.mockRestore();
+  clearQuarantine.mockRestore();
 });
 
 function makeHandlerMock() {
@@ -133,6 +138,8 @@ describe("ClusterCoordinator", () => {
     setReleaseCooldown.mockReset();
     setHandoffTarget.mockReset();
     getHandoffTarget.mockReset();
+    isQuarantined.mockReset();
+    clearQuarantine.mockReset();
 
     getRedisSavedAuthStateIds.mockResolvedValue([]);
     isRedisAuthStatePaired.mockResolvedValue(true);
@@ -153,6 +160,8 @@ describe("ClusterCoordinator", () => {
     setReleaseCooldown.mockResolvedValue(undefined);
     setHandoffTarget.mockResolvedValue(undefined);
     getHandoffTarget.mockResolvedValue(null);
+    isQuarantined.mockResolvedValue(false);
+    clearQuarantine.mockResolvedValue(undefined);
   });
 
   describe("#runClaimCycle", () => {
@@ -176,6 +185,26 @@ describe("ClusterCoordinator", () => {
       expect(options.webhookUrl).toBe("https://h.com");
       // Epoch of the acquireLease that authorized this reconnect.
       expect(options.leaseEpoch).toBe(1);
+    });
+
+    it("skips quarantined phones and claims them again once quarantine lapses", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+5511999")]);
+      isQuarantined.mockResolvedValue(true);
+
+      await coordinator.runClaimCycle();
+
+      // Claiming a quarantined phone would restart the exact reconnect
+      // livelock the quarantine is throttling.
+      expect(acquireLease).not.toHaveBeenCalled();
+      expect(handler.connect).not.toHaveBeenCalled();
+
+      isQuarantined.mockResolvedValue(false);
+      await coordinator.runClaimCycle();
+
+      expect(acquireLease).toHaveBeenCalledTimes(1);
+      expect(handler.connect).toHaveBeenCalledTimes(1);
     });
 
     it("does not touch phones it already holds a connection for", async () => {
@@ -701,6 +730,32 @@ describe("ClusterCoordinator", () => {
       });
     });
 
+    it("clears quarantine — explicit intent must retry immediately", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+
+      await coordinator.connectWithLease("+5511999", {
+        webhookUrl: "https://h.com",
+        webhookVerifyToken: "t",
+      });
+
+      expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
+      expect(handler.connect).toHaveBeenCalled();
+    });
+
+    it("still connects when the quarantine clear fails", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      clearQuarantine.mockRejectedValue(new Error("redis down"));
+
+      await coordinator.connectWithLease("+5511999", {
+        webhookUrl: "https://h.com",
+        webhookVerifyToken: "t",
+      });
+
+      expect(handler.connect).toHaveBeenCalled();
+    });
+
     it("releases the force-acquired lease when connect fails", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
@@ -815,6 +870,22 @@ describe("ClusterCoordinator", () => {
         leaseEpoch: 1,
         forceRestart: true,
       });
+    });
+
+    it("clears quarantine — a fresh import must not inherit old strikes", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+
+      await coordinator.importSessionWithLease(
+        "+5511999",
+        creds,
+        candidates,
+        0,
+        options,
+      );
+
+      expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
+      expect(handler.connect).toHaveBeenCalled();
     });
 
     it("seeds only after acquiring the lease (fence needs ownership)", async () => {

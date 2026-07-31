@@ -683,6 +683,89 @@ describe("BaileysConnection", () => {
       }
     });
 
+    it("records quarantine strikes with doubling backoff and reports them on the webhook", async () => {
+      setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      try {
+        const quarantineKey = "@baileys-api:cluster:quarantine:+5511999999999";
+        const stringData = (redis as any).__stringData as Map<string, string>;
+
+        await connection.connect();
+        let handler = mockEventHandlers.get("connection.update")!;
+        for (let i = 0; i < 11; i++) {
+          await handler({ isNewLogin: true });
+        }
+
+        // The isNewLogin path fires handleReconnecting without awaiting it,
+        // so the strike lands asynchronously.
+        while (!stringData.has(quarantineKey)) {
+          await new Promise((r) => setImmediate(r));
+        }
+        let stored = JSON.parse(stringData.get(quarantineKey)!) as {
+          strikes: number;
+          nextRetryAt: number;
+        };
+        expect(stored.strikes).toBe(1);
+        expect(stored.nextRetryAt).toBe(
+          Date.parse("2026-01-01T00:00:00.000Z") + 60_000,
+        );
+        // The webhook advertises the quarantine so clients can render the
+        // real state instead of a bare "try reconnecting".
+        while (
+          !fetchCalls.some(
+            (c) =>
+              c.body?.includes('"error":"reconnect_loop_detected"') &&
+              c.body?.includes('"quarantine"') &&
+              c.body?.includes('"strikes":1'),
+          )
+        ) {
+          await new Promise((r) => setImmediate(r));
+        }
+
+        // A second full failed cycle doubles the backoff.
+        connection = new BaileysConnection("+5511999999999", defaultOptions);
+        await connection.connect();
+        handler = mockEventHandlers.get("connection.update")!;
+        for (let i = 0; i < 11; i++) {
+          await handler({ isNewLogin: true });
+        }
+        while (
+          (JSON.parse(stringData.get(quarantineKey)!) as { strikes: number })
+            .strikes < 2
+        ) {
+          await new Promise((r) => setImmediate(r));
+        }
+        stored = JSON.parse(stringData.get(quarantineKey)!) as {
+          strikes: number;
+          nextRetryAt: number;
+        };
+        expect(stored.strikes).toBe(2);
+        expect(stored.nextRetryAt).toBe(
+          Date.parse("2026-01-01T00:00:00.000Z") + 120_000,
+        );
+      } finally {
+        setSystemTime();
+      }
+    });
+
+    it("clears quarantine when the connection opens", async () => {
+      const quarantineKey = "@baileys-api:cluster:quarantine:+5511999999999";
+      const stringData = (redis as any).__stringData as Map<string, string>;
+      stringData.set(
+        quarantineKey,
+        JSON.stringify({ strikes: 3, nextRetryAt: Date.now() + 60_000 }),
+      );
+
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      await handler({ connection: "open" });
+
+      // clearQuarantine is fire-and-forget on the open path.
+      while (stringData.has(quarantineKey)) {
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(stringData.has(quarantineKey)).toBe(false);
+    });
+
     it("does not resurrect the socket via the post-close reconnect after aborting", async () => {
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;

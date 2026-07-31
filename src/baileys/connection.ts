@@ -38,6 +38,11 @@ import type {
 } from "@/baileys/types";
 import { instanceId } from "@/cluster/identity";
 import { getLease } from "@/cluster/leaseStore";
+import {
+  clearQuarantine,
+  type QuarantineState,
+  recordStrike,
+} from "@/cluster/quarantineStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
@@ -917,10 +922,15 @@ export class BaileysConnection {
           this.abort();
           return;
         }
-        logger.debug(
-          "[%s] [handleConnectionUpdate] Reconnecting (lastDisconnect=%o)",
+        // warn, not debug: production typically runs at LOG_LEVEL=warn and
+        // the close reason is the one datum that explains a reconnect loop
+        // (e.g. the server rejecting every handshake with stream:error 503).
+        logger.warn(
+          "[%s] [handleConnectionUpdate] connection closed (statusCode=%s, message=%s), reconnecting (attempt %d)",
           this.phoneNumber,
-          lastDisconnect ?? {},
+          String(statusCode ?? "unknown"),
+          message ?? "",
+          this.reconnectCount + 1,
         );
         await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
@@ -970,6 +980,16 @@ export class BaileysConnection {
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      // Any healthy open wipes the quarantine strike history — the backoff
+      // must reflect CONSECUTIVE failed cycles, not lifetime totals. Not
+      // awaited (the open path must not block on it), rejection logged.
+      clearQuarantine(this.phoneNumber).catch((clearError) => {
+        logger.warn(
+          "[%s] [handleConnectionUpdate] clearQuarantine failed; background claims may skip this phone until the stale entry expires (error=%s)",
+          this.phoneNumber,
+          errorToString(clearError),
+        );
+      });
       const isFirstOpen = !this.hasOpened;
       this.hasOpened = true;
       if (isFirstOpen) {
@@ -1214,15 +1234,42 @@ export class BaileysConnection {
   private async handleReconnecting() {
     this.reconnectCount += 1;
     if (this.reconnectCount > 10) {
+      // abort() first and SYNCHRONOUSLY: with an await between the decision
+      // and the abort, a socket event landing in that window (e.g. a late
+      // "open") races a connection this guard already condemned. The strike
+      // lands after — still ahead of any background re-claim, because the
+      // abort does not release the lease; it only expires by TTL seconds
+      // from now.
+      this.abort();
+      let quarantine: QuarantineState | null = null;
+      try {
+        quarantine = await recordStrike(this.phoneNumber);
+      } catch (error) {
+        logger.warn(
+          "[%s] [handleReconnecting] failed to record quarantine strike: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+      }
       logger.warn(
-        "[%s] [handleReconnecting] Reconnect count exceeded 10, aborting reconnection (auth state preserved)",
+        "[%s] [handleReconnecting] Reconnect count exceeded 10, aborting reconnection (auth state preserved)%s",
         this.phoneNumber,
+        quarantine
+          ? `; quarantined until ${new Date(quarantine.nextRetryAt).toISOString()} (strike ${quarantine.strikes})`
+          : "",
       );
       this.sendToWebhook({
         event: "connection.update",
-        data: { error: "reconnect_loop_detected" },
+        data: {
+          error: "reconnect_loop_detected",
+          ...(quarantine && {
+            quarantine: {
+              strikes: quarantine.strikes,
+              until: new Date(quarantine.nextRetryAt).toISOString(),
+            },
+          }),
+        },
       });
-      this.abort();
       return;
     }
     this.sendToWebhook({
