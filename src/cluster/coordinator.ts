@@ -1,6 +1,8 @@
 import type { AuthenticationCreds } from "@whiskeysockets/baileys";
+import { BaileysNotConnectedError } from "@/baileys/connection";
 import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import {
+  clearRedisAuthState,
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
   seedImportedSession,
@@ -772,10 +774,31 @@ export class ClusterCoordinator {
     return this.draining;
   }
 
+  // Explicit intent like connectWithLease: force-takes the lease so the
+  // fenced clears below are authorized even when no local socket exists.
+  // Worker role keeps the live-owner guard (409 via
+  // BaileysConnectionOwnedElsewhereError) so a proxy can re-route.
   async logoutWithLease(phoneNumber: string) {
+    await this.acquireExplicitLease(phoneNumber);
     try {
       await this.handler.logout(phoneNumber);
+    } catch (error) {
+      if (!(error instanceof BaileysNotConnectedError)) {
+        throw error;
+      }
+      // Offline logout: no live socket to RPC through, but the intent is
+      // still authoritative. Without this, a dead session — the exact state
+      // a DELETE is meant to discard — survives the request and every later
+      // connect resumes it instead of offering a fresh QR.
+      const cleared = await clearRedisAuthState(phoneNumber);
+      if (!cleared) {
+        throw new Error(
+          "failed to clear auth state for offline logout (write fenced off)",
+        );
+      }
     } finally {
+      // A discarded identity must not leave strike state behind.
+      await this.clearQuarantineForExplicitIntent(phoneNumber);
       await this.releaseHeldLease(phoneNumber).catch(() => {});
       void registry.publishOwnershipChanged(phoneNumber);
     }
