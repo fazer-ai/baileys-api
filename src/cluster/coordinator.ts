@@ -9,6 +9,7 @@ import type { BaileysConnectionOptions } from "@/baileys/types";
 import { instanceId } from "@/cluster/identity";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
+import * as quarantineStore from "@/cluster/quarantineStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
@@ -291,6 +292,14 @@ export class ClusterCoordinator {
           continue;
         }
         if (!directedAtMe && (await leaseStore.isOnOwnReleaseCooldown(id))) {
+          continue;
+        }
+        // A quarantined phone just burned a full reconnect cycle (10
+        // attempts, abort); claiming it again before its backoff elapses
+        // reproduces the exact livelock quarantine exists to break. Directed
+        // handoffs bypass this like they bypass fair share — rebalance only
+        // moves live sockets, which by definition are not quarantined.
+        if (!directedAtMe && (await quarantineStore.isQuarantined(id))) {
           continue;
         }
         // A phone that never finished pairing has no session to resume; a QR
@@ -685,6 +694,22 @@ export class ClusterCoordinator {
     }
   }
 
+  // Explicit intent overrides quarantine: the operator asked for this phone
+  // NOW. Best-effort — a failed clear must not block the connect; worst case
+  // background claims keep skipping the phone until the stale entry expires,
+  // while this explicit attempt proceeds regardless.
+  private async clearQuarantineForExplicitIntent(phoneNumber: string) {
+    try {
+      await quarantineStore.clearQuarantine(phoneNumber);
+    } catch (error) {
+      logger.warn(
+        "[coordinator] failed to clear quarantine for %s: %s",
+        phoneNumber,
+        errorToString(error),
+      );
+    }
+  }
+
   // Explicit user intent (POST /connections) — takes the identity over even if
   // a lease exists. In standalone this matches today's single-instance
   // semantics (the request is authoritative).
@@ -693,6 +718,7 @@ export class ClusterCoordinator {
     options: BaileysConnectionOptions,
   ) {
     const acquired = await this.acquireExplicitLease(phoneNumber);
+    await this.clearQuarantineForExplicitIntent(phoneNumber);
     await this.runUnderExplicitLease(phoneNumber, () =>
       this.handler.connect(phoneNumber, {
         ...options,
@@ -715,6 +741,7 @@ export class ClusterCoordinator {
     options: BaileysConnectionOptions,
   ) {
     const acquired = await this.acquireExplicitLease(phoneNumber);
+    await this.clearQuarantineForExplicitIntent(phoneNumber);
     await this.runUnderExplicitLease(phoneNumber, async () => {
       // Creds and the candidate cursor are written together (single fenced
       // write), so an import never lands with one persisted but not the other.

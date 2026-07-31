@@ -368,6 +368,9 @@ mock.module("@/config", () => ({
       heartbeatIntervalMs: 5_000,
       instanceTtlMs: 15_000,
       shutdownTimeoutMs: 30_000,
+      quarantineEnabled: true,
+      quarantineBaseMs: 60_000,
+      quarantineMaxMs: 3_600_000,
     },
     proxy: {
       routeCacheTtlMs: 50,

@@ -10,6 +10,9 @@ export const clusterKeys = {
   instancePattern: `${prefix}:instance:*`,
   handoff: (phoneNumber: string) => `${prefix}:handoff:${phoneNumber}`,
   cooldown: (phoneNumber: string) => `${prefix}:cooldown:${phoneNumber}`,
+  // Backoff state for phones whose reconnect cycles keep failing — see
+  // cluster/quarantineStore.ts.
+  quarantine: (phoneNumber: string) => `${prefix}:quarantine:${phoneNumber}`,
   eventsChannel: `${prefix}:events`,
 };
 

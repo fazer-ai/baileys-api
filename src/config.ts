@@ -41,6 +41,9 @@ const {
   CLUSTER_HEARTBEAT_INTERVAL_MS,
   CLUSTER_INSTANCE_TTL_MS,
   CLUSTER_SHUTDOWN_TIMEOUT_MS,
+  CLUSTER_QUARANTINE_ENABLED,
+  CLUSTER_QUARANTINE_BASE_MS,
+  CLUSTER_QUARANTINE_MAX_MS,
   PROXY_ROUTE_CACHE_TTL_MS,
   PROXY_REQUEST_TIMEOUT_MS,
   PROXY_MAX_BODY_BYTES,
@@ -219,6 +222,25 @@ const config = {
       30_000,
       { min: 0 },
     ),
+    // Backoff for phones whose reconnect cycles keep failing (see
+    // cluster/quarantineStore.ts): first failed cycle waits quarantineBaseMs
+    // before background claims retry, doubling per failed cycle up to
+    // quarantineMaxMs.
+    quarantineEnabled: boolFromEnv(
+      "CLUSTER_QUARANTINE_ENABLED",
+      CLUSTER_QUARANTINE_ENABLED,
+      true,
+    ),
+    quarantineBaseMs: intFromEnv(
+      "CLUSTER_QUARANTINE_BASE_MS",
+      CLUSTER_QUARANTINE_BASE_MS,
+      60_000,
+    ),
+    quarantineMaxMs: intFromEnv(
+      "CLUSTER_QUARANTINE_MAX_MS",
+      CLUSTER_QUARANTINE_MAX_MS,
+      3_600_000,
+    ),
   },
   proxy: {
     routeCacheTtlMs: intFromEnv(
@@ -267,6 +289,11 @@ if (config.cluster.leaseRenewIntervalMs > config.cluster.leaseTtlMs / 2) {
 if (config.cluster.heartbeatIntervalMs > config.cluster.instanceTtlMs / 2) {
   throw new Error(
     "CLUSTER_HEARTBEAT_INTERVAL_MS must be at most half of CLUSTER_INSTANCE_TTL_MS",
+  );
+}
+if (config.cluster.quarantineBaseMs > config.cluster.quarantineMaxMs) {
+  throw new Error(
+    "CLUSTER_QUARANTINE_BASE_MS must be at most CLUSTER_QUARANTINE_MAX_MS",
   );
 }
 
