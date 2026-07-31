@@ -172,6 +172,74 @@ describe("downloadMediaFromMessages", () => {
     expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("extracts media from an album child message", async () => {
+    const messages = [
+      {
+        key: { id: "msg-album-child" },
+        message: {
+          associatedChildMessage: {
+            message: {
+              imageMessage: { url: "https://example.com/album-1.jpg" },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/album-1.jpg" }),
+      "image",
+    );
+  });
+
+  it("extracts media from a lottie sticker message", async () => {
+    const messages = [
+      {
+        key: { id: "msg-lottie" },
+        message: {
+          lottieStickerMessage: {
+            message: {
+              stickerMessage: { url: "https://example.com/sticker.was" },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(downloadContentFromMessage).toHaveBeenCalledTimes(1);
+    expect(downloadContentFromMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ url: "https://example.com/sticker.was" }),
+      "sticker",
+    );
+  });
+
+  it("preprocesses wrapped (ephemeral) audio and updates the inner mimetype", async () => {
+    const messages = [
+      {
+        key: { id: "msg-ephemeral-audio" },
+        message: {
+          ephemeralMessage: {
+            message: {
+              audioMessage: {
+                url: "https://example.com/audio",
+                mimetype: "audio/mp3",
+              },
+            },
+          },
+        },
+      },
+    ] as any;
+
+    await downloadMediaFromMessages(messages);
+    expect(preprocessAudio).toHaveBeenCalled();
+    expect(
+      messages[0].message.ephemeralMessage.message.audioMessage.mimetype,
+    ).toBe("audio/ogg; codecs=opus");
+  });
+
   it("extracts media from a template message header", async () => {
     const messages = [
       {

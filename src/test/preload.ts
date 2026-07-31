@@ -505,6 +505,27 @@ mock.module("@whiskeysockets/baileys", () => ({
     }
     return generate();
   }),
+  // Faithful reimplementation of 7.0.0-rc14's normalizeMessageContent
+  // (getFutureProofMessage wrapper list, bounded loop).
+  normalizeMessageContent: (content: any) => {
+    let current = content;
+    if (!current) return undefined;
+    for (let i = 0; i < 5; i++) {
+      const inner =
+        current?.ephemeralMessage ||
+        current?.viewOnceMessage ||
+        current?.documentWithCaptionMessage ||
+        current?.viewOnceMessageV2 ||
+        current?.viewOnceMessageV2Extension ||
+        current?.editedMessage ||
+        current?.associatedChildMessage ||
+        current?.groupStatusMessage ||
+        current?.groupStatusMessageV2;
+      if (!inner) break;
+      current = inner.message;
+    }
+    return current;
+  },
   initAuthCreds: mock(() => ({
     noiseKey: { private: "noise-priv", public: "noise-pub" },
     pairingEphemeralKeyPair: { private: "pair-priv", public: "pair-pub" },
