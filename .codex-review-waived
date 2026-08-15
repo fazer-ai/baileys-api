@@ -1,0 +1,10 @@
+# Pre-existing swagger generator defect, not something this PR introduced.
+# The controller declares shared `responses` (403/421) in the Elysia constructor's
+# `detail`, and every route's own `detail.responses` is merged into that same shared
+# object — so all 40 routes end up with the union, last writer per status code wins.
+# It is already visible on main: send-message's 200 reads "Disconnected" and its 500
+# reads "Message not edited", both from other routes. Regenerating the committed spec
+# only changed which description wins for 409. Fixing it means reworking how the
+# shared detail is declared, which rewrites the whole spec and belongs in its own PR:
+# https://github.com/fazer-ai/baileys-api/issues/374
+swagger.json: Restore the actual send-message conflict response
