@@ -6,6 +6,44 @@ import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
 import config from "@/config";
 import connectionsController from "./index";
 
+// Elysia merges the controller-level `detail` into each route by mutating a shallow copy, so a
+// shared `responses` object would collect every route's responses and hand them to all the others.
+// The documented contract would then be wrong for nearly every endpoint.
+describe("connectionsController route documentation", () => {
+  const responsesFor = (method: string, path: string) =>
+    connectionsController.routes.find(
+      (route) => route.method === method && route.path === path,
+    )?.hooks?.detail?.responses as Record<string, { description?: string }>;
+
+  it("keeps each route's own response descriptions", () => {
+    const sendMessage = responsesFor(
+      "POST",
+      "/connections/:phoneNumber/send-message",
+    );
+    const editMessage = responsesFor(
+      "PATCH",
+      "/connections/:phoneNumber/messages",
+    );
+
+    expect(sendMessage[409]?.description).toBe(
+      "Message is already being processed",
+    );
+    expect(sendMessage[500]?.description).toBe("Message not sent");
+    expect(editMessage[500]?.description).toBe("Message not edited");
+  });
+
+  it("still documents the shared responses on every route", () => {
+    for (const route of connectionsController.routes) {
+      const responses = route.hooks?.detail?.responses as
+        | Record<string, unknown>
+        | undefined;
+      expect(Object.keys(responses ?? {})).toEqual(
+        expect.arrayContaining(["403", "421"]),
+      );
+    }
+  });
+});
+
 // The send-message route maps a missing local socket to 404 (instead of a
 // generic 500) so callers can tell "phone not connected" from a real failure.
 describe("connectionsController send-message", () => {
