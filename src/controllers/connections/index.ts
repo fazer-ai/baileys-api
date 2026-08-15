@@ -1,4 +1,5 @@
 import Elysia, { t } from "elysia";
+import type { OpenAPIV3 } from "openapi-types";
 import baileys from "@/baileys";
 import {
   BaileysConnectionForbiddenError,
@@ -31,26 +32,36 @@ import {
   userJid,
 } from "./types";
 
+// Responses every route under this controller can return, on top of its own.
+const SHARED_RESPONSES = {
+  403: {
+    description:
+      "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key.",
+  },
+  421: {
+    description:
+      "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+    headers: {
+      "x-baileys-owner": {
+        description: "Instance id of the connection owner",
+        schema: { type: "string" },
+      },
+    },
+  },
+} as const;
+
 const connectionsController = new Elysia({
   prefix: "/connections",
   detail: {
     tags: ["Connections"],
     security: [{ xApiKey: [] }],
-    responses: {
-      403: {
-        description:
-          "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key.",
-      },
-      421: {
-        description:
-          "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
-        headers: {
-          "x-baileys-owner": {
-            description: "Instance id of the connection owner",
-            schema: { type: "string" },
-          },
-        },
-      },
+    // A getter, not a plain object: Elysia shallow-copies this `detail` per route and then
+    // mergeDeep-MUTATES the copy's `responses` with the route's own, so a single shared object
+    // would accumulate every route's responses and hand them to all the others — the spec then
+    // documents, say, send-message's 409 as the cluster ownership conflict. Handing out a fresh
+    // clone each time keeps the mutation contained to the route being built.
+    get responses(): OpenAPIV3.ResponsesObject {
+      return structuredClone(SHARED_RESPONSES) as OpenAPIV3.ResponsesObject;
     },
   },
 })
