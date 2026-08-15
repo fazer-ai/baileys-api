@@ -3947,6 +3947,9 @@
                   "chatwootMessageId": {
                     "type": "string",
                     "enum": []
+                  },
+                  "messageId": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -4320,6 +4323,9 @@
                   "chatwootMessageId": {
                     "type": "string",
                     "enum": []
+                  },
+                  "messageId": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -4693,6 +4699,9 @@
                   "chatwootMessageId": {
                     "type": "string",
                     "enum": []
+                  },
+                  "messageId": {
+                    "type": "string"
                   }
                 },
                 "required": [

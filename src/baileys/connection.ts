@@ -509,7 +509,7 @@ export class BaileysConnection {
   async sendMessage(
     jid: string,
     messageContent: AnyMessageContent,
-    options?: { quoted?: WAMessage },
+    options?: { quoted?: WAMessage; messageId?: string },
   ) {
     this.safeSocket();
     this.markTraffic();
@@ -541,9 +541,17 @@ export class BaileysConnection {
       );
     }
 
+    // NOTE: `messageId` overrides the id Baileys would generate for the WhatsApp
+    // message key. The caller reserves it before the send so it can match the
+    // `messages.upsert` echo of its own message even when this response never
+    // reaches it (and so a resend of the same message reuses the same id).
+    // Spread it only when set: Baileys spreads our options over its own
+    // `messageId: generateMessageIDV2(user)` default, so an explicit
+    // `undefined` would downgrade that default to the user-less fallback.
     return this.safeSocket().sendMessage(jid, messageContent, {
       waveformProxy,
       quoted: options?.quoted,
+      ...(options?.messageId ? { messageId: options.messageId } : {}),
     });
   }
 

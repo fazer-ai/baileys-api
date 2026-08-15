@@ -299,14 +299,17 @@ export class BaileysConnectionsHandler {
       jid,
       messageContent,
       quoted,
+      messageId,
     }: {
       jid: string;
       messageContent: AnyMessageContent;
       quoted?: WAMessage;
+      messageId?: string;
     },
   ) {
     return this.getConnection(phoneNumber).sendMessage(jid, messageContent, {
       quoted,
+      messageId,
     });
   }
 
