@@ -71,6 +71,17 @@ describe("connectionsController send-message", () => {
     }
   });
 
+  // An empty string would pass through as falsy and let Baileys generate an id
+  // the caller never learns about, so it is rejected instead.
+  it("rejects an empty messageId", async () => {
+    const app = new Elysia().use(connectionsController);
+    const res = await app.handle(
+      sendMessageRequest("+551234567890", { messageId: "" }),
+    );
+
+    expect(res.status).toBe(422);
+  });
+
   it("does not mask a generic send failure as 404", async () => {
     const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
       throw new Error("unexpected boom");

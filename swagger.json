@@ -3949,6 +3949,7 @@
                     "enum": []
                   },
                   "messageId": {
+                    "minLength": 1,
                     "type": "string"
                   }
                 },
@@ -4325,6 +4326,7 @@
                     "enum": []
                   },
                   "messageId": {
+                    "minLength": 1,
                     "type": "string"
                   }
                 },
@@ -4701,6 +4703,7 @@
                     "enum": []
                   },
                   "messageId": {
+                    "minLength": 1,
                     "type": "string"
                   }
                 },

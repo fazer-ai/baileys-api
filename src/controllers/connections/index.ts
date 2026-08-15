@@ -352,8 +352,10 @@ const connectionsController = new Elysia({
         // the request. It comes back as `data.key.id` and on the
         // `messages.upsert` echo, so the caller can match its own message even
         // if this response is lost — and a resend reuses the same id instead of
-        // creating a second WhatsApp message. Omit to let Baileys generate one.
-        messageId: t.Optional(t.String()),
+        // creating a second WhatsApp message. Omit to let Baileys generate one;
+        // an empty string is rejected rather than silently falling back to a
+        // generated id the caller does not know about.
+        messageId: t.Optional(t.String({ minLength: 1 })),
       }),
       detail: {
         responses: {
