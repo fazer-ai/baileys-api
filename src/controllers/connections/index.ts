@@ -291,7 +291,7 @@ const connectionsController = new Elysia({
     "/:phoneNumber/send-message",
     async ({ params, body }) => {
       const { phoneNumber } = params;
-      const { jid, messageContent, chatwootMessageId } = body;
+      const { jid, messageContent, chatwootMessageId, messageId } = body;
 
       const idempotencyKey =
         chatwootMessageId !== undefined && chatwootMessageId !== null
@@ -308,6 +308,7 @@ const connectionsController = new Elysia({
             jid,
             messageContent: builtContent,
             quoted,
+            messageId,
           });
 
           if (!response) return null;
@@ -347,6 +348,14 @@ const connectionsController = new Elysia({
         jid: anyJid(),
         messageContent: anyMessageContent,
         chatwootMessageId: t.Optional(t.Union([t.String(), t.Number()])),
+        // The WhatsApp message id to send under, reserved by the caller before
+        // the request. It comes back as `data.key.id` and on the
+        // `messages.upsert` echo, so the caller can match its own message even
+        // if this response is lost — and a resend reuses the same id instead of
+        // creating a second WhatsApp message. Omit to let Baileys generate one;
+        // an empty string is rejected rather than silently falling back to a
+        // generated id the caller does not know about.
+        messageId: t.Optional(t.String({ minLength: 1 })),
       }),
       detail: {
         responses: {

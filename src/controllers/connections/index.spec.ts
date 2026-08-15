@@ -26,13 +26,14 @@ describe("connectionsController send-message", () => {
     config.cluster.role = prevRole;
   });
 
-  const sendMessageRequest = (phone: string) =>
+  const sendMessageRequest = (phone: string, extraBody: object = {}) =>
     new Request(`http://localhost/connections/${phone}/send-message`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         jid: "551101234567@s.whatsapp.net",
         messageContent: { text: "hello" },
+        ...extraBody,
       }),
     });
 
@@ -44,6 +45,41 @@ describe("connectionsController send-message", () => {
     const res = await app.handle(sendMessageRequest("+551234567890"));
 
     expect(res.status).toBe(404);
+  });
+
+  // The caller reserves the WhatsApp message id before the send so it can match
+  // the `messages.upsert` echo of its own message even if this response is lost.
+  it("forwards the reserved messageId to the send", async () => {
+    const spy = spyOn(baileys, "sendMessage").mockResolvedValue({
+      key: { id: "3EB0RESERVED" },
+      messageTimestamp: 1,
+    } as any);
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { messageId: "3EB0RESERVED" }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(spy).toHaveBeenCalledWith(
+        "+551234567890",
+        expect.objectContaining({ messageId: "3EB0RESERVED" }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // An empty string would pass through as falsy and let Baileys generate an id
+  // the caller never learns about, so it is rejected instead.
+  it("rejects an empty messageId", async () => {
+    const app = new Elysia().use(connectionsController);
+    const res = await app.handle(
+      sendMessageRequest("+551234567890", { messageId: "" }),
+    );
+
+    expect(res.status).toBe(422);
   });
 
   it("does not mask a generic send failure as 404", async () => {

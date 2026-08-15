@@ -993,6 +993,31 @@ describe("BaileysConnection", () => {
       await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
       expect(mockSocket.sendMessage).toHaveBeenCalled();
     });
+
+    it("forwards a caller-provided messageId to the socket", async () => {
+      await connection.connect();
+      mockSocket.sendMessage.mockClear();
+      await connection.sendMessage(
+        "jid@s.whatsapp.net",
+        { text: "hi" },
+        { messageId: "3EB0RESERVED" },
+      );
+      expect(mockSocket.sendMessage).toHaveBeenCalledWith(
+        "jid@s.whatsapp.net",
+        { text: "hi" },
+        expect.objectContaining({ messageId: "3EB0RESERVED" }),
+      );
+    });
+
+    // Baileys spreads our options over its own `messageId` default, so passing
+    // the key as undefined would silently downgrade that default.
+    it("omits messageId entirely when the caller did not reserve one", async () => {
+      await connection.connect();
+      mockSocket.sendMessage.mockClear();
+      await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
+      const options = mockSocket.sendMessage.mock.calls[0]?.[2];
+      expect(Object.keys(options as object)).not.toContain("messageId");
+    });
   });
 
   describe("#sendPresenceUpdate", () => {
