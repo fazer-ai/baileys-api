@@ -260,6 +260,26 @@ export class BaileysConnection {
     this._lastTrafficAt = performance.now();
   }
 
+  // The connection's CURRENT options, which are not the ones it was built with:
+  // a later POST /connections reuses a live connection and mutates these in
+  // place via updateOptions. Anything that rebuilds the socket has to read them
+  // from here, because the options captured when it was spawned may since have
+  // been superseded — and persistMetadata would write the stale copy back to
+  // Redis, silently reverting a webhook reconfiguration.
+  get currentOptions(): BaileysConnectionOptions {
+    return {
+      clientName: this.clientName,
+      webhookUrl: this.webhookUrl,
+      webhookVerifyToken: this.webhookVerifyToken,
+      includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
+      groupsEnabled: this.groupsEnabled,
+      autoPresenceSubscribe: this.autoPresenceSubscribe,
+      ...(this._apiKeyHash !== null && { apiKeyHash: this._apiKeyHash }),
+      leaseEpoch: this.leaseEpoch,
+    };
+  }
+
   get lastSendCompletedAt(): number | null {
     return this._lastSendCompletedAt;
   }
@@ -704,11 +724,9 @@ export class BaileysConnection {
         operation,
         config.baileys.sendTimeoutMs,
         fn,
+        () => this.recordLateSend(operation),
       );
-      this._consecutiveSendTimeouts = 0;
-      this.sendStallStreakStartedAt = null;
-      this.sendStallReported = false;
-      this._lastSendCompletedAt = Date.now();
+      this.recordSendSuccess();
       return result;
     } catch (error) {
       if (error instanceof OperationTimeoutError) {
@@ -716,6 +734,38 @@ export class BaileysConnection {
       }
       throw error;
     }
+  }
+
+  private recordSendSuccess() {
+    this._consecutiveSendTimeouts = 0;
+    this.sendStallStreakStartedAt = null;
+    this.sendStallReported = false;
+    // Also the restart request: a send going through proves the socket works, so a
+    // pending restart is moot. Leaving it set would latch the same way the breaker
+    // used to — if the restart never lands (the handler logs and gives up on a
+    // failed connect), this connection could never report a stall again.
+    this.restartRequested = false;
+    this._lastSendCompletedAt = Date.now();
+  }
+
+  // A send we already gave up on finally went through. This is the ONLY signal
+  // that can close the breaker without a new socket: once it is open no send
+  // reaches the socket, so the ordinary success path can never run again. It is
+  // also what keeps a slow-but-healthy connection out of a permanent 503 —
+  // media generation and upload happen inside socket.sendMessage BEFORE the
+  // keystore mutex, so three slow uploads can open the breaker with the mutex
+  // perfectly free, and this is what closes it when they land.
+  private recordLateSend(operation: string) {
+    if (this.isDiscarded) {
+      return;
+    }
+    logger.warn(
+      "[%s] [sendStall] late completion operation=%s afterTimeouts=%d",
+      this.phoneNumber,
+      operation,
+      this._consecutiveSendTimeouts,
+    );
+    this.recordSendSuccess();
   }
 
   private recordSendTimeout(operation: string) {

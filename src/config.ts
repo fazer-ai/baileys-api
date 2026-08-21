@@ -351,6 +351,18 @@ if (config.cluster.quarantineBaseMs > config.cluster.quarantineMaxMs) {
     "CLUSTER_QUARANTINE_BASE_MS must be at most CLUSTER_QUARANTINE_MAX_MS",
   );
 }
+// The floor exists because defaultQueryTimeoutMs is 60s: below that, an IQ the
+// holder is legitimately waiting on would fail every waiter behind it. A small
+// nonzero value is therefore never a gentler setting, it is a way to break all
+// sends, so it is rejected rather than clamped.
+if (
+  config.baileys.txAcquireTimeoutMs > 0 &&
+  config.baileys.txAcquireTimeoutMs < 90_000
+) {
+  throw new Error(
+    "BAILEYS_TX_ACQUIRE_TIMEOUT_MS must be 0 (disabled) or at least 90000",
+  );
+}
 // The holder's stall report has to land before the waiters start timing out,
 // otherwise the logs show the symptom with no trace of its cause.
 if (

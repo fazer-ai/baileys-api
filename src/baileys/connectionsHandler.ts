@@ -250,8 +250,14 @@ export class BaileysConnectionsHandler {
             phoneNumber,
             reason,
           );
+          // connection.currentOptions, never the captured `options`: a later
+          // POST /connections reuses a live connection and updates its webhook
+          // config and lease epoch in place, so the closure's copy can be
+          // stale — and connect() would persist that stale copy back to Redis,
+          // reverting the reconfiguration.
           void this.connect(phoneNumber, {
-            ...options,
+            ...connection.currentOptions,
+            isReconnect: true,
             forceRestart: true,
           }).catch((error) => {
             logger.error(

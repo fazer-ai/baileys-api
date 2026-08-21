@@ -20,20 +20,34 @@ export class OperationTimeoutError extends Error {
 // an unhandled rejection long after we already answered the caller; and the
 // timer is always cleared, so a 45s handle does not sit on the event loop for
 // every single send.
+//
+// `onLateResolve` is how a caller learns the abandoned operation eventually
+// succeeded. Without it a circuit breaker built on these timeouts can only ever
+// open: the success that would close it is precisely the one this function has
+// already stopped reporting.
 export function withTimeout<T>(
   operation: string,
   timeoutMs: number,
   fn: () => Promise<T>,
+  onLateResolve?: () => void,
 ): Promise<T> {
+  let timedOut = false;
   const underlying = fn();
-  underlying.catch(() => {});
+  underlying.then(
+    () => {
+      if (timedOut) {
+        onLateResolve?.();
+      }
+    },
+    () => {},
+  );
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new OperationTimeoutError(operation, timeoutMs)),
-      timeoutMs,
-    );
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new OperationTimeoutError(operation, timeoutMs));
+    }, timeoutMs);
     timer.unref?.();
   });
 

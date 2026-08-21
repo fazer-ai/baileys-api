@@ -86,6 +86,12 @@ class MockBaileysConnection {
   get apiKeyHash() {
     return this._apiKeyHash;
   }
+  // Mirrors the real class: updateOptions mutates the live connection, so the
+  // options it reports are NOT the ones it was constructed with.
+  get currentOptions() {
+    return { ...this.options, ...this.updatedOptions };
+  }
+  updatedOptions: any = {};
   connect = mockConnect;
   logout = mockLogout;
   discard = mockDiscard;
@@ -98,7 +104,10 @@ class MockBaileysConnection {
   deleteMessage = mockDeleteMessage;
   editMessage = mockEditMessage;
   profilePictureUrl = mockProfilePictureUrl;
-  updateOptions = mockUpdateOptions;
+  updateOptions = (options: any) => {
+    this.updatedOptions = { ...this.updatedOptions, ...options };
+    return mockUpdateOptions(options);
+  };
   onWhatsApp = mockOnWhatsApp;
   getBusinessProfile = mockGetBusinessProfile;
   groupMetadata = mockGroupMetadata;
@@ -1242,6 +1251,42 @@ describe("BaileysConnectionsHandler", () => {
       const replacement = mockConnectionInstances.get("+5511999999999");
       expect(replacement.options.clientName).toBe("My Client");
       expect(replacement.options.webhookUrl).toBe(defaultOptions.webhookUrl);
+    });
+
+    // A POST /connections on a live connection updates it in place, so the
+    // options captured when it was spawned are stale from then on. Restarting
+    // from the stale copy would persist it back to Redis and silently revert
+    // the reconfiguration.
+    it("restarts from the connection's current options, not the ones it was built with", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        webhookUrl: "http://example.com/reconfigured",
+        leaseEpoch: 9,
+      });
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(original);
+
+      restartOf("+5511999999999")?.("send stall");
+      await Promise.race([
+        (async () => {
+          while (mockConnectionInstances.get("+5511999999999") === original) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("requestRestart deadlocked")),
+            2000,
+          ),
+        ),
+      ]);
+
+      const replacement = mockConnectionInstances.get("+5511999999999");
+      expect(replacement.options.webhookUrl).toBe(
+        "http://example.com/reconfigured",
+      );
+      expect(replacement.options.leaseEpoch).toBe(9);
     });
 
     // A replacement may already hold the slot by the time a stalled socket asks

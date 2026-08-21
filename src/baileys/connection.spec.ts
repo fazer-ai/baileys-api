@@ -1025,6 +1025,27 @@ describe("BaileysConnection", () => {
     });
   });
 
+  // A later POST /connections reuses a live connection and mutates its options
+  // in place. Anything that rebuilds the socket has to read the current values,
+  // or connect() would persist the superseded ones back to Redis and revert a
+  // webhook reconfiguration.
+  describe("#currentOptions", () => {
+    it("reflects options updated after the connection was built", async () => {
+      await connection.connect();
+      await connection.updateOptions({
+        webhookUrl: "http://example.com/new",
+        webhookVerifyToken: "new-token",
+        leaseEpoch: 7,
+      });
+
+      expect(connection.currentOptions).toMatchObject({
+        webhookUrl: "http://example.com/new",
+        webhookVerifyToken: "new-token",
+        leaseEpoch: 7,
+      });
+    });
+  });
+
   describe("send stall watchdog", () => {
     const wedge = () =>
       mockSocket.sendMessage.mockImplementation(
@@ -1266,6 +1287,38 @@ describe("BaileysConnection", () => {
       });
 
       expect(connection.consecutiveSendTimeouts).toBe(0);
+      await expect(send()).resolves.toBeDefined();
+    });
+
+    // Media generation and upload run inside socket.sendMessage BEFORE the
+    // keystore mutex, so three slow uploads open the breaker with the mutex
+    // perfectly free. Without this the breaker could only ever open: once it is
+    // rejecting, no send reaches the socket, so the success that would close it
+    // can never happen and the connection answers 503 until it reconnects.
+    it("reopens the circuit when an abandoned send finally completes", async () => {
+      await connection.connect();
+      let release: ((value: { key: { id: string } }) => void) | undefined;
+      mockSocket.sendMessage.mockImplementation(
+        () =>
+          new Promise<{ key: { id: string } }>((resolve) => {
+            release = resolve;
+          }),
+      );
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(connection.sendState).toBe("stalled");
+
+      // The abandoned upload lands: the socket was never wedged.
+      release?.({ key: { id: "msg-id" } });
+      await asyncSleep(0);
+
+      expect(connection.consecutiveSendTimeouts).toBe(0);
+      expect(connection.sendState).toBe("ok");
+      mockSocket.sendMessage.mockImplementation(async () => ({
+        key: { id: "msg-id" },
+      }));
       await expect(send()).resolves.toBeDefined();
     });
 
