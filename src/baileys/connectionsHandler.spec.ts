@@ -71,6 +71,10 @@ class MockBaileysConnection {
   _apiKeyHash: string | null;
   inFlightWebhooks = 0;
   lastTrafficAt: number | null = null;
+  lastSendCompletedAt: number | null = null;
+  lastOutgoingAckAt: number | null = null;
+  consecutiveSendTimeouts = 0;
+  sendState: "unknown" | "ok" | "degraded" | "stalled" = "unknown";
 
   constructor(phoneNumber: string, options: any) {
     this.phoneNumber = phoneNumber;
@@ -1172,6 +1176,125 @@ describe("BaileysConnectionsHandler", () => {
         "user1@s.whatsapp.net",
         "user2@s.whatsapp.net",
       ]);
+    });
+  });
+
+  describe("#requestRestart", () => {
+    const restartOf = (phone: string) =>
+      mockConnectionInstances.get(phone)?.options?.requestRestart as (
+        reason: string,
+      ) => void;
+
+    // Regression guard for a deadlock that is silent when it happens: the
+    // obvious implementation wraps this in withInFlightOp, and spawnConnection
+    // takes the SAME per-number slot, so it would wait forever on a slot the
+    // callback itself holds. The race makes that hang a failure instead of a
+    // suite that never finishes.
+    it("recreates the connection without deadlocking on the in-flight slot", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+      mockDiscard.mockClear();
+      mockConnect.mockClear();
+
+      restartOf("+5511999999999")?.("send stall");
+
+      await Promise.race([
+        (async () => {
+          while (mockConnectionInstances.get("+5511999999999") === original) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("requestRestart deadlocked")),
+            2000,
+          ),
+        ),
+      ]);
+
+      expect(mockDiscard).toHaveBeenCalled();
+      expect(mockConnect).toHaveBeenCalled();
+      expect(mockConnectionInstances.get("+5511999999999")).not.toBe(original);
+    });
+
+    it("carries the same options onto the replacement socket", async () => {
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        clientName: "My Client",
+      });
+      const original = mockConnectionInstances.get("+5511999999999");
+
+      restartOf("+5511999999999")?.("send stall");
+      await Promise.race([
+        (async () => {
+          while (mockConnectionInstances.get("+5511999999999") === original) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("requestRestart deadlocked")),
+            2000,
+          ),
+        ),
+      ]);
+
+      const replacement = mockConnectionInstances.get("+5511999999999");
+      expect(replacement.options.clientName).toBe("My Client");
+      expect(replacement.options.webhookUrl).toBe(defaultOptions.webhookUrl);
+    });
+
+    // A replacement may already hold the slot by the time a stalled socket asks
+    // to be restarted; only the instance that stalled should act.
+    it("is a no-op once a replacement already holds the slot", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const staleRestart = restartOf("+5511999999999");
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        forceRestart: true,
+      });
+      const current = mockConnectionInstances.get("+5511999999999");
+      mockDiscard.mockClear();
+
+      staleRestart?.("send stall");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(mockDiscard).not.toHaveBeenCalled();
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(current);
+    });
+  });
+
+  describe("#sendHealth", () => {
+    it("returns null for a phone with no connection", () => {
+      expect(handler.sendHealth("+5511000000000")).toBeNull();
+    });
+
+    it("reports ages, never raw timestamps", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+      connection.sendState = "degraded";
+      connection.consecutiveSendTimeouts = 2;
+      connection.lastSendCompletedAt = Date.now() - 5_000;
+
+      const health = handler.sendHealth("+5511999999999");
+
+      expect(health?.sendState).toBe("degraded");
+      expect(health?.consecutiveSendTimeouts).toBe(2);
+      expect(health?.lastSendCompletedAgoMs).toBeGreaterThanOrEqual(5_000);
+      expect(health?.lastOutgoingAckAgoMs).toBeNull();
+    });
+  });
+
+  describe("#stalledConnectionCount", () => {
+    it("counts only connections whose sends are wedged", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      await handler.connect("+5511888888888", defaultOptions);
+      expect(handler.stalledConnectionCount()).toBe(0);
+
+      mockConnectionInstances.get("+5511999999999").sendState = "stalled";
+      mockConnectionInstances.get("+5511888888888").sendState = "degraded";
+
+      expect(handler.stalledConnectionCount()).toBe(1);
     });
   });
 });

@@ -6,6 +6,11 @@ const {
   PORT,
   LOG_LEVEL,
   BAILEYS_LOG_LEVEL,
+  BAILEYS_HTTP_TIMEOUT_MS,
+  BAILEYS_TX_ACQUIRE_TIMEOUT_MS,
+  BAILEYS_TX_HOLD_WARN_MS,
+  BAILEYS_SEND_TIMEOUT_MS,
+  BAILEYS_SEND_STALL_RESTART_ENABLED,
   BAILEYS_CLIENT_VERSION,
   BAILEYS_OVERRIDE_CLIENT_VERSION,
   REDIS_URL,
@@ -93,6 +98,56 @@ const config = {
   logLevel: (LOG_LEVEL || "info") as LevelWithSilentOrString,
   baileys: {
     logLevel: (BAILEYS_LOG_LEVEL || "warn") as LevelWithSilentOrString,
+    // Deadline for the lib's own HTTP downloads (patched into getHttpStream).
+    // A parked TLS stream there hangs inside the keystore transaction keyed by
+    // our own JID and wedges every send on the connection -- the silent send
+    // stall. App-state blobs are small, so 120s is pure headroom for the case
+    // that matters.
+    httpTimeoutMs: intFromEnv(
+      "BAILEYS_HTTP_TIMEOUT_MS",
+      BAILEYS_HTTP_TIMEOUT_MS,
+      120_000,
+    ),
+    // Reject after waiting this long for the keystore transaction mutex. Six
+    // operations share the key `meId`, so one that never returns blocks all of
+    // them. Floor is 90s: below `defaultQueryTimeoutMs` (60s) a legitimately
+    // slow IQ inside the holder would fail everyone waiting. Defaults to the
+    // conservative rollout value -- high enough to be diagnosis-only, since
+    // `resyncAppState` is the longest legitimate holder -- so a deploy that
+    // sets nothing cannot start failing real transactions. Lower to 90_000
+    // once the stall reports name the culprit. 0 disables.
+    txAcquireTimeoutMs: intFromEnv(
+      "BAILEYS_TX_ACQUIRE_TIMEOUT_MS",
+      BAILEYS_TX_ACQUIRE_TIMEOUT_MS,
+      300_000,
+      { min: 0 },
+    ),
+    // Report a transaction still holding the mutex after this long. Kept below
+    // txAcquireTimeoutMs so the holder's stall report precedes the waiters'
+    // timeouts and the logs read in causal order. 0 disables.
+    txHoldWarnMs: intFromEnv(
+      "BAILEYS_TX_HOLD_WARN_MS",
+      BAILEYS_TX_HOLD_WARN_MS,
+      30_000,
+      { min: 0 },
+    ),
+    // Deadline on the socket's own sendMessage. Must stay below
+    // PROXY_REQUEST_TIMEOUT_MS, otherwise the proxy cuts first and the worker
+    // never gets to release the idempotency lock or count the stall.
+    sendTimeoutMs: intFromEnv(
+      "BAILEYS_SEND_TIMEOUT_MS",
+      BAILEYS_SEND_TIMEOUT_MS,
+      45_000,
+    ),
+    // Whether a connection whose sends keep timing out may recreate its own
+    // socket. Off by default: this kills a live socket on a heuristic, so it
+    // is opted into after a period of watching the detector fire only on the
+    // real pattern. Detection, logging and the webhook run either way.
+    sendStallRestartEnabled: boolFromEnv(
+      "BAILEYS_SEND_STALL_RESTART_ENABLED",
+      BAILEYS_SEND_STALL_RESTART_ENABLED,
+      false,
+    ),
     clientVersion: BAILEYS_CLIENT_VERSION || "default",
     overrideClientVersion: BAILEYS_OVERRIDE_CLIENT_VERSION === "true",
     // FIXME: We ignore any non-user messages for now. As we implement more features,
@@ -294,6 +349,24 @@ if (config.cluster.heartbeatIntervalMs > config.cluster.instanceTtlMs / 2) {
 if (config.cluster.quarantineBaseMs > config.cluster.quarantineMaxMs) {
   throw new Error(
     "CLUSTER_QUARANTINE_BASE_MS must be at most CLUSTER_QUARANTINE_MAX_MS",
+  );
+}
+// The holder's stall report has to land before the waiters start timing out,
+// otherwise the logs show the symptom with no trace of its cause.
+if (
+  config.baileys.txAcquireTimeoutMs > 0 &&
+  config.baileys.txHoldWarnMs >= config.baileys.txAcquireTimeoutMs
+) {
+  throw new Error(
+    "BAILEYS_TX_HOLD_WARN_MS must be lower than BAILEYS_TX_ACQUIRE_TIMEOUT_MS",
+  );
+}
+// A send that outlives the proxy's deadline is answered by the proxy's generic
+// 504, so the worker's own 504/503 -- and the lock release that goes with it --
+// never reach the caller.
+if (config.baileys.sendTimeoutMs >= config.proxy.requestTimeoutMs) {
+  throw new Error(
+    "BAILEYS_SEND_TIMEOUT_MS must be lower than PROXY_REQUEST_TIMEOUT_MS",
   );
 }
 

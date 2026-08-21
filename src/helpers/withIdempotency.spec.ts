@@ -288,4 +288,80 @@ describe("withIdempotency", () => {
       }
     });
   });
+
+  describe("indeterminate outcomes", () => {
+    const KEY = "@baileys-api:idempotency:send-message:+55:1";
+
+    // A timed-out send is not cancelled — it stays parked in the socket's
+    // keystore mutex and may still reach WhatsApp. Deleting the key would let a
+    // retry duplicate the message; keeping "processing" would 409 blindly for
+    // the full TTL. Neither is right, so the state is recorded distinctly.
+    it("marks the key indeterminate instead of releasing it", async () => {
+      const error = new Error("timed out");
+
+      await expect(
+        withIdempotency(
+          KEY,
+          async () => {
+            throw error;
+          },
+          { isIndeterminate: () => true },
+        ),
+      ).rejects.toBe(error);
+
+      expect(stringData.get(KEY)).toStartWith("indeterminate:");
+    });
+
+    it("still releases the key when the failure is conclusive", async () => {
+      const error = new Error("bad request");
+
+      await expect(
+        withIdempotency(
+          KEY,
+          async () => {
+            throw error;
+          },
+          { isIndeterminate: () => false },
+        ),
+      ).rejects.toBe(error);
+
+      expect(stringData.has(KEY)).toBe(false);
+    });
+
+    it("reports indeterminate to a later caller instead of re-running the work", async () => {
+      await withIdempotency(
+        KEY,
+        async () => {
+          throw new Error("timed out");
+        },
+        { isIndeterminate: () => true },
+      ).catch(() => {});
+
+      const fn = mock(async () => ({ id: "msg_1" }));
+      const result = await withIdempotency(KEY, fn);
+
+      expect(result).toEqual({ status: "indeterminate" });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    // Deliberately no steal path: a dead holder tells us nothing about whether
+    // its send reached WhatsApp, so the outcome stays unknown.
+    it("never steals an indeterminate marker, even from a dead instance", async () => {
+      stringData.set(KEY, "indeterminate:some-dead-instance#abc");
+
+      const fn = mock(async () => ({ id: "msg_1" }));
+      const result = await withIdempotency(KEY, fn);
+
+      expect(result).toEqual({ status: "indeterminate" });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it("defaults to releasing the lock when no predicate is given", async () => {
+      await withIdempotency(KEY, async () => {
+        throw new Error("boom");
+      }).catch(() => {});
+
+      expect(stringData.has(KEY)).toBe(false);
+    });
+  });
 });

@@ -13,6 +13,7 @@ import * as redisAuthState from "@/baileys/redisAuthState";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
 import * as quarantineStore from "@/cluster/quarantineStore";
+import * as sendStallStore from "@/cluster/sendStallStore";
 import config from "@/config";
 import {
   BaileysConnectionOwnedElsewhereError,
@@ -28,6 +29,7 @@ const getRedisSavedAuthStateIds = spyOn(
 const isRedisAuthStatePaired = spyOn(redisAuthState, "isRedisAuthStatePaired");
 const seedImportedSession = spyOn(redisAuthState, "seedImportedSession");
 const clearRedisAuthState = spyOn(redisAuthState, "clearRedisAuthState");
+const getRedisAuthMetadata = spyOn(redisAuthState, "getRedisAuthMetadata");
 const listLiveInstances = spyOn(registry, "listLiveInstances");
 const heartbeat = spyOn(registry, "heartbeat");
 const deregister = spyOn(registry, "deregister");
@@ -43,12 +45,14 @@ const setHandoffTarget = spyOn(leaseStore, "setHandoffTarget");
 const getHandoffTarget = spyOn(leaseStore, "getHandoffTarget");
 const isQuarantined = spyOn(quarantineStore, "isQuarantined");
 const clearQuarantine = spyOn(quarantineStore, "clearQuarantine");
+const clearSendStall = spyOn(sendStallStore, "clearSendStall");
 
 afterAll(() => {
   getRedisSavedAuthStateIds.mockRestore();
   isRedisAuthStatePaired.mockRestore();
   seedImportedSession.mockRestore();
   clearRedisAuthState.mockRestore();
+  getRedisAuthMetadata.mockRestore();
   listLiveInstances.mockRestore();
   heartbeat.mockRestore();
   deregister.mockRestore();
@@ -64,6 +68,7 @@ afterAll(() => {
   getHandoffTarget.mockRestore();
   isQuarantined.mockRestore();
   clearQuarantine.mockRestore();
+  clearSendStall.mockRestore();
 });
 
 function makeHandlerMock() {
@@ -143,7 +148,9 @@ describe("ClusterCoordinator", () => {
     getHandoffTarget.mockReset();
     isQuarantined.mockReset();
     clearQuarantine.mockReset();
+    clearSendStall.mockReset();
     clearRedisAuthState.mockReset();
+    getRedisAuthMetadata.mockReset();
 
     getRedisSavedAuthStateIds.mockResolvedValue([]);
     isRedisAuthStatePaired.mockResolvedValue(true);
@@ -166,7 +173,9 @@ describe("ClusterCoordinator", () => {
     getHandoffTarget.mockResolvedValue(null);
     isQuarantined.mockResolvedValue(false);
     clearQuarantine.mockResolvedValue(undefined);
+    clearSendStall.mockResolvedValue(undefined);
     clearRedisAuthState.mockResolvedValue(true);
+    getRedisAuthMetadata.mockResolvedValue(null);
   });
 
   describe("#runClaimCycle", () => {
@@ -843,6 +852,72 @@ describe("ClusterCoordinator", () => {
     });
   });
 
+  describe("#restartWithLease", () => {
+    const storedMetadata = {
+      webhookUrl: "https://stored.example/hook",
+      webhookVerifyToken: "stored-token",
+      clientName: "Stored Client",
+    };
+
+    it("rebuilds the socket from the stored metadata", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999", "stall");
+
+      expect(restarted).toBe(true);
+      expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
+      expect(handler.connect).toHaveBeenCalledWith("+5511999", {
+        ...storedMetadata,
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
+    });
+
+    // Taking options from the request would let a restart overwrite good
+    // webhook config with whatever the caller happened to send, which is why
+    // the route has no connection-options body at all.
+    it("takes no connection options from the caller", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      await coordinator.restartWithLease("+5511999");
+
+      expect(handler.connect).toHaveBeenCalledWith(
+        "+5511999",
+        expect.objectContaining({
+          webhookUrl: storedMetadata.webhookUrl,
+          webhookVerifyToken: storedMetadata.webhookVerifyToken,
+        }),
+      );
+    });
+
+    it("reports false when there is no stored session", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(null);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe(false);
+      expect(forceAcquireLease).not.toHaveBeenCalled();
+      expect(handler.connect).not.toHaveBeenCalled();
+    });
+
+    it("clears quarantine — an operator asking for the phone wins now", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      await coordinator.restartWithLease("+5511999");
+
+      expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
+    });
+  });
+
   describe("#importSessionWithLease", () => {
     const creds = { me: { id: "5511999:1@s.whatsapp.net" } } as never;
     const candidates = [
@@ -1053,6 +1128,18 @@ describe("ClusterCoordinator", () => {
       expect(clearRedisAuthState).toHaveBeenCalledWith("+5511999");
       expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
       expect(releaseLease).toHaveBeenCalled();
+    });
+
+    // The send-stall backoff is keyed by phone number and outlives the session
+    // by up to 24h. Left behind, a re-paired number inherits the discarded
+    // session's backoff and has its stall watchdog suppressed.
+    it("clears the send-stall backoff along with the rest of the strike state", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(clearSendStall).toHaveBeenCalledWith("+5511999");
     });
 
     it("throws when the offline clear is fenced off", async () => {

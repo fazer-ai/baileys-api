@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import Elysia from "elysia";
 import baileys from "@/baileys";
+import { BaileysSendStalledError } from "@/baileys/connection";
 import coordinator from "@/cluster";
 import { BaileysConnectionOwnedElsewhereError } from "@/cluster/coordinator";
 import config from "@/config";
+import { OperationTimeoutError } from "@/helpers/withTimeout";
+import redis from "@/lib/redis";
 import connectionsController from "./index";
 
 // Elysia merges the controller-level `detail` into each route by mutating a shallow copy, so a
@@ -25,7 +28,10 @@ describe("connectionsController route documentation", () => {
       "/connections/:phoneNumber/messages",
     );
 
-    expect(sendMessage[409]?.description).toBe(
+    // Substring, not equality: the guard is against the cluster-ownership 409
+    // description leaking onto this route, which this still catches — without
+    // breaking every time the idempotency wording is refined.
+    expect(sendMessage[409]?.description).toContain(
       "Message is already being processed",
     );
     expect(sendMessage[500]?.description).toBe("Message not sent");
@@ -132,6 +138,101 @@ describe("connectionsController send-message", () => {
       expect(res.status).toBe(500);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  // 504 and 503 say different things on purpose: 504 is "this attempt expired,
+  // outcome unknown, a careful retry is fine"; 503 is "this connection is known
+  // not to be sending, stop burning workers on it".
+  it("answers 504 when the send times out", async () => {
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { messageId: "3EB0RESERVED" }),
+      );
+
+      expect(res.status).toBe(504);
+      expect(res.headers.get("retry-after")).toBe("60");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("answers 503 when the connection is already known to be stalled", async () => {
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new BaileysSendStalledError();
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(sendMessageRequest("+551234567890"));
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("60");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // With a reserved messageId the resend lands on the same WhatsApp key.id, so
+  // WhatsApp dedupes it and releasing the lock is strictly safe.
+  it("releases the idempotency lock on timeout when a messageId was reserved", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      await app.handle(
+        sendMessageRequest("+551234567890", {
+          chatwootMessageId: "42",
+          messageId: "3EB0RESERVED",
+        }),
+      );
+
+      const key = "@baileys-api:idempotency:send-message:+551234567890:42";
+      expect(stringData.has(key)).toBe(false);
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
+    }
+  });
+
+  // Without one, a retry would create a SECOND WhatsApp message, so the outcome
+  // is recorded as unknown and the caller is told to reconcile.
+  it("marks the outcome indeterminate on timeout when no messageId was reserved", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+
+      const key = "@baileys-api:idempotency:send-message:+551234567890:42";
+      expect(stringData.get(key)).toStartWith("indeterminate:");
+
+      // The follow-up retry gets a 409 that says which kind of conflict it is.
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+      expect(res.status).toBe(409);
+      expect(res.headers.get("x-baileys-idempotency-state")).toBe(
+        "indeterminate",
+      );
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
     }
   });
 });
@@ -336,5 +437,207 @@ describe("connectionsController import-session", () => {
     );
 
     expect(res.status).toBe(422);
+  });
+});
+
+describe("connectionsController restart", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+  const stringData = (redis as any).__stringData as Map<string, string>;
+
+  beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
+    config.env = "development";
+    config.cluster.role = "standalone";
+    stringData.clear();
+  });
+
+  afterEach(() => {
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
+    stringData.clear();
+  });
+
+  const restartRequest = (phone: string) =>
+    new Request(`http://localhost/connections/${phone}/restart`, {
+      method: "POST",
+    });
+
+  it("answers 202 once the restart is accepted", async () => {
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(true);
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(restartRequest("+551234567890"));
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith("+551234567890", undefined);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("passes the caller's reason through to the coordinator", async () => {
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(true);
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        new Request("http://localhost/connections/+551234567890/restart", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reason: "send stall" }),
+        }),
+      );
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith("+551234567890", "send stall");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("answers 404 when there is no stored session to restart", async () => {
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(false);
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(restartRequest("+551234567890"));
+
+      expect(res.status).toBe(404);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("answers 409 with the owner when a live peer owns the phone", async () => {
+    const spy = spyOn(coordinator, "restartWithLease").mockImplementation(
+      async () => {
+        throw new BaileysConnectionOwnedElsewhereError("other-instance");
+      },
+    );
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(restartRequest("+551234567890"));
+
+      expect(res.status).toBe(409);
+      expect(res.headers.get("x-baileys-owner")).toBe("other-instance");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The highest-value test here. Without /restart in the takeover allowlist,
+  // onBeforeHandle answers 421 and sends the caller back to the very instance
+  // whose socket is wedged — the one answer guaranteed not to help. Ownership
+  // must be resolved by the coordinator (409), not by the misdirect check.
+  it("is not answered with 421, even when another live instance holds the lease", async () => {
+    config.cluster.role = "worker";
+    stringData.set(
+      "@baileys-api:cluster:lease:+551234567890",
+      JSON.stringify({ owner: "other-instance", epoch: 7 }),
+    );
+    stringData.set("@baileys-api:cluster:instance:other-instance", "{}");
+
+    const spy = spyOn(coordinator, "restartWithLease").mockImplementation(
+      async () => {
+        throw new BaileysConnectionOwnedElsewhereError("other-instance");
+      },
+    );
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(restartRequest("+551234567890"));
+
+      expect(res.status).not.toBe(421);
+      expect(res.status).toBe(409);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The control: a non-takeover route in the same situation DOES get the 421,
+  // which is what proves the exemption above is scoped and not a blanket hole.
+  it("still answers 421 for a non-takeover route in the same situation", async () => {
+    config.cluster.role = "worker";
+    stringData.set(
+      "@baileys-api:cluster:lease:+551234567890",
+      JSON.stringify({ owner: "other-instance", epoch: 7 }),
+    );
+    stringData.set("@baileys-api:cluster:instance:other-instance", "{}");
+
+    const app = new Elysia().use(connectionsController);
+    const res = await app.handle(
+      new Request("http://localhost/connections/+551234567890/health", {
+        method: "GET",
+      }),
+    );
+
+    expect(res.status).toBe(421);
+  });
+});
+
+describe("connectionsController connection health", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+
+  beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
+    config.env = "development";
+    config.cluster.role = "standalone";
+  });
+
+  afterEach(() => {
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
+  });
+
+  it("answers 404 for a phone with no live connection", async () => {
+    const app = new Elysia().use(connectionsController);
+    const res = await app.handle(
+      new Request("http://localhost/connections/+551234567890/health", {
+        method: "GET",
+      }),
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it("reports the send-side snapshot", async () => {
+    const spy = spyOn(baileys, "sendHealth").mockReturnValue({
+      connected: true,
+      sendState: "stalled",
+      consecutiveSendTimeouts: 3,
+      lastTrafficAgoMs: 1200,
+      lastSendCompletedAgoMs: 214_000,
+      lastOutgoingAckAgoMs: 219_000,
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        new Request("http://localhost/connections/+551234567890/health", {
+          method: "GET",
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: {
+          connected: true,
+          sendState: "stalled",
+          consecutiveSendTimeouts: 3,
+          lastTrafficAgoMs: 1200,
+          lastSendCompletedAgoMs: 214_000,
+          lastOutgoingAckAgoMs: 219_000,
+        },
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

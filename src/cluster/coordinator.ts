@@ -3,6 +3,7 @@ import { BaileysNotConnectedError } from "@/baileys/connection";
 import type { BaileysConnectionsHandler } from "@/baileys/connectionsHandler";
 import {
   clearRedisAuthState,
+  getRedisAuthMetadata,
   getRedisSavedAuthStateIds,
   isRedisAuthStatePaired,
   seedImportedSession,
@@ -12,6 +13,7 @@ import { instanceId } from "@/cluster/identity";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
 import * as quarantineStore from "@/cluster/quarantineStore";
+import { clearSendStall } from "@/cluster/sendStallStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
@@ -770,6 +772,43 @@ export class ClusterCoordinator {
     });
   }
 
+  // Recreates the socket for a phone whose session we keep. Same explicit-intent
+  // semantics as connectWithLease (force-takes the lease, clears quarantine),
+  // but it takes NO options from the caller: the stored metadata is the same
+  // source runClaimCycle reconnects from, so a restart can never overwrite good
+  // webhook config with whatever an operator happened to type.
+  //
+  // `forceRestart` is a literal here and in importSessionWithLease, and those
+  // are its only two producers — it never arrives from a request body. That
+  // matters because StoredMetadata's type still admits the flag: connect()
+  // strips it (see connectionsHandler.connect) and persistMetadata writes an
+  // explicit field list rather than a spread, so it cannot be persisted and
+  // come back on every future reconnect. Keep all three properties intact.
+  //
+  // Returns false when there is no stored session — nothing to restart.
+  async restartWithLease(phoneNumber: string, reason?: string) {
+    const metadata = await getRedisAuthMetadata<StoredMetadata>(phoneNumber);
+    if (!metadata?.webhookUrl) {
+      return false;
+    }
+    const acquired = await this.acquireExplicitLease(phoneNumber);
+    await this.clearQuarantineForExplicitIntent(phoneNumber);
+    logger.warn(
+      "[coordinator] restarting socket for %s (reason=%s)",
+      phoneNumber,
+      reason ?? "unspecified",
+    );
+    await this.runUnderExplicitLease(phoneNumber, () =>
+      this.handler.connect(phoneNumber, {
+        ...metadata,
+        isReconnect: true,
+        leaseEpoch: acquired.epoch,
+        forceRestart: true,
+      }),
+    );
+    return true;
+  }
+
   get isDraining(): boolean {
     return this.draining;
   }
@@ -797,8 +836,18 @@ export class ClusterCoordinator {
         );
       }
     } finally {
-      // A discarded identity must not leave strike state behind.
+      // A discarded identity must not leave strike state behind. That includes
+      // the send-stall backoff: it is keyed by phone number and outlives the
+      // session by up to 24h, so without this a re-paired number would inherit
+      // the old session's backoff and have its watchdog suppressed.
       await this.clearQuarantineForExplicitIntent(phoneNumber);
+      await clearSendStall(phoneNumber).catch((error) => {
+        logger.warn(
+          "[coordinator] failed to clear send-stall backoff for %s: %s",
+          phoneNumber,
+          errorToString(error),
+        );
+      });
       await this.releaseHeldLease(phoneNumber).catch(() => {});
       void registry.publishOwnershipChanged(phoneNumber);
     }

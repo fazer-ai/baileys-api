@@ -324,6 +324,11 @@ mock.module("@/config", () => ({
     logLevel: "warn",
     baileys: {
       logLevel: "warn",
+      httpTimeoutMs: 120_000,
+      txAcquireTimeoutMs: 300_000,
+      txHoldWarnMs: 30_000,
+      sendTimeoutMs: 45_000,
+      sendStallRestartEnabled: false,
       clientVersion: "default",
       overrideClientVersion: false,
       ignoreGroupMessages: false,

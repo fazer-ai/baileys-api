@@ -15,8 +15,13 @@ const originalFetch = globalThis.fetch;
 import * as baileysModule from "@whiskeysockets/baileys";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
+import { OperationTimeoutError } from "@/helpers/withTimeout";
 import redis from "@/lib/redis";
-import { BaileysConnection, BaileysNotConnectedError } from "./connection";
+import {
+  BaileysConnection,
+  BaileysNotConnectedError,
+  BaileysSendStalledError,
+} from "./connection";
 
 const mockSocket = (baileysModule as any).__mockSocket;
 const mockEventHandlers = (baileysModule as any).__mockEventHandlers;
@@ -1017,6 +1022,280 @@ describe("BaileysConnection", () => {
       await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
       const options = mockSocket.sendMessage.mock.calls[0]?.[2];
       expect(Object.keys(options as object)).not.toContain("messageId");
+    });
+  });
+
+  describe("send stall watchdog", () => {
+    const wedge = () =>
+      mockSocket.sendMessage.mockImplementation(
+        () => new Promise<never>(() => {}),
+      );
+    const send = () =>
+      connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
+
+    beforeEach(() => {
+      config.baileys.sendTimeoutMs = 10;
+      config.baileys.sendStallRestartEnabled = false;
+    });
+
+    afterEach(() => {
+      config.baileys.sendTimeoutMs = 45_000;
+      config.baileys.sendStallRestartEnabled = false;
+      mockSocket.sendMessage.mockImplementation(async () => ({
+        key: { id: "msg-id" },
+      }));
+      // The restart cooldown is process-wide state on the class, so it leaks
+      // between examples: without this reset, whichever example claims the slot
+      // first silently starves every later one for 30 real seconds.
+      (
+        BaileysConnection as unknown as { lastStallRestartAt: number }
+      ).lastStallRestartAt = Number.NEGATIVE_INFINITY;
+    });
+
+    it("fails a send that never completes instead of hanging forever", async () => {
+      await connection.connect();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+    });
+
+    // The circuit breaker. Without it every caller retry parks another
+    // operation behind the wedged keystore mutex, and if that mutex ever
+    // releases while the socket is still open they all fire at once — a burst
+    // of duplicate messages to real customers, hours late.
+    it("stops touching the socket once the connection is known stalled", async () => {
+      await connection.connect();
+      wedge();
+      mockSocket.sendMessage.mockClear();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+
+      expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
+    });
+
+    // The failure is total: one success proves the mutex is free, so the
+    // counter has to reset rather than accumulate across unrelated hiccups.
+    it("resets the streak after a send succeeds", async () => {
+      await connection.connect();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(connection.consecutiveSendTimeouts).toBe(2);
+
+      mockSocket.sendMessage.mockImplementation(async () => ({
+        key: { id: "msg-id" },
+      }));
+      await send();
+
+      expect(connection.consecutiveSendTimeouts).toBe(0);
+      expect(connection.sendState).toBe("ok");
+    });
+
+    // Three concurrent sends started together all expire at sendTimeoutMs, so
+    // a bare "three in a row" rule would let one short hiccup recreate a
+    // perfectly healthy socket.
+    it("does not report a stall until the streak has lasted long enough", async () => {
+      await connection.connect();
+      wedge();
+      fetchCalls.length = 0;
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+
+      expect(
+        fetchCalls.some((call) => call.body.includes("send_stall_detected")),
+      ).toBe(false);
+    });
+
+    // Depth alone latches the breaker, and once it is open no send reaches the
+    // socket, so no further timeout is ever recorded. If the trigger were only
+    // evaluated on a fresh timeout, three concurrent sends would disarm the
+    // watchdog for the life of the socket: 503 forever, no webhook, no restart.
+    it("still reports the stall once the latched streak ages past the minimum", async () => {
+      await connection.connect();
+      wedge();
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      fetchCalls.length = 0;
+
+      setSystemTime(new Date(start + 120_000));
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await asyncSleep(0);
+
+      expect(
+        fetchCalls.some((call) => call.body.includes("send_stall_detected")),
+      ).toBe(true);
+      setSystemTime();
+    });
+
+    // The breaker rejects for as long as the socket lives, so an unguarded
+    // re-evaluation would emit one webhook per rejected send.
+    it("reports the stall once per episode, not once per rejected send", async () => {
+      await connection.connect();
+      wedge();
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      fetchCalls.length = 0;
+
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await asyncSleep(0);
+
+      expect(
+        fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+          .length,
+      ).toBe(1);
+      setSystemTime();
+    });
+
+    it("emits send_stall_detected once the streak is long enough", async () => {
+      await connection.connect();
+      wedge();
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      // Push the streak past the minimum duration before the third timeout.
+      setSystemTime(new Date(start + 120_000));
+      fetchCalls.length = 0;
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await asyncSleep(0);
+
+      const stall = fetchCalls.find((call) =>
+        call.body.includes("send_stall_detected"),
+      );
+      expect(stall).toBeDefined();
+      const payload = JSON.parse(stall?.body ?? "{}");
+      expect(payload.data.sendStall.action).toBe("suppressed");
+      expect(payload.data.sendStall.consecutiveTimeouts).toBe(3);
+      setSystemTime();
+    });
+
+    // The process-wide cooldown spreads a fleet-wide stall over minutes. It is
+    // a scheduling delay, not a verdict, so the episode must stay open: closing
+    // it here would turn 8 stalled inboxes into 8 alerts and 1 recovery.
+    it("keeps the episode open when the restart is only deferred by the cooldown", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      // Another connection in this process restarted a moment ago.
+      (
+        BaileysConnection as unknown as { lastStallRestartAt: number }
+      ).lastStallRestartAt = performance.now();
+      await connection.connect();
+      wedge();
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      fetchCalls.length = 0;
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await asyncSleep(0);
+
+      // Deferred, not decided: no restart, and no "suppressed" webhook that
+      // would read as a verdict on this connection.
+      expect(restarts.length).toBe(0);
+      expect(
+        fetchCalls.some((call) => call.body.includes("send_stall_detected")),
+      ).toBe(false);
+
+      // The episode is still open, so the next attempt re-evaluates instead of
+      // silently giving up for the life of the socket.
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await asyncSleep(0);
+      expect(restarts.length).toBe(0);
+
+      setSystemTime();
+    });
+
+    it("recreates the socket through the handler when restart is enabled", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connection.connect();
+      wedge();
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await asyncSleep(0);
+
+      expect(restarts.length).toBe(1);
+      expect(restarts[0]).toContain("send stall");
+      setSystemTime();
+    });
+
+    // Without this, the breaker stays open across an in-place reconnect (the
+    // connection object survives a socket drop) and the connection answers 503
+    // forever — worse than the original stall, which at least cleared itself
+    // when WhatsApp dropped the socket.
+    it("reopens the circuit when the connection opens again", async () => {
+      await connection.connect();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+
+      mockSocket.sendMessage.mockImplementation(async () => ({
+        key: { id: "msg-id" },
+      }));
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "open",
+      });
+
+      expect(connection.consecutiveSendTimeouts).toBe(0);
+      await expect(send()).resolves.toBeDefined();
+    });
+
+    it("reports sendState unknown until a send has actually been observed", async () => {
+      await connection.connect();
+      expect(connection.sendState).toBe("unknown");
+    });
+
+    // markTraffic() fires on inbound traffic too, so it stays fresh while
+    // sending is dead. Only WhatsApp acknowledging one of OUR messages proves
+    // the send path end to end.
+    it("records an outgoing ack from messages.update", async () => {
+      await connection.connect();
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: true, id: "x" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
+    it("ignores status updates for messages that are not ours", async () => {
+      await connection.connect();
+
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: false, id: "x" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).toBeNull();
     });
   });
 

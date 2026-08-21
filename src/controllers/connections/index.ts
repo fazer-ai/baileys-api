@@ -4,6 +4,7 @@ import baileys from "@/baileys";
 import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
+  BaileysSendStalledError,
 } from "@/baileys/connection";
 import {
   InvalidNoiseCandidateError,
@@ -17,6 +18,8 @@ import {
   buildMessageContent,
 } from "@/controllers/connections/helpers";
 import { withIdempotency } from "@/helpers/withIdempotency";
+import { OperationTimeoutError } from "@/helpers/withTimeout";
+import logger from "@/lib/logger";
 import { authMiddleware } from "@/middlewares/auth";
 import {
   anyJid,
@@ -32,6 +35,10 @@ import {
   userJid,
 } from "./types";
 
+// Routes exempt from the 421 misdirect: each resolves ownership itself in the
+// coordinator, which answers 409 when a live peer owns the phone.
+const TAKEOVER_SUFFIXES = ["", "/import-session", "/restart"] as const;
+
 // Responses every route under this controller can return, on top of its own.
 const SHARED_RESPONSES = {
   403: {
@@ -40,7 +47,7 @@ const SHARED_RESPONSES = {
   },
   421: {
     description:
-      "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+      "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
     headers: {
       "x-baileys-owner": {
         description: "Instance id of the connection owner",
@@ -78,14 +85,18 @@ const connectionsController = new Elysia({
     // lease transition the local metadata (apiKeyHash) can lag the new
     // owner's writes, and answering 403 off that stale copy would mask the
     // misdirect the proxy knows how to recover from.
-    // POST /connections/:phone and .../import-session are exempt — both are
-    // explicit takeovers and resolve ownership in the coordinator (409 when the
-    // owner is alive).
+    // POST /connections/:phone, .../import-session and .../restart are exempt —
+    // all three are explicit takeovers and resolve ownership in the coordinator
+    // (409 when the owner is alive). Restart especially must bypass the 421: it
+    // exists for connections whose owner is registered but misbehaving, and
+    // bouncing the caller back to that owner is the one answer guaranteed not
+    // to help.
     const decodedPath = decodeURIComponent(path);
     const isConnectTakeover =
       request.method === "POST" &&
-      (decodedPath === `/connections/${phoneNumber}` ||
-        decodedPath === `/connections/${phoneNumber}/import-session`);
+      TAKEOVER_SUFFIXES.some(
+        (suffix) => decodedPath === `/connections/${phoneNumber}${suffix}`,
+      );
     if (!isConnectTakeover) {
       const owner = await resolveMisdirectedRequest(phoneNumber);
       if (owner) {
@@ -229,6 +240,137 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/restart",
+    async ({ params, body, set }) => {
+      const { phoneNumber } = params;
+      try {
+        const restarted = await coordinator.restartWithLease(
+          phoneNumber,
+          body?.reason,
+        );
+        if (!restarted) {
+          set.status = 404;
+          return {
+            error: "Not Found",
+            message: "No stored session for this phone number",
+          };
+        }
+      } catch (e) {
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another instance",
+          };
+        }
+        throw e;
+      }
+      set.status = 202;
+    },
+    {
+      params: phoneNumberParams,
+      // Takes no connection options on purpose: the socket is rebuilt from the
+      // stored metadata, so a restart cannot clobber good webhook config.
+      body: t.Optional(
+        t.Object({
+          reason: t.Optional(
+            t.String({
+              maxLength: 200,
+              description: "Free-text note recorded in the restart log line",
+              example: "send stall",
+            }),
+          ),
+        }),
+      ),
+      detail: {
+        summary: "Recreate the socket, keeping the session",
+        description:
+          "Tears down the live socket and spawns a replacement using the stored session, without clearing auth state — no QR, no re-pairing. Recovers a connection that is receiving and passing health checks but whose sends are wedged.",
+        responses: {
+          202: { description: "Restart accepted; reconnecting" },
+          404: { description: "No stored session for this phone number" },
+          409: {
+            description:
+              "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header).",
+            headers: {
+              "x-baileys-owner": {
+                description: "Instance id of the connection owner",
+                schema: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+  .get(
+    "/:phoneNumber/health",
+    ({ params, set }) => {
+      const health = baileys.sendHealth(params.phoneNumber);
+      if (!health) {
+        set.status = 404;
+        return { error: "Not Found", message: "Phone number not connected" };
+      }
+      return { data: health };
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        summary: "Send-side health for this connection",
+        description:
+          "Whether this connection is actually able to send, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen.",
+        responses: {
+          200: {
+            description: "Send-side health snapshot",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        connected: { type: "boolean" },
+                        sendState: {
+                          type: "string",
+                          enum: ["unknown", "ok", "degraded", "stalled"],
+                          description:
+                            "'unknown' means no send has been observed on this connection yet",
+                          example: "ok",
+                        },
+                        consecutiveSendTimeouts: { type: "integer" },
+                        lastTrafficAgoMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "Age of the last message-level traffic, inbound or outbound. Stays fresh on inbound traffic alone, so it does NOT prove sending works.",
+                        },
+                        lastSendCompletedAgoMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "Age of the last send that completed, i.e. the keystore mutex was free",
+                        },
+                        lastOutgoingAckAgoMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "Age of the last WhatsApp acknowledgement of one of our messages — the only end-to-end proof that sending works",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Phone number not connected" },
+        },
+      },
+    },
+  )
   .patch(
     "/:phoneNumber/presence",
     async ({ params, body }) => {
@@ -311,24 +453,39 @@ const connectionsController = new Elysia({
 
       let result: Awaited<ReturnType<typeof withIdempotency>>;
       try {
-        result = await withIdempotency(idempotencyKey, async () => {
-          const { messageContent: builtContent, quoted } =
-            buildMessageContent(messageContent);
+        result = await withIdempotency(
+          idempotencyKey,
+          async () => {
+            const { messageContent: builtContent, quoted } =
+              buildMessageContent(messageContent);
 
-          const response = await baileys.sendMessage(phoneNumber, {
-            jid,
-            messageContent: builtContent,
-            quoted,
-            messageId,
-          });
+            const response = await baileys.sendMessage(phoneNumber, {
+              jid,
+              messageContent: builtContent,
+              quoted,
+              messageId,
+            });
 
-          if (!response) return null;
+            if (!response) return null;
 
-          return {
-            key: response.key,
-            messageTimestamp: response.messageTimestamp,
-          };
-        });
+            return {
+              key: response.key,
+              messageTimestamp: response.messageTimestamp,
+            };
+          },
+          {
+            // A timed-out send is not cancelled — it stays parked in the
+            // socket's keystore mutex and may still reach WhatsApp. With a
+            // caller-reserved messageId the resend lands on the same WhatsApp
+            // key.id, so WhatsApp itself dedupes it and releasing the lock is
+            // strictly better: the retry is free and cannot duplicate. Without
+            // one, a retry would create a SECOND WhatsApp message, so the
+            // outcome is recorded as unknown and the caller is told to
+            // reconcile rather than resend blindly.
+            isIndeterminate: (e) =>
+              e instanceof OperationTimeoutError && !messageId,
+          },
+        );
       } catch (e) {
         // The phone has no live socket on this instance (never connected, or
         // dropped mid-request). Surface it as 404 instead of a generic 500 so
@@ -338,13 +495,54 @@ const connectionsController = new Elysia({
         if (e instanceof BaileysNotConnectedError) {
           return new Response("Phone number not connected", { status: 404 });
         }
+        // The send did not complete in time. Distinct from 503 below: this
+        // attempt's outcome is unknown, so a caller may retry it (safely, if it
+        // reserved a messageId), whereas 503 means the connection is known not
+        // to be sending at all and retrying only burns workers.
+        if (e instanceof OperationTimeoutError) {
+          if (!messageId) {
+            // Surfaces which integrations still let Baileys generate the id;
+            // production runs at LOG_LEVEL=warn, so this is the list.
+            logger.warn(
+              "[%s] [send-message] timed out without a reserved messageId — resend is not duplicate-safe",
+              phoneNumber,
+            );
+          }
+          return new Response("Send timed out; outcome unknown", {
+            status: 504,
+            headers: { "retry-after": "60" },
+          });
+        }
+        if (e instanceof BaileysSendStalledError) {
+          return new Response("Connection is not accepting sends", {
+            status: 503,
+            headers: { "retry-after": "60" },
+          });
+        }
         throw e;
       }
 
+      // Both idempotency conflicts answer 409 to preserve the contract callers
+      // already handle; the header is what tells them apart, since a plain-text
+      // body is no basis for that decision.
       if (result.status === "processing") {
         return new Response("Message is already being processed", {
           status: 409,
+          headers: { "x-baileys-idempotency-state": "processing" },
         });
+      }
+
+      if (result.status === "indeterminate") {
+        return new Response(
+          "Previous send timed out; outcome unknown. Reconcile before resending, or resend with a reserved messageId.",
+          {
+            status: 409,
+            headers: {
+              "x-baileys-idempotency-state": "indeterminate",
+              "retry-after": "60",
+            },
+          },
+        );
       }
 
       if (result.status === "failed") {
@@ -387,10 +585,18 @@ const connectionsController = new Elysia({
             description: "Phone number not connected",
           },
           409: {
-            description: "Message is already being processed",
+            description:
+              "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`.",
           },
           500: {
             description: "Message not sent",
+          },
+          503: {
+            description:
+              "Connection is not accepting sends (send stall detected)",
+          },
+          504: {
+            description: "Send timed out; outcome unknown",
           },
         },
       },

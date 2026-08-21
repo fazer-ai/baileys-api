@@ -85,6 +85,50 @@ export class BaileysConnectionsHandler {
     };
   }
 
+  // Send-side health for one connection. Ages, never absolute timestamps:
+  // lastTrafficAt is a performance.now() reading, which is monotonic and
+  // meaningless to a client.
+  sendHealth(phoneNumber: string): {
+    connected: boolean;
+    sendState: "unknown" | "ok" | "degraded" | "stalled";
+    consecutiveSendTimeouts: number;
+    lastTrafficAgoMs: number | null;
+    lastSendCompletedAgoMs: number | null;
+    lastOutgoingAckAgoMs: number | null;
+  } | null {
+    const connection = this.connections[phoneNumber];
+    if (!connection) {
+      return null;
+    }
+    const now = Date.now();
+    const age = (at: number | null) => (at === null ? null : now - at);
+    return {
+      connected: true,
+      sendState: connection.sendState,
+      consecutiveSendTimeouts: connection.consecutiveSendTimeouts,
+      lastTrafficAgoMs:
+        connection.lastTrafficAt === null
+          ? null
+          : Math.round(performance.now() - connection.lastTrafficAt),
+      lastSendCompletedAgoMs: age(connection.lastSendCompletedAt),
+      lastOutgoingAckAgoMs: age(connection.lastOutgoingAckAt),
+    };
+  }
+
+  // Connections that are registered and receiving but whose sends are wedged.
+  // Exposed for alerting only — never for container liveness: failing the
+  // container health check would restart the process and take every HEALTHY
+  // connection down with it.
+  stalledConnectionCount(): number {
+    let count = 0;
+    for (const connection of Object.values(this.connections)) {
+      if (connection.sendState === "stalled") {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   // Tears down the local socket WITHOUT touching the Redis auth state, so the
   // identity can be picked up elsewhere. Used by the cluster coordinator for
   // self-fencing (lease owned by another instance) and graceful handoff.
@@ -182,6 +226,36 @@ export class BaileysConnectionsHandler {
           }).catch((error) => {
             logger.error(
               "[%s] [requestLogout] %s",
+              phoneNumber,
+              errorToString(error),
+            );
+          });
+        },
+        requestRestart: (reason: string) => {
+          // NOTE: Do NOT wrap this in withInFlightOp. spawnConnection takes the
+          // same per-number slot, and its `while (this.inFlightOps[phone])`
+          // would wait on the slot this callback itself would be holding — a
+          // permanent, silent deadlock.
+          //
+          // connect() with forceRestart already does the right thing: it drains
+          // in-flight ops BEFORE taking a slot, discards the live socket, keeps
+          // the drainingWebhooks accounting, and spawns a replacement with the
+          // same identity and lease epoch. It is the path import-session
+          // already exercises in production. Do not reimplement it here.
+          if (this.connections[phoneNumber] !== connection) {
+            return;
+          }
+          logger.warn(
+            "[%s] [requestRestart] recreating socket reason=%s",
+            phoneNumber,
+            reason,
+          );
+          void this.connect(phoneNumber, {
+            ...options,
+            forceRestart: true,
+          }).catch((error) => {
+            logger.error(
+              "[%s] [requestRestart] %s",
               phoneNumber,
               errorToString(error),
             );

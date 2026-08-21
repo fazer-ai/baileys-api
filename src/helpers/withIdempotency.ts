@@ -6,6 +6,13 @@ import redis from "@/lib/redis";
 
 const IDEMPOTENCY_TTL = 600;
 const PROCESSING_PREFIX = "processing:";
+// Marks work that threw in a way that leaves the outcome unknowable — a send
+// that timed out is still parked inside the socket's keystore mutex and may
+// yet reach WhatsApp. Deleting the key would make the request freely
+// retryable and risk a duplicate; leaving the `processing:` marker would 409
+// every retry for the full TTL with no way to tell why. Neither is right, so
+// the state is recorded distinctly and the caller decides what to answer.
+const INDETERMINATE_PREFIX = "indeterminate:";
 
 // The in-flight marker carries the holder's instance id AND a per-process
 // incarnation token ("processing:<instanceId>#<incarnationId>") so a different
@@ -42,11 +49,19 @@ export type IdempotencyResult<T> =
   | { status: "executed"; value: T }
   | { status: "cached"; value: T }
   | { status: "processing" }
+  | { status: "indeterminate" }
   | { status: "failed" };
+
+export interface IdempotencyOptions {
+  // Predicate for "the work threw, but it may still take effect". Returning
+  // true records the indeterminate marker instead of releasing the lock.
+  isIndeterminate?: (error: unknown) => boolean;
+}
 
 export async function withIdempotency<T>(
   key: string | null,
   fn: () => Promise<T | null>,
+  options?: IdempotencyOptions,
 ): Promise<IdempotencyResult<T>> {
   if (!key) {
     const value = await fn();
@@ -59,8 +74,8 @@ export async function withIdempotency<T>(
   if (outcome.status === "cached") {
     return { status: "cached", value: outcome.value };
   }
-  if (outcome.status === "processing") {
-    return { status: "processing" };
+  if (outcome.status === "processing" || outcome.status === "indeterminate") {
+    return { status: outcome.status };
   }
 
   // outcome.status === "owned": we hold the lock, run the work.
@@ -77,7 +92,11 @@ export async function withIdempotency<T>(
 
     return { status: "executed", value };
   } catch (error) {
-    await releaseLock(key);
+    if (options?.isIndeterminate?.(error)) {
+      await markIndeterminate(key);
+    } else {
+      await releaseLock(key);
+    }
     throw error;
   }
 }
@@ -85,7 +104,8 @@ export async function withIdempotency<T>(
 type AcquireOutcome<T> =
   | { status: "owned" }
   | { status: "cached"; value: T }
-  | { status: "processing" };
+  | { status: "processing" }
+  | { status: "indeterminate" };
 
 async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
   if (await acquireLock(key)) {
@@ -115,6 +135,12 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
   // Our own genuine in-flight request (exact match incl. our incarnation).
   if (current === processingValue()) {
     return { status: "processing" };
+  }
+
+  // An unknown outcome stays unknown: deliberately no steal path here, since a
+  // dead holder tells us nothing about whether its send reached WhatsApp.
+  if (current.startsWith(INDETERMINATE_PREFIX)) {
+    return { status: "indeterminate" };
   }
 
   const holder = parseHolder(current);
@@ -227,6 +253,27 @@ async function stealLock(key: string, expected: string): Promise<boolean> {
       errorToString(error),
     );
     return false;
+  }
+}
+
+async function markIndeterminate(key: string): Promise<void> {
+  try {
+    await redis.set(
+      key,
+      `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
+      { EX: IDEMPOTENCY_TTL },
+    );
+  } catch (error) {
+    // Leave the `processing:` marker in place rather than releasing: it 409s
+    // the retry for the rest of the TTL, which is the safe direction here —
+    // releasing would let the retry duplicate a message that may already have
+    // gone out. The warn is what tells an operator why the 409 says
+    // "processing" for a request that is no longer running.
+    logger.warn(
+      "[withIdempotency] failed to mark %s indeterminate: %s",
+      key,
+      errorToString(error),
+    );
   }
 }
 

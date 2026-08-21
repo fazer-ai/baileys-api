@@ -43,9 +43,15 @@ import {
   type QuarantineState,
   recordStrike,
 } from "@/cluster/quarantineStore";
+import {
+  canRestart as canRestartAfterStall,
+  nextRestartAllowedAt,
+  recordRestart as recordStallRestart,
+} from "@/cluster/sendStallStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
+import { OperationTimeoutError, withTimeout } from "@/helpers/withTimeout";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 
 // `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
@@ -68,6 +74,23 @@ const MESSAGE_ACCOUNT_RESTRICTION_CODE = "463";
 // once per window per connection.
 const REACHOUT_TIMELOCK_REFETCH_WINDOW_MS = 60_000;
 
+// Send-stall watchdog. Six keystore operations serialize on a mutex keyed by
+// our own JID, so once one of them wedges, EVERY send on this connection times
+// out while receiving and health checks stay perfect -- the connection goes
+// mute without a single error, for minutes or for hours.
+//
+// Consecutive timeouts, not a sliding window: the failure is total, so one
+// success proves the mutex is free and a consecutive counter is the exact shape
+// of the signal. The minimum streak duration exists because three concurrent
+// sends started together all expire at sendTimeoutMs, which would otherwise let
+// one 45s hiccup with three sends in flight recreate a healthy socket.
+const SEND_STALL_THRESHOLD = 3;
+const SEND_STALL_MIN_DURATION_MS = 90_000;
+// Spreads restarts across a fleet-wide event: with several inboxes stalled at
+// once, they recover over minutes instead of reconnecting simultaneously
+// against the same IP.
+const SEND_STALL_RESTART_COOLDOWN_MS = 30_000;
+
 export class BaileysNotConnectedError extends Error {
   constructor() {
     super("Phone number not connected");
@@ -77,6 +100,16 @@ export class BaileysNotConnectedError extends Error {
 export class BaileysConnectionForbiddenError extends Error {
   constructor() {
     super("Connection not owned by this API key");
+  }
+}
+
+// Raised instead of attempting a send the connection is known to be unable to
+// complete. Queueing another operation behind a wedged mutex only grows the
+// burst that fires if the mutex ever releases while the socket is still open —
+// a burst of duplicate messages to real customers, hours late.
+export class BaileysSendStalledError extends Error {
+  constructor() {
+    super("Connection is not accepting sends");
   }
 }
 
@@ -144,6 +177,7 @@ export class BaileysConnection {
   private syncFullHistory: boolean;
   private onConnectionClose: (() => void) | null;
   private requestLogout: (() => void) | null;
+  private requestRestart: ((reason: string) => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
@@ -173,6 +207,22 @@ export class BaileysConnection {
   // a 463 (see handleMessagesUpdate / fetchReachoutTimelockOn463).
   private reachoutTimelockFetchInFlight = false;
   private lastReachoutTimelockFetchAt = 0;
+  // Send-stall watchdog state. Deliberately in memory and never in Redis: a
+  // restart gives a new socket, hence a new keystore and a new mutex map, so
+  // the count must die with the socket. Persisted state would survive the
+  // restart and drive a restart loop.
+  private _consecutiveSendTimeouts = 0;
+  private sendStallStreakStartedAt: number | null = null;
+  private restartRequested = false;
+  // One report per stall episode. Without it the breaker-open path below would
+  // emit a webhook for every rejected send, since the breaker keeps rejecting
+  // for as long as the socket lives.
+  private sendStallReported = false;
+  // Wall-clock (not performance.now()) so it can be reported as an age to
+  // clients and driven by setSystemTime in tests, matching
+  // trackConnectionReplaced.
+  private _lastSendCompletedAt: number | null = null;
+  private _lastOutgoingAckAt: number | null = null;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -181,6 +231,7 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.onConnectionClose = options.onConnectionClose || null;
     this.requestLogout = options.requestLogout ?? null;
+    this.requestRestart = options.requestRestart ?? null;
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
@@ -207,6 +258,64 @@ export class BaileysConnection {
 
   private markTraffic() {
     this._lastTrafficAt = performance.now();
+  }
+
+  get lastSendCompletedAt(): number | null {
+    return this._lastSendCompletedAt;
+  }
+
+  get lastOutgoingAckAt(): number | null {
+    return this._lastOutgoingAckAt;
+  }
+
+  get consecutiveSendTimeouts(): number {
+    return this._consecutiveSendTimeouts;
+  }
+
+  // "unknown" is a first-class answer, not a fallback: a connection nobody
+  // writes to can be wedged for hours and still look perfect, and reporting it
+  // as healthy is worse than admitting we have not observed a send.
+  get sendState(): "unknown" | "ok" | "degraded" | "stalled" {
+    if (this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD) {
+      return "stalled";
+    }
+    if (this._consecutiveSendTimeouts > 0) {
+      return "degraded";
+    }
+    if (
+      this._lastSendCompletedAt === null &&
+      this._lastOutgoingAckAt === null
+    ) {
+      return "unknown";
+    }
+    return "ok";
+  }
+
+  // Reported by the patched addTransactionCapability. Logged here rather than
+  // inside the patch because the logger the lib holds is baileysLogger, whose
+  // level is BAILEYS_LOG_LEVEL (often `error` in production) — a warn from
+  // inside the patch would be invisible exactly where it matters.
+  private handleTxEvent(event: {
+    phase: "acquired" | "released" | "stalled" | "timeout";
+    key: string;
+    waitedMs: number;
+    heldMs?: number;
+    originStack?: string;
+    stillLocked?: boolean;
+  }) {
+    if (event.phase === "acquired" || event.phase === "released") {
+      return;
+    }
+    logger.warn(
+      "[%s] [keystoreTx] %s key=%s waitedMs=%d heldMs=%s stillLocked=%s stack=%s",
+      this.phoneNumber,
+      event.phase,
+      event.key,
+      event.waitedMs,
+      event.heldMs ?? "-",
+      event.stillLocked ?? "-",
+      event.originStack ?? "-",
+    );
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -337,6 +446,20 @@ export class BaileysConnection {
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
       version,
+      // Deadline for the lib's own HTTP downloads. Read by the patched
+      // getHttpStream; without it an app-state blob download can park forever
+      // inside the keystore transaction and mute this connection's sends.
+      options: { timeoutMs: config.baileys.httpTimeoutMs },
+      // NOTE: The config merge in the lib is shallow, so supplying
+      // transactionOpts replaces the whole default object — maxCommitRetries
+      // and delayBetweenTriesMs must be restated at their upstream defaults.
+      transactionOpts: {
+        maxCommitRetries: 10,
+        delayBetweenTriesMs: 3000,
+        acquireTimeoutMs: config.baileys.txAcquireTimeoutMs,
+        holdWarnMs: config.baileys.txHoldWarnMs,
+        onTransactionEvent: (event) => this.handleTxEvent(event),
+      },
     };
 
     try {
@@ -548,11 +671,191 @@ export class BaileysConnection {
     // Spread it only when set: Baileys spreads our options over its own
     // `messageId: generateMessageIDV2(user)` default, so an explicit
     // `undefined` would downgrade that default to the user-less fallback.
-    return this.safeSocket().sendMessage(jid, messageContent, {
-      waveformProxy,
-      quoted: options?.quoted,
-      ...(options?.messageId ? { messageId: options.messageId } : {}),
+    return this.relayWithTimeout("sendMessage", () =>
+      this.safeSocket().sendMessage(jid, messageContent, {
+        waveformProxy,
+        quoted: options?.quoted,
+        ...(options?.messageId ? { messageId: options.messageId } : {}),
+      }),
+    );
+  }
+
+  // Bounds every path that goes through the socket's sendMessage, which is what
+  // takes the keystore transaction keyed by our own JID. `withTimeout` cannot
+  // cancel the underlying operation — it stays parked in that mutex — so a
+  // timeout means "outcome unknown", and the circuit breaker below is what
+  // keeps the parked queue from growing with every caller retry.
+  private async relayWithTimeout<T>(
+    operation: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD) {
+      // Re-evaluate here, not only when a fresh timeout lands: once the breaker
+      // is open no send reaches the socket, so no further timeout is ever
+      // recorded. Three sends started together all expire at sendTimeoutMs with
+      // a streak near zero, which latches the breaker below the minimum
+      // duration — without this the watchdog would stay disarmed for the life
+      // of the socket, answering 503 with no webhook and no restart.
+      this.maybeReportSendStall();
+      throw new BaileysSendStalledError();
+    }
+    try {
+      const result = await withTimeout(
+        operation,
+        config.baileys.sendTimeoutMs,
+        fn,
+      );
+      this._consecutiveSendTimeouts = 0;
+      this.sendStallStreakStartedAt = null;
+      this.sendStallReported = false;
+      this._lastSendCompletedAt = Date.now();
+      return result;
+    } catch (error) {
+      if (error instanceof OperationTimeoutError) {
+        this.recordSendTimeout(operation);
+      }
+      throw error;
+    }
+  }
+
+  private recordSendTimeout(operation: string) {
+    this._consecutiveSendTimeouts += 1;
+    this.sendStallStreakStartedAt ??= Date.now();
+    const streakMs = Date.now() - this.sendStallStreakStartedAt;
+
+    logger.warn(
+      "[%s] [sendStall] timeout operation=%s consecutive=%d streakMs=%d",
+      this.phoneNumber,
+      operation,
+      this._consecutiveSendTimeouts,
+      streakMs,
+    );
+
+    this.maybeReportSendStall();
+  }
+
+  // The trigger, shared by the timeout path and the breaker-open path. A stall
+  // needs the streak to be both deep enough (consecutive timeouts) and long
+  // enough: concurrent sends all expire at the same instant, so depth alone
+  // would let one 45s hiccup recreate a perfectly healthy socket.
+  private maybeReportSendStall() {
+    if (this.sendStallReported || this.sendStallStreakStartedAt === null) {
+      return;
+    }
+    if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
+      return;
+    }
+    if (
+      Date.now() - this.sendStallStreakStartedAt <
+      SEND_STALL_MIN_DURATION_MS
+    ) {
+      return;
+    }
+    // Already closed or reconnecting: the timeouts are explained and recreating
+    // the socket adds nothing.
+    if (!this.socket || this.isDiscarded || this.restartRequested) {
+      return;
+    }
+    // Latched before the async work so concurrent rejections cannot each start
+    // their own episode. Released again only if the restart turns out to be
+    // merely deferred (see the cooldown branch below).
+    this.sendStallReported = true;
+    void this.handleSendStall(Date.now() - this.sendStallStreakStartedAt);
+  }
+
+  private async handleSendStall(streakMs: number) {
+    let action: "restart" | "suppressed" = "suppressed";
+    let until: string | undefined;
+
+    if (config.baileys.sendStallRestartEnabled) {
+      try {
+        if (await canRestartAfterStall(this.phoneNumber)) {
+          if (!BaileysConnection.claimStallRestartSlot()) {
+            // Process-wide cooldown: another connection restarted moments ago.
+            // That is a scheduling delay, not a verdict, so this episode is
+            // neither reported nor closed — the next send attempt re-evaluates
+            // once the slot frees. Reporting "suppressed" here would turn a
+            // fleet-wide stall into 8 alerts and 1 recovery.
+            this.sendStallReported = false;
+            return;
+          }
+          action = "restart";
+        } else {
+          const allowedAt = await nextRestartAllowedAt(this.phoneNumber);
+          until = allowedAt ? new Date(allowedAt).toISOString() : undefined;
+        }
+      } catch (error) {
+        logger.error(
+          "[%s] [sendStall] backoff lookup failed: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+      }
+    }
+
+    logger.warn(
+      "[%s] [sendStall] detected consecutiveTimeouts=%d streakMs=%d action=%s",
+      this.phoneNumber,
+      this._consecutiveSendTimeouts,
+      streakMs,
+      action,
+    );
+
+    this.sendToWebhook({
+      event: "connection.update",
+      data: {
+        error: "send_stall_detected",
+        sendStall: {
+          consecutiveTimeouts: this._consecutiveSendTimeouts,
+          stalledForMs: streakMs,
+          action,
+          ...(until && { until }),
+        },
+      },
     });
+
+    if (action !== "restart") {
+      return;
+    }
+
+    this.restartRequested = true;
+    try {
+      await recordStallRestart(this.phoneNumber);
+    } catch (error) {
+      logger.error(
+        "[%s] [sendStall] failed to record restart: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
+    // Through the handler, never inline: the replacement socket has to
+    // participate in the handler's per-number inFlightOps lock. See
+    // connectionsHandler.spawnConnection.
+    this.requestRestart?.(
+      `send stall: ${this._consecutiveSendTimeouts} consecutive timeouts over ${streakMs}ms`,
+    );
+  }
+
+  // Process-wide, not per-connection: the point is to keep a fleet-wide stall
+  // from reconnecting every affected socket at the same instant.
+  //
+  // performance.now(), not Date.now(), for the same reason the coordinator uses
+  // it for lastRebalanceReleaseAt: this is a pure elapsed-time gate, and an NTP
+  // step backwards would otherwise suppress every restart until wall clock
+  // caught up. -Infinity because performance.now() starts near zero at boot, so
+  // a 0 sentinel would silently rate-limit the first restart away.
+  private static lastStallRestartAt = Number.NEGATIVE_INFINITY;
+
+  private static claimStallRestartSlot(): boolean {
+    const now = performance.now();
+    if (
+      now - BaileysConnection.lastStallRestartAt <
+      SEND_STALL_RESTART_COOLDOWN_MS
+    ) {
+      return false;
+    }
+    BaileysConnection.lastStallRestartAt = now;
+    return true;
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
@@ -669,7 +972,9 @@ export class BaileysConnection {
   }
 
   deleteMessage(jid: string, key: MessageKeyWithId) {
-    return this.safeSocket().sendMessage(jid, { delete: key });
+    return this.relayWithTimeout("deleteMessage", () =>
+      this.safeSocket().sendMessage(jid, { delete: key }),
+    );
   }
 
   editMessage(
@@ -677,10 +982,12 @@ export class BaileysConnection {
     key: proto.IMessageKey,
     messageContent: AnyMessageContent,
   ) {
-    return this.safeSocket().sendMessage(jid, {
-      ...messageContent,
-      edit: key,
-    } as AnyMessageContent);
+    return this.relayWithTimeout("editMessage", () =>
+      this.safeSocket().sendMessage(jid, {
+        ...messageContent,
+        edit: key,
+      } as AnyMessageContent),
+    );
   }
 
   async profilePictureUrl(jid: string, type?: "preview" | "image") {
@@ -988,6 +1295,16 @@ export class BaileysConnection {
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      // A fresh socket means a fresh keystore and a fresh mutex map, so
+      // whatever was wedged is gone. Without this reset the circuit breaker
+      // stays open across an in-place reconnect (the connection object
+      // survives a socket drop) and the connection would answer 503 forever —
+      // worse than the stall it was built to contain, since the original bug
+      // at least cleared itself when WhatsApp dropped the socket.
+      this._consecutiveSendTimeouts = 0;
+      this.sendStallStreakStartedAt = null;
+      this.sendStallReported = false;
+      this.restartRequested = false;
       // Any healthy open wipes the quarantine strike history — the backoff
       // must reflect CONSECUTIVE failed cycles, not lifetime totals. Not
       // awaited (the open path must not block on it), rejection logged.
@@ -1089,6 +1406,8 @@ export class BaileysConnection {
       this.fetchReachoutTimelockOn463();
     }
 
+    this.trackOutgoingAck(data);
+
     this.sendToWebhook(
       {
         event: "messages.update",
@@ -1098,6 +1417,24 @@ export class BaileysConnection {
         awaitResponse: true,
       },
     );
+  }
+
+  // The only end-to-end proof that sending works, short of injecting a probe
+  // message: WhatsApp acknowledging one of OUR messages. markTraffic() fires
+  // before the send and on inbound traffic, so it stays fresh while sending is
+  // dead — it cannot serve as this signal. A resolved socket.sendMessage proves
+  // the keystore mutex was free, not that the server took the message.
+  private trackOutgoingAck(data: BaileysEventMap["messages.update"]) {
+    const acked = data.some(
+      ({ key, update }) =>
+        key?.fromMe === true &&
+        update?.status !== undefined &&
+        update.status !== null &&
+        update.status >= WAMessageStatus.SERVER_ACK,
+    );
+    if (acked) {
+      this._lastOutgoingAckAt = Date.now();
+    }
   }
 
   private hasAccountRestrictionError(
