@@ -71,6 +71,7 @@ class MockBaileysConnection {
   _apiKeyHash: string | null;
   inFlightWebhooks = 0;
   lastTrafficAt: number | null = null;
+  isOpen = true;
   lastSendCompletedAt: number | null = null;
   lastOutgoingAckAt: number | null = null;
   consecutiveSendTimeouts = 0;
@@ -1289,6 +1290,39 @@ describe("BaileysConnectionsHandler", () => {
       expect(replacement.options.leaseEpoch).toBe(9);
     });
 
+    // The identity check the caller makes is not enough on its own: connect()
+    // drains the in-flight slot first, and logout() keeps its connection
+    // registered until its WhatsApp RPC returns. Proceeding anyway resurrects a
+    // phone an explicit DELETE just logged out — as an unpaired QR socket, with
+    // its metadata written back.
+    it("does not resurrect a connection an in-flight logout is removing", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+
+      // A logout parked on the WhatsApp RPC: the connection is still registered.
+      let finishLogout: (() => void) | undefined;
+      mockLogout.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLogout = resolve;
+          }),
+      );
+      const logout = handler.logout("+5511999999999");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(original);
+
+      mockConnect.mockClear();
+      restartOf("+5511999999999")?.("send stall");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      finishLogout?.();
+      await logout;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(handler.hasConnection("+5511999999999")).toBe(false);
+      expect(mockConnect).not.toHaveBeenCalled();
+    });
+
     // A replacement may already hold the slot by the time a stalled socket asks
     // to be restarted; only the instance that stalled should act.
     it("is a no-op once a replacement already holds the slot", async () => {
@@ -1327,6 +1361,20 @@ describe("BaileysConnectionsHandler", () => {
       expect(health?.consecutiveSendTimeouts).toBe(2);
       expect(health?.lastSendCompletedAgoMs).toBeGreaterThanOrEqual(5_000);
       expect(health?.lastOutgoingAckAgoMs).toBeNull();
+    });
+
+    // Being registered here is not connectivity: a connection is registered
+    // before it ever opens (QR pairing) and stays registered while its socket is
+    // closed and backing off — precisely when a health check must not claim it
+    // is connected.
+    it("reports the socket's own state, not the fact that we hold the object", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+
+      expect(handler.sendHealth("+5511999999999")?.connected).toBe(true);
+
+      connection.isOpen = false;
+      expect(handler.sendHealth("+5511999999999")?.connected).toBe(false);
     });
   });
 

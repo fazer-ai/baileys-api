@@ -162,6 +162,44 @@ describe("connectionsController send-message", () => {
     }
   });
 
+  // delete and edit relay through the same socket.sendMessage, so they take the
+  // same keystore mutex and can fail the same two ways. Answering 500 would
+  // present documented, expected behaviour as an internal error.
+  it.each([
+    ["deleteMessage", "DELETE"],
+    ["editMessage", "PATCH"],
+  ])("maps %s timeouts to 504 like send-message", async (method, verb) => {
+    const spy = spyOn(
+      baileys,
+      method as "deleteMessage" | "editMessage",
+    ).mockImplementation(async () => {
+      throw new OperationTimeoutError(method, 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        new Request("http://localhost/connections/%2B551234567890/messages", {
+          method: verb,
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": "test-api-key",
+          },
+          body: JSON.stringify({
+            jid: "551101234567@s.whatsapp.net",
+            key: { id: "msg-id" },
+            ...(verb === "PATCH" ? { messageContent: { text: "hi" } } : {}),
+          }),
+        }),
+      );
+
+      expect(res.status).toBe(504);
+      expect(res.headers.get("retry-after")).toBe("60");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("answers 503 when the connection is already known to be stalled", async () => {
     const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
       throw new BaileysSendStalledError();

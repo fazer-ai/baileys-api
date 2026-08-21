@@ -189,6 +189,11 @@ export class BaileysConnection {
   // Noise candidates only while they have never opened; a close after opening
   // is a normal disconnect, not a wrong-key handshake failure.
   private hasOpened = false;
+  // The socket's actual state, as WhatsApp last reported it. Registration in the
+  // handler is NOT connectivity: a connection is registered before it ever opens
+  // (QR pairing) and stays registered while its socket is closed and backing off,
+  // which is exactly when a health check must not claim it is connected.
+  private connectionState: WAConnectionState = "connecting";
   private _inFlightWebhooks = 0;
   private leaseEpoch: number | null = null;
   // Monotonic timestamp of the last message-level traffic (received message,
@@ -293,6 +298,10 @@ export class BaileysConnection {
 
   get consecutiveSendTimeouts(): number {
     return this._consecutiveSendTimeouts;
+  }
+
+  get isOpen(): boolean {
+    return this.connectionState === "open" && this.socket !== null;
   }
 
   // "unknown" is a first-class answer, not a fallback: a connection nobody
@@ -1352,6 +1361,10 @@ export class BaileysConnection {
 
     if (isOnline) {
       Object.assign(data, { connection: "open" });
+    }
+
+    if (data.connection) {
+      this.connectionState = data.connection;
     }
 
     if (data.connection === "open") {

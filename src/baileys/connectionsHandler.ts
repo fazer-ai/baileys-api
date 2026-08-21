@@ -103,7 +103,11 @@ export class BaileysConnectionsHandler {
     const now = Date.now();
     const age = (at: number | null) => (at === null ? null : now - at);
     return {
-      connected: true,
+      // The socket's own state, not the fact that we hold the object: it is
+      // registered here before it ever opens and stays registered while it is
+      // closed and backing off, which is precisely when a health check must not
+      // claim connectivity.
+      connected: connection.isOpen,
       sendState: connection.sendState,
       consecutiveSendTimeouts: connection.consecutiveSendTimeouts,
       lastTrafficAgoMs:
@@ -250,16 +254,25 @@ export class BaileysConnectionsHandler {
             phoneNumber,
             reason,
           );
+          // The guard above is not enough on its own: connect() drains the
+          // in-flight slot first, and an in-flight logout keeps its connection
+          // registered until its RPC returns. Hence the same check again, run
+          // by connect() after the drain.
+          const stillOurs = () => this.connections[phoneNumber] === connection;
           // connection.currentOptions, never the captured `options`: a later
           // POST /connections reuses a live connection and updates its webhook
           // config and lease epoch in place, so the closure's copy can be
           // stale — and connect() would persist that stale copy back to Redis,
           // reverting the reconfiguration.
-          void this.connect(phoneNumber, {
-            ...connection.currentOptions,
-            isReconnect: true,
-            forceRestart: true,
-          }).catch((error) => {
+          void this.connect(
+            phoneNumber,
+            {
+              ...connection.currentOptions,
+              isReconnect: true,
+              forceRestart: true,
+            },
+            stillOurs,
+          ).catch((error) => {
             logger.error(
               "[%s] [requestRestart] %s",
               phoneNumber,
@@ -273,7 +286,18 @@ export class BaileysConnectionsHandler {
     });
   }
 
-  async connect(phoneNumber: string, options: BaileysConnectionOptions) {
+  // `shouldProceed` is re-checked after every drain inside the loop, not once by
+  // the caller: logout() leaves its connection registered while it awaits the
+  // WhatsApp RPC, so a caller's check made before the drain still sees a
+  // connection the logout is about to delete. Returning false makes this a
+  // no-op. Used by the send-stall restart, where proceeding anyway would
+  // resurrect a phone an explicit DELETE had just logged out — as an unpaired
+  // QR socket, with its metadata written back.
+  async connect(
+    phoneNumber: string,
+    options: BaileysConnectionOptions,
+    shouldProceed?: () => boolean,
+  ) {
     // Loops because every decision must be re-validated after an await:
     //   1. Drain any in-flight connect for this number (multiple callers can
     //      have parked on the same slot).
@@ -288,6 +312,12 @@ export class BaileysConnectionsHandler {
     for (;;) {
       while (this.inFlightOps[phoneNumber]) {
         await this.inFlightOps[phoneNumber].catch(() => {});
+      }
+
+      // Before reading `existing`, and after every drain: whatever ran while we
+      // waited may have made this connect the wrong thing to do.
+      if (shouldProceed && !shouldProceed()) {
+        return;
       }
 
       const existing = this.connections[phoneNumber];

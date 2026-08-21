@@ -1026,6 +1026,26 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("#isOpen", () => {
+    // Reported by the health endpoint, where "we hold the object" would be a
+    // false connectivity signal during QR pairing and reconnect backoff.
+    it("follows the socket's state rather than the connection's existence", async () => {
+      expect(connection.isOpen).toBe(false);
+      await connection.connect();
+      expect(connection.isOpen).toBe(false);
+
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "open",
+      });
+      expect(connection.isOpen).toBe(true);
+
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "connecting",
+      });
+      expect(connection.isOpen).toBe(false);
+    });
+  });
+
   // A later POST /connections reuses a live connection and mutates its options
   // in place. Anything that rebuilds the socket has to read the current values,
   // or connect() would persist the superseded ones back to Redis and revert a

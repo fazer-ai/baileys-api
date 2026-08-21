@@ -39,6 +39,38 @@ import {
 // coordinator, which answers 409 when a live peer owns the phone.
 const TAKEOVER_SUFFIXES = ["", "/import-session", "/restart"] as const;
 
+// Every route that reaches the connection's send path shares these two failures,
+// because all of them take the same keystore transaction: send-message, and the
+// delete and edit endpoints that relay through socket.sendMessage. Answering 500
+// for either would present documented, expected behaviour as an internal error,
+// and the two mean different things to a caller — 504 is "this attempt's outcome
+// is unknown, you may retry it", 503 is "this connection is known not to be
+// sending, retrying only burns workers".
+function sendPathErrorResponse(error: unknown): Response | null {
+  if (error instanceof OperationTimeoutError) {
+    return new Response("Send timed out; outcome unknown", {
+      status: 504,
+      headers: { "retry-after": "60" },
+    });
+  }
+  if (error instanceof BaileysSendStalledError) {
+    return new Response("Connection is not accepting sends", {
+      status: 503,
+      headers: { "retry-after": "60" },
+    });
+  }
+  return null;
+}
+
+// The 503/504 half of a send-path route's OpenAPI responses, so the three cannot
+// document different things for the same two failures.
+const SEND_PATH_RESPONSES = {
+  503: {
+    description: "Connection is not accepting sends (send stall detected)",
+  },
+  504: { description: "Send timed out; outcome unknown" },
+} as const;
+
 // Responses every route under this controller can return, on top of its own.
 const SHARED_RESPONSES = {
   403: {
@@ -499,25 +531,17 @@ const connectionsController = new Elysia({
         // attempt's outcome is unknown, so a caller may retry it (safely, if it
         // reserved a messageId), whereas 503 means the connection is known not
         // to be sending at all and retrying only burns workers.
-        if (e instanceof OperationTimeoutError) {
-          if (!messageId) {
-            // Surfaces which integrations still let Baileys generate the id;
-            // production runs at LOG_LEVEL=warn, so this is the list.
-            logger.warn(
-              "[%s] [send-message] timed out without a reserved messageId — resend is not duplicate-safe",
-              phoneNumber,
-            );
-          }
-          return new Response("Send timed out; outcome unknown", {
-            status: 504,
-            headers: { "retry-after": "60" },
-          });
+        if (e instanceof OperationTimeoutError && !messageId) {
+          // Surfaces which integrations still let Baileys generate the id;
+          // production runs at LOG_LEVEL=warn, so this is the list.
+          logger.warn(
+            "[%s] [send-message] timed out without a reserved messageId — resend is not duplicate-safe",
+            phoneNumber,
+          );
         }
-        if (e instanceof BaileysSendStalledError) {
-          return new Response("Connection is not accepting sends", {
-            status: 503,
-            headers: { "retry-after": "60" },
-          });
+        const sendPathResponse = sendPathErrorResponse(e);
+        if (sendPathResponse) {
+          return sendPathResponse;
         }
         throw e;
       }
@@ -591,13 +615,7 @@ const connectionsController = new Elysia({
           500: {
             description: "Message not sent",
           },
-          503: {
-            description:
-              "Connection is not accepting sends (send stall detected)",
-          },
-          504: {
-            description: "Send timed out; outcome unknown",
-          },
+          ...SEND_PATH_RESPONSES,
         },
       },
     },
@@ -701,7 +719,15 @@ const connectionsController = new Elysia({
     async ({ params, body }) => {
       const { phoneNumber } = params;
 
-      await baileys.deleteMessage(phoneNumber, body);
+      try {
+        await baileys.deleteMessage(phoneNumber, body);
+      } catch (e) {
+        const sendPathResponse = sendPathErrorResponse(e);
+        if (sendPathResponse) {
+          return sendPathResponse;
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,
@@ -716,6 +742,7 @@ const connectionsController = new Elysia({
           200: {
             description: "Message deleted successfully",
           },
+          ...SEND_PATH_RESPONSES,
         },
       },
     },
@@ -726,11 +753,20 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, key, messageContent } = body;
 
-      const response = await baileys.editMessage(phoneNumber, {
-        jid,
-        key,
-        messageContent: buildEditableMessageContent(messageContent),
-      });
+      let response: Awaited<ReturnType<typeof baileys.editMessage>>;
+      try {
+        response = await baileys.editMessage(phoneNumber, {
+          jid,
+          key,
+          messageContent: buildEditableMessageContent(messageContent),
+        });
+      } catch (e) {
+        const sendPathResponse = sendPathErrorResponse(e);
+        if (sendPathResponse) {
+          return sendPathResponse;
+        }
+        throw e;
+      }
 
       if (!response) {
         return new Response("Message not edited", { status: 500 });
@@ -770,6 +806,7 @@ const connectionsController = new Elysia({
           500: {
             description: "Message not edited",
           },
+          ...SEND_PATH_RESPONSES,
         },
       },
     },

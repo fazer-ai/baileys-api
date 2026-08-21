@@ -3600,6 +3600,12 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Connection is not accepting sends (send stall detected)"
+          },
+          "504": {
+            "description": "Send timed out; outcome unknown"
           }
         },
         "description": "Deletes a message for everyone in the chat. For group messages not sent by you, this requires admin privileges.",
@@ -3815,6 +3821,12 @@
           },
           "500": {
             "description": "Message not edited"
+          },
+          "503": {
+            "description": "Connection is not accepting sends (send stall detected)"
+          },
+          "504": {
+            "description": "Send timed out; outcome unknown"
           }
         },
         "description": "Edits a previously sent message. Only text messages (including captions) can be edited. The message must have been sent by you and must be within the editable time window (approximately 15 minutes).",
