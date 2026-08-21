@@ -13,6 +13,7 @@ const fetchCalls: Array<{ url: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
 
 import * as baileysModule from "@whiskeysockets/baileys";
+import { clusterKeys } from "@/cluster/keys";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { OperationTimeoutError } from "@/helpers/withTimeout";
@@ -1320,6 +1321,64 @@ describe("BaileysConnection", () => {
         key: { id: "msg-id" },
       }));
       await expect(send()).resolves.toBeDefined();
+    });
+
+    // The backoff branch advertises an `until` to the client. Staying silent past
+    // it would make that timestamp a lie: the breaker rejects every send without
+    // touching the socket, so nothing else brings the connection back up for
+    // review and it would sit muted for the life of the socket.
+    it("reconsiders the episode once the advertised backoff expires", async () => {
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: () => {},
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const start = Date.now();
+      // Already backed off: a restart is not allowed until start + 300s.
+      await redis.set(
+        clusterKeys.sendStall("+5511999999999"),
+        JSON.stringify({
+          restarts: 1,
+          nextRestartAllowedAt: start + 300_000,
+        }),
+      );
+      await connection.connect();
+      wedge();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await asyncSleep(0);
+
+      const first = fetchCalls.filter((call) =>
+        call.body.includes("send_stall_detected"),
+      );
+      expect(first.length).toBe(1);
+      expect(JSON.parse(first[0]?.body ?? "{}").data.sendStall.action).toBe(
+        "suppressed",
+      );
+
+      // Still inside the advertised window: nothing new to say.
+      setSystemTime(new Date(start + 200_000));
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await asyncSleep(0);
+      expect(
+        fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+          .length,
+      ).toBe(1);
+
+      // Past it: the connection is due for review again.
+      setSystemTime(new Date(start + 400_000));
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      await asyncSleep(0);
+      expect(
+        fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+          .length,
+      ).toBe(2);
+
+      setSystemTime();
+      await redis.del(clusterKeys.sendStall("+5511999999999"));
     });
 
     it("reports sendState unknown until a send has actually been observed", async () => {

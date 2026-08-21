@@ -907,6 +907,23 @@ describe("ClusterCoordinator", () => {
       expect(handler.connect).not.toHaveBeenCalled();
     });
 
+    // Metadata is not a session: useRedisAuthState writes it when the socket
+    // starts, so an unscanned QR flow satisfies the metadata check. Restarting
+    // that would answer 202 and spawn another unpaired QR socket, which is the
+    // opposite of what a route promising "no QR, no re-pairing" should do.
+    it("reports false for a session that never finished pairing", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      isRedisAuthStatePaired.mockResolvedValue(false);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe(false);
+      expect(forceAcquireLease).not.toHaveBeenCalled();
+      expect(handler.connect).not.toHaveBeenCalled();
+    });
+
     it("clears quarantine — an operator asking for the phone wins now", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);

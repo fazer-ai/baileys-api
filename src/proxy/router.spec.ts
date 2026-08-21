@@ -184,6 +184,33 @@ describe("proxy router", () => {
       expect(fetchCalls[0].url.startsWith("http://worker-2:3025")).toBe(true);
     });
 
+    // The worker treats these three POSTs as explicit takeovers, resolving
+    // ownership in the coordinator rather than trusting the proxy's route
+    // table. The proxy has to agree, or a suffix the worker would take over is
+    // unreachable exactly when it is needed: /restart exists for connections
+    // whose owner is gone, and 404ing it in that state defeats the route.
+    it.each(["/import-session", "/restart"])(
+      "places an unowned %s on a live worker instead of 404ing it",
+      async (suffix) => {
+        listLiveInstances.mockResolvedValue([
+          instanceInfo("worker-1", { connectionCount: 10 }),
+          instanceInfo("worker-2", { connectionCount: 3 }),
+        ]);
+
+        const response = await forwardByPhone(
+          PHONE,
+          makeRequest(
+            `/connections/${encodeURIComponent(PHONE)}${suffix}`,
+            "POST",
+            "{}",
+          ),
+        );
+
+        expect(response.status).toBe(200);
+        expect(fetchCalls[0].url.startsWith("http://worker-2:3025")).toBe(true);
+      },
+    );
+
     it("returns 503 with retry-after when the owner stopped heartbeating", async () => {
       // Lease alive, instance gone: crashed owner, failover still pending.
       getLease.mockResolvedValue({ owner: "worker-dead", epoch: 1 });

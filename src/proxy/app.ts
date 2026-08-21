@@ -50,11 +50,16 @@ const proxyApp = new Elysia()
   })
   // Public: served locally, mirrors the worker surface.
   .use(statusController)
+  // Per-instance, like connectionCount: a proxy holds no sockets, so both are
+  // structurally zero here. Deliberately not a fan-out aggregate — this is what
+  // the container healthcheck hits, and making it depend on every worker being
+  // reachable would fail the proxy for a worker's problem.
   .get("/cluster/health", () => ({
     instanceId,
     role,
     connectionCount: 0,
     draining: false,
+    stalledConnectionCount: 0,
   }))
   // Admin fan-out: a logout-all must reach every worker.
   .group("/admin", (app) =>

@@ -110,20 +110,32 @@ async function sendToTarget(
   }
 }
 
+// The POSTs a worker treats as explicit takeovers (see TAKEOVER_SUFFIXES in
+// controllers/connections), which is what makes them placements here too: each
+// resolves ownership in the coordinator rather than relying on the proxy's
+// route table, so an unowned phone is something they can act on rather than a
+// 404. /restart especially — it exists for connections whose owner is gone or
+// misbehaving, and 404ing it in exactly that state defeats the route. The two
+// lists have to agree: a suffix the worker will take over but the proxy will
+// not place is unreachable precisely when it is needed.
+const PLACEMENT_SUFFIXES = ["", "/import-session", "/restart"] as const;
+
 // Routes a /connections/:phone request to the owning worker.
-// - No owner: POST /connections/:phone is a new-connection placement (least
-//   loaded worker decides ownership by acquiring the lease itself); anything
-//   else is 404, matching single-instance not-connected behavior.
+// - No owner: a placement POST (see PLACEMENT_SUFFIXES) goes to the least
+//   loaded worker, which decides ownership by acquiring the lease itself;
+//   anything else is 404, matching single-instance not-connected behavior.
 // - 421/409 from the worker means our route was stale (or placement raced):
 //   invalidate, re-resolve via the owner the worker pointed at, re-send ONCE.
 export async function forwardByPhone(
   phoneNumber: string,
   rawRequest: Request,
 ): Promise<Response> {
+  const path = decodeURIComponent(new URL(rawRequest.url).pathname);
   const isConnectPost =
     rawRequest.method === "POST" &&
-    decodeURIComponent(new URL(rawRequest.url).pathname) ===
-      `/connections/${phoneNumber}`;
+    PLACEMENT_SUFFIXES.some(
+      (suffix) => path === `/connections/${phoneNumber}${suffix}`,
+    );
 
   const resolution = await resolvePhoneTarget(phoneNumber);
 

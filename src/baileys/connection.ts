@@ -214,10 +214,13 @@ export class BaileysConnection {
   private _consecutiveSendTimeouts = 0;
   private sendStallStreakStartedAt: number | null = null;
   private restartRequested = false;
-  // One report per stall episode. Without it the breaker-open path below would
-  // emit a webhook for every rejected send, since the breaker keeps rejecting
-  // for as long as the socket lives.
-  private sendStallReported = false;
+  // When this episode may be reported again. 0 means now; Infinity means never
+  // again on this socket. A finite timestamp is the middle case that matters:
+  // the report was DEFERRED, and the deferral has an expiry the connection
+  // already advertised to the client as `until`. Without it the breaker-open
+  // path would emit a webhook for every rejected send, since the breaker keeps
+  // rejecting for as long as the socket lives.
+  private sendStallSilentUntil = 0;
   // Wall-clock (not performance.now()) so it can be reported as an age to
   // clients and driven by setSystemTime in tests, matching
   // trackConnectionReplaced.
@@ -739,7 +742,7 @@ export class BaileysConnection {
   private recordSendSuccess() {
     this._consecutiveSendTimeouts = 0;
     this.sendStallStreakStartedAt = null;
-    this.sendStallReported = false;
+    this.sendStallSilentUntil = 0;
     // Also the restart request: a send going through proves the socket works, so a
     // pending restart is moot. Leaving it set would latch the same way the breaker
     // used to — if the restart never lands (the handler logs and gives up on a
@@ -789,7 +792,10 @@ export class BaileysConnection {
   // enough: concurrent sends all expire at the same instant, so depth alone
   // would let one 45s hiccup recreate a perfectly healthy socket.
   private maybeReportSendStall() {
-    if (this.sendStallReported || this.sendStallStreakStartedAt === null) {
+    if (
+      Date.now() < this.sendStallSilentUntil ||
+      this.sendStallStreakStartedAt === null
+    ) {
       return;
     }
     if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
@@ -806,10 +812,10 @@ export class BaileysConnection {
     if (!this.socket || this.isDiscarded || this.restartRequested) {
       return;
     }
-    // Latched before the async work so concurrent rejections cannot each start
-    // their own episode. Released again only if the restart turns out to be
-    // merely deferred (see the cooldown branch below).
-    this.sendStallReported = true;
+    // Silenced before the async work so concurrent rejections cannot each start
+    // their own episode. handleSendStall lowers this again when the restart
+    // turns out to be merely deferred rather than decided.
+    this.sendStallSilentUntil = Number.POSITIVE_INFINITY;
     void this.handleSendStall(Date.now() - this.sendStallStreakStartedAt);
   }
 
@@ -826,13 +832,18 @@ export class BaileysConnection {
             // neither reported nor closed — the next send attempt re-evaluates
             // once the slot frees. Reporting "suppressed" here would turn a
             // fleet-wide stall into 8 alerts and 1 recovery.
-            this.sendStallReported = false;
+            this.sendStallSilentUntil = 0;
             return;
           }
           action = "restart";
         } else {
           const allowedAt = await nextRestartAllowedAt(this.phoneNumber);
           until = allowedAt ? new Date(allowedAt).toISOString() : undefined;
+          // Reconsider once the backoff we just advertised as `until` expires.
+          // Staying silent past it would make that timestamp a lie: the breaker
+          // rejects every send without touching the socket, so nothing else
+          // would ever bring this connection back up for review.
+          this.sendStallSilentUntil = allowedAt ?? 0;
         }
       } catch (error) {
         logger.error(
@@ -1353,7 +1364,7 @@ export class BaileysConnection {
       // at least cleared itself when WhatsApp dropped the socket.
       this._consecutiveSendTimeouts = 0;
       this.sendStallStreakStartedAt = null;
-      this.sendStallReported = false;
+      this.sendStallSilentUntil = 0;
       this.restartRequested = false;
       // Any healthy open wipes the quarantine strike history — the backoff
       // must reflect CONSECUTIVE failed cycles, not lifetime totals. Not

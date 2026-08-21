@@ -791,6 +791,15 @@ export class ClusterCoordinator {
     if (!metadata?.webhookUrl) {
       return false;
     }
+    // Metadata alone is not a session: useRedisAuthState writes it when the
+    // socket starts, so a QR flow that nobody ever scanned satisfies the check
+    // above. Restarting that would hand back 202 and spawn another unpaired QR
+    // socket, which is the opposite of what this route promises. Same rule the
+    // claim loop applies: a phone that never finished pairing has no session to
+    // resume, and only an explicit POST /connections can move it forward.
+    if (!(await isRedisAuthStatePaired(phoneNumber))) {
+      return false;
+    }
     const acquired = await this.acquireExplicitLease(phoneNumber);
     await this.clearQuarantineForExplicitIntent(phoneNumber);
     logger.warn(
