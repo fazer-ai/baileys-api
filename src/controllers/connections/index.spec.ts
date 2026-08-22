@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type mock,
+  spyOn,
+} from "bun:test";
 import Elysia from "elysia";
 import baileys from "@/baileys";
 import { BaileysSendStalledError } from "@/baileys/connection";
@@ -287,6 +295,103 @@ describe("connectionsController send-message", () => {
 
       expect(res.status).toBe(504);
       expect(res.headers.get("retry-after")).toBe("60");
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
+    }
+  });
+
+  // Holding a key is not the same as being protected by one. withIdempotency
+  // fails open on purpose -- acquireLock returns success when it cannot write and
+  // markIndeterminate only warns -- so a Redis outage runs the send unlocked and
+  // leaves nothing behind. `retry-after` is an instruction, and issuing one here
+  // tells the caller to do the one thing that duplicates.
+  it("does not invite a retry when the marker could not be written", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+    // mockImplementationOnce on the existing mock, never spyOn: redis.set is
+    // already a mock here, and spying over one leaks past mockRestore into every
+    // later spec file. Twice, because the outage has to reach both writes -- the
+    // lock acquire, which fails open, and the marker.
+    const setMock = redis.set as unknown as ReturnType<typeof mock>;
+    setMock.mockClear();
+    const down = async () => {
+      throw new Error("redis down");
+    };
+    setMock.mockImplementationOnce(down).mockImplementationOnce(down);
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+
+      expect(res.status).toBe(504);
+      expect(res.headers.get("retry-after")).toBeNull();
+      expect(res.headers.get("x-baileys-idempotency-state")).toBe(
+        "unprotected",
+      );
+      // Nothing was recorded, which is exactly why the retry is not safe.
+      expect(
+        stringData.has(
+          "@baileys-api:idempotency:send-message:+551234567890:42",
+        ),
+      ).toBe(false);
+      // Both writes were actually attempted, or the stub above proved nothing.
+      expect(setMock.mock.calls.length).toBe(2);
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
+    }
+  });
+
+  // The marker says "outcome unknown". A mutex-acquire timeout arriving minutes
+  // later makes it known: that waiter never entered the transaction, so it read
+  // nothing, wrote nothing and relayed nothing. Leaving the marker up then 409s
+  // the operator's resend of this same message for 24h, when a resend is now
+  // exactly the right thing.
+  it("retracts the indeterminate marker once the send is proved not to have happened", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    let lateFailure: (() => void) | undefined;
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(
+      async (
+        _phone: string,
+        args: { onLateDefinitiveFailure?: () => void },
+      ) => {
+        lateFailure = args.onLateDefinitiveFailure;
+        throw new OperationTimeoutError("sendMessage", 45_000);
+      },
+    );
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+
+      const key = "@baileys-api:idempotency:send-message:+551234567890:42";
+      expect(stringData.get(key)).toStartWith("indeterminate:");
+
+      // The parked send finally rejects, with the one error that proves it never
+      // reached WhatsApp.
+      expect(lateFailure).toBeDefined();
+      lateFailure?.();
+      await new Promise((r) => setTimeout(r, 5));
+      expect(stringData.has(key)).toBe(false);
+
+      // And the resend now goes through instead of meeting a 409.
+      spy.mockImplementation(async () => ({
+        key: { id: "3EB0AGAIN" },
+        messageTimestamp: 1,
+      }));
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+      expect(res.status).toBe(200);
     } finally {
       spy.mockRestore();
       stringData.clear();

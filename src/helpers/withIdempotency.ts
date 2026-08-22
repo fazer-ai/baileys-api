@@ -63,6 +63,43 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 end
 return 0`;
 
+// Compare-and-delete, so a late verdict can only drop the marker it is a verdict
+// about. By the time this runs the request is long gone and anything may have
+// written to the key -- a retry that got past a cleared marker and cached its
+// result, most of all. KEYS[1]=key.
+const CLEAR_INDETERMINATE_SCRIPT = `-- clear-indeterminate
+local raw = redis.call("GET", KEYS[1])
+if raw and string.sub(raw, 1, ${INDETERMINATE_PREFIX.length}) == "${INDETERMINATE_PREFIX}" then
+  redis.call("DEL", KEYS[1])
+  return 1
+end
+return 0`;
+
+// Retracts an "outcome unknown" once the outcome becomes known to be "did not
+// happen". Only one thing proves that: a mutex-acquire timeout, whose waiter
+// never entered the transaction and so cannot have reached WhatsApp. Everything
+// else that arrives late is still ambiguous and must leave the marker standing.
+//
+// Worth doing rather than letting the marker expire, because the marker is what
+// makes an operator's resend of the SAME message answer 409 for 24h. Once the
+// send is known not to have happened, that retry is exactly the right thing and
+// nothing should be blocking it.
+export async function clearIndeterminate(key: string): Promise<boolean> {
+  try {
+    const result = await redis.eval(CLEAR_INDETERMINATE_SCRIPT, {
+      keys: [key],
+    });
+    return result === 1;
+  } catch (error) {
+    logger.warn(
+      "[withIdempotency] failed to clear indeterminate marker %s: %s",
+      key,
+      errorToString(error),
+    );
+    return false;
+  }
+}
+
 export type IdempotencyResult<T> =
   | { status: "executed"; value: T }
   | { status: "cached"; value: T }
@@ -74,6 +111,12 @@ export interface IdempotencyOptions {
   // Predicate for "the work threw, but it may still take effect". Returning
   // true records the indeterminate marker instead of releasing the lock.
   isIndeterminate?: (error: unknown) => boolean;
+  // Whether that marker actually reached Redis. Everything in this module fails
+  // open -- acquireLock returns true when it cannot write, and markIndeterminate
+  // only warns -- so holding a key is NOT evidence that a retry is protected. A
+  // caller that answers differently for a protected retry has to know which of
+  // the two it got.
+  onIndeterminate?: (persisted: boolean) => void;
 }
 
 export async function withIdempotency<T>(
@@ -111,7 +154,12 @@ export async function withIdempotency<T>(
     return { status: "executed", value };
   } catch (error) {
     if (options?.isIndeterminate?.(error)) {
-      await markIndeterminate(key);
+      // Two statements, deliberately. `options.onIndeterminate?.(await mark(...))`
+      // reads the same but is not: optional chaining short-circuits the whole
+      // call expression when the callback is absent, arguments included, so the
+      // marker would never be written for any caller that did not pass one.
+      const persisted = await markIndeterminate(key);
+      options.onIndeterminate?.(persisted);
     } else {
       await releaseLock(key);
     }
@@ -279,13 +327,14 @@ async function stealLock(key: string, expected: string): Promise<boolean> {
   }
 }
 
-async function markIndeterminate(key: string): Promise<void> {
+async function markIndeterminate(key: string): Promise<boolean> {
   try {
     await redis.set(
       key,
       `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
       { EX: INDETERMINATE_TTL },
     );
+    return true;
   } catch (error) {
     // Leave the `processing:` marker in place rather than releasing: it 409s
     // the retry for the rest of the TTL, which is the safe direction here —
@@ -297,6 +346,7 @@ async function markIndeterminate(key: string): Promise<void> {
       key,
       errorToString(error),
     );
+    return false;
   }
 }
 

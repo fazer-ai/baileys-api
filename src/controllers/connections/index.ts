@@ -18,7 +18,7 @@ import {
   buildEditableMessageContent,
   buildMessageContent,
 } from "@/controllers/connections/helpers";
-import { withIdempotency } from "@/helpers/withIdempotency";
+import { clearIndeterminate, withIdempotency } from "@/helpers/withIdempotency";
 import { OperationTimeoutError } from "@/helpers/withTimeout";
 import logger from "@/lib/logger";
 import { authMiddleware } from "@/middlewares/auth";
@@ -547,6 +547,10 @@ const connectionsController = new Elysia({
           ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
           : null;
 
+      // Whether the indeterminate marker actually reached Redis. Holding an
+      // idempotency key is not the same thing: withIdempotency fails open, so a
+      // Redis outage lets the send run with no lock and leaves no marker behind.
+      let indeterminateRecorded = false;
       let result: Awaited<ReturnType<typeof withIdempotency>>;
       try {
         result = await withIdempotency(
@@ -560,6 +564,18 @@ const connectionsController = new Elysia({
               messageContent: builtContent,
               quoted,
               messageId,
+              // Minutes after this request answered, the parked send can reject
+              // with a mutex-acquire timeout, which proves it never entered the
+              // transaction and so never reached WhatsApp. The 409 we left behind
+              // then says "outcome unknown" about an outcome that is now known,
+              // and it is what makes an operator's resend of this same message
+              // answer 409 for 24h. Retract it: with the send known not to have
+              // happened, that resend is exactly the right thing.
+              onLateDefinitiveFailure: idempotencyKey
+                ? () => {
+                    void clearIndeterminate(idempotencyKey);
+                  }
+                : undefined,
             });
 
             if (!response) return null;
@@ -580,6 +596,9 @@ const connectionsController = new Elysia({
             // reconcile rather than resend blindly.
             isIndeterminate: (e) =>
               e instanceof OperationTimeoutError && !messageId,
+            onIndeterminate: (persisted) => {
+              indeterminateRecorded = persisted;
+            },
           },
         );
       } catch (e) {
@@ -603,11 +622,14 @@ const connectionsController = new Elysia({
             phoneNumber,
           );
         }
-        // With no key at all, withIdempotency took its no-key path and never
-        // consulted isIndeterminate, so nothing was recorded and nothing will
-        // stop the next attempt from sending a second message.
+        // The marker that actually landed, never the key that was supplied. With
+        // no key at all, withIdempotency took its no-key path and never consulted
+        // isIndeterminate; with a key but no Redis it failed open, ran the send
+        // unlocked and could not write the marker either. Both leave nothing to
+        // stop the next attempt from sending a second message, and `retry-after`
+        // is an instruction to make one.
         const sendPathResponse = sendPathErrorResponse(e, {
-          retrySafe: Boolean(messageId) || idempotencyKey !== null,
+          retrySafe: Boolean(messageId) || indeterminateRecorded,
         });
         if (sendPathResponse) {
           return sendPathResponse;

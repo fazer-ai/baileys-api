@@ -1382,6 +1382,82 @@ describe("BaileysConnection", () => {
       expect(connection.sendState).not.toBe("stalled");
     });
 
+    // The queue cap is exactly what a send lands on during an ordinary outage: a
+    // socket that closes with its sends unresolved keeps every one of them
+    // holding a slot, because the slot belongs to the operation and not to our
+    // wait on it. Answering `stalled` there tells the caller the connection is up
+    // and must NOT be marked down, and costs it the reconnect it needed.
+    it("reports a closed socket as disconnected even with the send queue full", async () => {
+      await connectOpen();
+      wedge();
+
+      // Eight concurrent sends, started before any of them can time out, so all
+      // eight take a slot instead of being turned away by the breaker.
+      const inFlight = Array.from({ length: 8 }, () => send().catch(() => {}));
+      await new Promise((r) => setTimeout(r, 5));
+
+      // The queue is full: a ninth send is refused without reaching the socket.
+      const callsBefore = mockSocket.sendMessage.mock.calls.length;
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      expect(mockSocket.sendMessage.mock.calls.length).toBe(callsBefore);
+
+      // Now the socket drops. The eight are still parked, so the cap still bites
+      // -- but this is an outage, not a wedge.
+      (connection as unknown as { connectionState: string }).connectionState =
+        "close";
+
+      await expect(send()).rejects.toThrow(BaileysNotConnectedError);
+      expect(connection.sendState).not.toBe("stalled");
+
+      await Promise.all(inFlight);
+    });
+
+    // The one late verdict that is not ambiguous. A mutex-acquire timeout means
+    // the waiter never entered txStorage.run -- it read nothing, wrote nothing
+    // and relayed nothing -- so the "outcome unknown" its caller was already
+    // given is now known, and the marker holding that caller's resend can go.
+    it("tells the caller when a parked send is proved never to have been sent", async () => {
+      await connectOpen();
+      let notSent = 0;
+      let rejectLate: ((error: unknown) => void) | undefined;
+      mockSocket.sendMessage.mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectLate = reject;
+          }),
+      );
+      const sendWithHook = () =>
+        connection.sendMessage(
+          "jid@s.whatsapp.net",
+          { text: "hi" },
+          {
+            onLateDefinitiveFailure: () => {
+              notSent += 1;
+            },
+          },
+        );
+
+      await expect(sendWithHook()).rejects.toThrow(OperationTimeoutError);
+      // Still unknown at this point: the send is parked, not resolved.
+      expect(notSent).toBe(0);
+
+      rejectLate?.(
+        Object.assign(new Error("keystore transaction timed out"), {
+          data: { key: "me@s.whatsapp.net", code: "E_TX_MUTEX_TIMEOUT" },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 5));
+      expect(notSent).toBe(1);
+
+      // Any other late failure stays ambiguous -- media generation and upload run
+      // BEFORE the transaction is taken, so a rejection from there says nothing
+      // about whether a message went out.
+      await expect(sendWithHook()).rejects.toThrow(OperationTimeoutError);
+      rejectLate?.(new Error("upload failed"));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(notSent).toBe(1);
+    });
+
     // The holder can let go between the acquisition giving up and the Boom
     // reaching the breaker. handleTxEvent sees that release while nothing is
     // armed yet and rightly ignores it -- and it is the only one that key will

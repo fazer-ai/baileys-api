@@ -516,16 +516,19 @@ export class BaileysConnectionsHandler {
       messageContent,
       quoted,
       messageId,
+      onLateDefinitiveFailure,
     }: {
       jid: string;
       messageContent: AnyMessageContent;
       quoted?: WAMessage;
       messageId?: string;
+      onLateDefinitiveFailure?: () => void;
     },
   ) {
     return this.getConnection(phoneNumber).sendMessage(jid, messageContent, {
       quoted,
       messageId,
+      onLateDefinitiveFailure,
     });
   }
 

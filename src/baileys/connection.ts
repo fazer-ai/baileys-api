@@ -898,7 +898,13 @@ export class BaileysConnection {
   async sendMessage(
     jid: string,
     messageContent: AnyMessageContent,
-    options?: { quoted?: WAMessage; messageId?: string },
+    options?: {
+      quoted?: WAMessage;
+      messageId?: string;
+      // See relayWithTimeout: fires when this send is later proved never to have
+      // reached WhatsApp, long after its caller was answered.
+      onLateDefinitiveFailure?: () => void;
+    },
   ) {
     this.safeSocket();
     // Before the audio work below, not only inside relayWithTimeout. An open breaker
@@ -976,12 +982,15 @@ export class BaileysConnection {
     if (options?.messageId) {
       this.trackSubmittedId(options.messageId);
     }
-    const sent = await this.relayWithTimeout("sendMessage", () =>
-      this.safeSocket().sendMessage(jid, messageContent, {
-        waveformProxy,
-        quoted: options?.quoted,
-        ...(options?.messageId ? { messageId: options.messageId } : {}),
-      }),
+    const sent = await this.relayWithTimeout(
+      "sendMessage",
+      () =>
+        this.safeSocket().sendMessage(jid, messageContent, {
+          waveformProxy,
+          quoted: options?.quoted,
+          ...(options?.messageId ? { messageId: options.messageId } : {}),
+        }),
+      options?.onLateDefinitiveFailure,
     );
     // Also on the way out, for the sends that let Baileys generate the id: without
     // a reservation this response is the first time we learn it, and an ack for it
@@ -1001,6 +1010,16 @@ export class BaileysConnection {
   // no webhook and no restart.
   private assertCanSend() {
     if (this.inFlightSends >= MAX_IN_FLIGHT_SENDS) {
+      // Same guard the breaker branch below carries, and for the same reason. A
+      // socket that closes with its sends still unresolved keeps every one of
+      // them holding a slot -- the slot belongs to the operation, not to our wait
+      // on it -- so the cap is exactly what a send lands on during an ordinary
+      // outage. Answering `stalled` there tells the caller the connection is up
+      // and must NOT be marked down, which is the opposite of true and costs it
+      // the reconnect it needed.
+      if (!this.isOpen) {
+        throw new BaileysNotConnectedError();
+      }
       logger.warn(
         "[%s] [sendStall] refusing send: %d already in flight",
         this.phoneNumber,
@@ -1036,6 +1055,11 @@ export class BaileysConnection {
   private async relayWithTimeout<T>(
     operation: string,
     fn: () => Promise<T>,
+    // Called when a send that already answered its caller is LATER proved never
+    // to have reached WhatsApp. Only the mutex-acquire timeout proves that: its
+    // waiter never entered txStorage.run, so it read nothing, wrote nothing and
+    // relayed nothing. Everything else that settles late is still ambiguous.
+    onLateDefinitiveFailure?: () => void,
   ): Promise<T> {
     this.assertCanSend();
     // Captured BEFORE the send starts, and carried into every callback below.
@@ -1051,6 +1075,14 @@ export class BaileysConnection {
         config.baileys.sendTimeoutMs,
         fn,
         (error, value) => {
+          // Before recordLateSettle, which drops a discarded or superseded
+          // connection on the way in. That guard is right for the breaker's
+          // bookkeeping and wrong here: "this send never entered the transaction"
+          // stays true whether or not the socket that made it still exists, and
+          // it is the caller's message that is waiting on the answer.
+          if (error !== undefined && isTxMutexTimeout(error)) {
+            onLateDefinitiveFailure?.();
+          }
           // The slot belongs to the OPERATION, not to our wait on it. A timed-out
           // send is still parked in the mutex and still the thing the cap exists
           // to bound, so its slot is only given back here, when the underlying

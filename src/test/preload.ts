@@ -144,6 +144,20 @@ const mockRedis = {
         return 0;
       }
 
+      // clear-indeterminate (compare-and-delete): KEYS=[key]. Drops the marker
+      // only if it is still one, so a late verdict cannot delete a cached result
+      // a retry wrote after it. Checked before the generic DEL branch below,
+      // which would otherwise claim this script.
+      if (script.includes("clear-indeterminate")) {
+        const raw = stringData.get(keys[0]);
+        if (raw?.startsWith("indeterminate:")) {
+          stringData.delete(keys[0]);
+          expirations.delete(keys[0]);
+          return 1;
+        }
+        return 0;
+      }
+
       // advance-candidate-cas (owner-fenced compare-and-swap on creds):
       // KEYS=[hash, lease], ARGV=[owner, expectedCreds, newCreds, newCursor].
       // Checked before the generic HSET branch because this script also HSETs.
