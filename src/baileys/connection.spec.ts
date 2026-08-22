@@ -1115,6 +1115,16 @@ describe("BaileysConnection", () => {
       );
     const send = () =>
       connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
+    // A stall is a claim about a socket that is UP: during a first connect or a
+    // slow reconnect the socket object exists while the handshake is still
+    // running, and sends timing out in that window are an ordinary outage. The
+    // watchdog now requires the open, so these examples have to reach it.
+    const connectOpen = async () => {
+      await connection.connect();
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "open",
+      });
+    };
 
     beforeEach(() => {
       config.baileys.sendTimeoutMs = 10;
@@ -1136,7 +1146,7 @@ describe("BaileysConnection", () => {
     });
 
     it("fails a send that never completes instead of hanging forever", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       await expect(send()).rejects.toThrow(OperationTimeoutError);
     });
@@ -1146,7 +1156,7 @@ describe("BaileysConnection", () => {
     // releases while the socket is still open they all fire at once — a burst
     // of duplicate messages to real customers, hours late.
     it("stops touching the socket once the connection is known stalled", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       mockSocket.sendMessage.mockClear();
 
@@ -1163,7 +1173,7 @@ describe("BaileysConnection", () => {
     // a stalled connection would burn that CPU on every attempt only to be told 503
     // at the end, which is not what "fails immediately" means.
     it("refuses a stalled send before spending ffmpeg on it", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       await expect(send()).rejects.toThrow(OperationTimeoutError);
       await expect(send()).rejects.toThrow(OperationTimeoutError);
@@ -1188,7 +1198,7 @@ describe("BaileysConnection", () => {
     // The failure is total: one success proves the mutex is free, so the
     // counter has to reset rather than accumulate across unrelated hiccups.
     it("resets the streak after a send succeeds", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       await expect(send()).rejects.toThrow(OperationTimeoutError);
       await expect(send()).rejects.toThrow(OperationTimeoutError);
@@ -1207,7 +1217,7 @@ describe("BaileysConnection", () => {
     // a bare "three in a row" rule would let one short hiccup recreate a
     // perfectly healthy socket.
     it("does not report a stall until the streak has lasted long enough", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       fetchCalls.length = 0;
 
@@ -1225,7 +1235,7 @@ describe("BaileysConnection", () => {
     // evaluated on a fresh timeout, three concurrent sends would disarm the
     // watchdog for the life of the socket: 503 forever, no webhook, no restart.
     it("still reports the stall once the latched streak ages past the minimum", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       const start = Date.now();
 
@@ -1247,7 +1257,7 @@ describe("BaileysConnection", () => {
     // The breaker rejects for as long as the socket lives, so an unguarded
     // re-evaluation would emit one webhook per rejected send.
     it("reports the stall once per episode, not once per rejected send", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       const start = Date.now();
 
@@ -1270,7 +1280,7 @@ describe("BaileysConnection", () => {
     });
 
     it("emits send_stall_detected once the streak is long enough", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       const start = Date.now();
 
@@ -1306,7 +1316,7 @@ describe("BaileysConnection", () => {
       (
         BaileysConnection as unknown as { lastStallRestartAt: number }
       ).lastStallRestartAt = performance.now();
-      await connection.connect();
+      await connectOpen();
       wedge();
       const start = Date.now();
 
@@ -1340,7 +1350,7 @@ describe("BaileysConnection", () => {
         requestRestart: (reason: string) => restarts.push(reason),
       });
       config.baileys.sendStallRestartEnabled = true;
-      await connection.connect();
+      await connectOpen();
       wedge();
       const start = Date.now();
 
@@ -1352,7 +1362,17 @@ describe("BaileysConnection", () => {
 
       expect(restarts.length).toBe(1);
       expect(restarts[0]).toContain("send stall");
+      // The strike lands only once the restart has actually been asked for. The
+      // ordering is what guarantees "a strike implies a restart"; this pins the
+      // committed half of it, since with the recording moved after the final gate
+      // there is no longer an await in that span for a cancellation to slip into.
+      expect(
+        JSON.parse(
+          (await redis.get(clusterKeys.sendStall("+5511999999999"))) ?? "{}",
+        ).restarts,
+      ).toBe(1);
       setSystemTime();
+      await redis.del(clusterKeys.sendStall("+5511999999999"));
     });
 
     // Without this, the breaker stays open across an in-place reconnect (the
@@ -1360,7 +1380,7 @@ describe("BaileysConnection", () => {
     // forever — worse than the original stall, which at least cleared itself
     // when WhatsApp dropped the socket.
     it("reopens the circuit when the connection opens again", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       await expect(send()).rejects.toThrow(OperationTimeoutError);
       await expect(send()).rejects.toThrow(OperationTimeoutError);
@@ -1384,7 +1404,7 @@ describe("BaileysConnection", () => {
     // rejecting, no send reaches the socket, so the success that would close it
     // can never happen and the connection answers 503 until it reconnects.
     it("reopens the circuit when an abandoned send finally completes", async () => {
-      await connection.connect();
+      await connectOpen();
       let release: ((value: { key: { id: string } }) => void) | undefined;
       mockSocket.sendMessage.mockImplementation(
         () =>
@@ -1429,7 +1449,7 @@ describe("BaileysConnection", () => {
           nextRestartAllowedAt: start + 300_000,
         }),
       );
-      await connection.connect();
+      await connectOpen();
       wedge();
 
       await expect(send()).rejects.toThrow(OperationTimeoutError);
@@ -1489,7 +1509,7 @@ describe("BaileysConnection", () => {
       const start = Date.now();
 
       try {
-        await connection.connect();
+        await connectOpen();
         wedge();
 
         await expect(send()).rejects.toThrow(OperationTimeoutError);
@@ -1520,6 +1540,36 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // A socket still handshaking is not a wedged one. Sends that time out while a
+    // first connect or a slow reconnect is in flight are an ordinary outage, and
+    // tearing the socket down for them would do it again on the replacement.
+    it("does not call a still-connecting socket stalled", async () => {
+      config.baileys.sendStallRestartEnabled = true;
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      await connection.connect();
+      // No `connection: "open"` — the socket object exists, the handshake does not.
+      wedge();
+      fetchCalls.length = 0;
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await asyncSleep(0);
+
+      expect(
+        fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+          .length,
+      ).toBe(0);
+      expect(restarts.length).toBe(0);
+      setSystemTime();
+    });
+
     // Every await inside handleSendStall is a window in which WhatsApp can drop and
     // remake the socket on its own. The replacement gets a fresh keystore and clears
     // the breaker, so acting on the verdict afterwards means reporting a stall on a
@@ -1546,7 +1596,7 @@ describe("BaileysConnection", () => {
       const start = Date.now();
 
       try {
-        await connection.connect();
+        await connectOpen();
         wedge();
         fetchCalls.length = 0;
 
@@ -1575,7 +1625,7 @@ describe("BaileysConnection", () => {
     // breaker on a timer, and every reset lets another batch of sends queue
     // behind the same stuck mutex.
     it("does not reopen the circuit for a presence echo on the same socket", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
       await expect(send()).rejects.toThrow(OperationTimeoutError);
       await expect(send()).rejects.toThrow(OperationTimeoutError);
@@ -1594,7 +1644,7 @@ describe("BaileysConnection", () => {
     // them expiring after the swap open the breaker on a replacement that never
     // refused a send.
     it("ignores timeouts left over from a socket that has been replaced", async () => {
-      await connection.connect();
+      await connectOpen();
       wedge();
 
       // Three sends parked on the socket that is about to be thrown away.
@@ -1637,7 +1687,7 @@ describe("BaileysConnection", () => {
     // connection where nothing is parked at all, and every later plain-text
     // send answers 503 until the socket is recreated.
     it("reopens the circuit when an abandoned send finally fails", async () => {
-      await connection.connect();
+      await connectOpen();
       let reject: ((error: unknown) => void) | undefined;
       mockSocket.sendMessage.mockImplementation(
         () =>
@@ -1673,7 +1723,7 @@ describe("BaileysConnection", () => {
     // Closing the breaker on it sends the next batch straight back into the
     // queue the breaker exists to keep bounded.
     it("keeps the circuit open when an abandoned send fails on the transaction mutex", async () => {
-      await connection.connect();
+      await connectOpen();
       let reject: ((error: unknown) => void) | undefined;
       mockSocket.sendMessage.mockImplementation(
         () =>
@@ -1698,7 +1748,7 @@ describe("BaileysConnection", () => {
     });
 
     it("reports sendState unknown until a send has actually been observed", async () => {
-      await connection.connect();
+      await connectOpen();
       expect(connection.sendState).toBe("unknown");
     });
 
@@ -1706,7 +1756,7 @@ describe("BaileysConnection", () => {
     // sending is dead. Only WhatsApp acknowledging one of OUR messages proves
     // the send path end to end.
     it("records an outgoing ack from messages.update", async () => {
-      await connection.connect();
+      await connectOpen();
       expect(connection.lastOutgoingAckAt).toBeNull();
 
       await connection.sendMessage(
@@ -1725,7 +1775,7 @@ describe("BaileysConnection", () => {
     // messages.update. Without this a connection that only writes to groups sits
     // at `unknown` forever no matter how many recipients confirmed.
     it("records an outgoing ack from a group receipt", async () => {
-      await connection.connect();
+      await connectOpen();
       await connection.sendMessage(
         "group@g.us",
         { text: "hi" },
@@ -1747,7 +1797,7 @@ describe("BaileysConnection", () => {
     // message the PREVIOUS socket sent would otherwise present end-to-end evidence
     // about a replacement that has sent nothing and may itself be wedged.
     it("stops honouring acks for ids the replaced socket submitted", async () => {
-      await connection.connect();
+      await connectOpen();
       await connection.sendMessage(
         "jid@s.whatsapp.net",
         { text: "hi" },
@@ -1758,7 +1808,7 @@ describe("BaileysConnection", () => {
       // the replacement through the real connect(), which is what bumps the
       // generation and clears the history.
       (connection as unknown as { socket: unknown }).socket = null;
-      await connection.connect();
+      await connectOpen();
 
       mockEventHandlers.get("messages.update")?.([
         { key: { fromMe: true, id: "3EB0OLDSOCKET" }, update: { status: 2 } },
@@ -1783,12 +1833,12 @@ describe("BaileysConnection", () => {
     // that has never sent anything would inherit the previous socket's health
     // report and hold it indefinitely — including one that is itself wedged.
     it("stops reporting healthy on the replaced socket's evidence", async () => {
-      await connection.connect();
+      await connectOpen();
       await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
       expect(connection.sendState).toBe("ok");
 
       (connection as unknown as { socket: unknown }).socket = null;
-      await connection.connect();
+      await connectOpen();
 
       expect(connection.lastSendCompletedAt).toBeNull();
       expect(connection.lastOutgoingAckAt).toBeNull();
@@ -1801,7 +1851,7 @@ describe("BaileysConnection", () => {
     // connection reporting `ok`, which is the exact blindness this signal exists
     // to remove.
     it("ignores an ack for a message this socket never sent", async () => {
-      await connection.connect();
+      await connectOpen();
 
       mockEventHandlers.get("messages.update")?.([
         {
@@ -1815,7 +1865,7 @@ describe("BaileysConnection", () => {
     });
 
     it("ignores status updates for messages that are not ours", async () => {
-      await connection.connect();
+      await connectOpen();
 
       mockEventHandlers.get("messages.update")?.([
         { key: { fromMe: false, id: "x" }, update: { status: 2 } },

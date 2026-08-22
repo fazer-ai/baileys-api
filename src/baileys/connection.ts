@@ -957,7 +957,12 @@ export class BaileysConnection {
     }
     // Already closed or reconnecting: the timeouts are explained and recreating
     // the socket adds nothing.
-    if (!this.socket || this.isDiscarded || this.restartRequested) {
+    // isOpen, not "we hold a socket object": during a first connect or a slow
+    // reconnect the socket exists while the handshake is still running, and sends
+    // that time out in that window are an ordinary connection outage, not a wedged
+    // mutex. Reporting one as a stall would tear down a socket that was on its way
+    // up, and do it again on the replacement.
+    if (!this.isOpen || this.isDiscarded || this.restartRequested) {
       return;
     }
     // Silenced before the async work so concurrent rejections cannot each start
@@ -1061,7 +1066,24 @@ export class BaileysConnection {
       return;
     }
 
+    // Last gate before the socket is actually discarded, and the one that matters
+    // most: the webhook above only reports, this destroys a live connection.
+    if (!this.isStallEpisodeCurrent(generation)) {
+      this.sendStallSilentUntil = 0;
+      return;
+    }
     this.restartRequested = true;
+    // Through the handler, never inline: the replacement socket has to
+    // participate in the handler's per-number inFlightOps lock. See
+    // connectionsHandler.spawnConnection.
+    this.requestRestart?.(
+      `send stall: ${this._consecutiveSendTimeouts} consecutive timeouts over ${streakMs}ms`,
+    );
+    // The strike lands only once the restart has actually been asked for. Recorded
+    // before the final gate, a restart cancelled by a connection that recovered
+    // while Redis answered still counted: the backoff store then suppressed the
+    // next genuine stall for five minutes and handed it an inflated interval, on
+    // the strength of a restart that never happened.
     try {
       await recordStallRestart(this.phoneNumber);
     } catch (error) {
@@ -1071,19 +1093,6 @@ export class BaileysConnection {
         errorToString(error),
       );
     }
-    // Last gate before the socket is actually discarded, and the one that matters
-    // most: the webhook above only reports, this destroys a live connection.
-    if (!this.isStallEpisodeCurrent(generation)) {
-      this.restartRequested = false;
-      this.sendStallSilentUntil = 0;
-      return;
-    }
-    // Through the handler, never inline: the replacement socket has to
-    // participate in the handler's per-number inFlightOps lock. See
-    // connectionsHandler.spawnConnection.
-    this.requestRestart?.(
-      `send stall: ${this._consecutiveSendTimeouts} consecutive timeouts over ${streakMs}ms`,
-    );
   }
 
   // Process-wide, not per-connection: the point is to keep a fleet-wide stall
