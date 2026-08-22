@@ -62,11 +62,18 @@ export async function canRestart(phoneNumber: string): Promise<boolean> {
 
 // Plain read-modify-write, no CAS, mirroring quarantineStore: the only writer
 // is the instance that owns the stalled socket.
-export async function recordRestart(
-  phoneNumber: string,
-): Promise<{ state: SendStallState; previous: SendStallState | null }> {
+export async function recordRestart(phoneNumber: string): Promise<{
+  state: SendStallState;
+  previous: SendStallState | null;
+  previousTtlMs: number | null;
+}> {
   const key = clusterKeys.sendStall(phoneNumber);
   const previous = await readState(key);
+  // Read BEFORE the write below resets it. A cancelled restart has to put back
+  // the expiry it found as well as the value: restoring with a fresh 24h would
+  // give an old restart history another full day to escalate from, on the
+  // strength of a restart that never happened.
+  const previousTtlMs = previous === null ? null : await readTtlMs(key);
   const restarts = (previous?.restarts ?? 0) + 1;
   const state: SendStallState = {
     restarts,
@@ -79,7 +86,19 @@ export async function recordRestart(
   // fact can undo exactly its own increment. Deleting instead would hand the
   // phone a clean slate it did not earn: the history in here is per phone and
   // lives 24h, so an earlier genuine strike would go with it.
-  return { state, previous };
+  return { state, previous, previousTtlMs };
+}
+
+// -1 means the key has no expiry and -2 that it is gone; neither is a duration
+// worth restoring, and both fall back to a full TTL rather than writing a key
+// that never expires.
+async function readTtlMs(key: string): Promise<number | null> {
+  try {
+    const ttl = await redis.pTTL(key);
+    return typeof ttl === "number" && ttl > 0 ? ttl : null;
+  } catch {
+    return null;
+  }
 }
 
 // Undoes one recordRestart. Same read-modify-write assumption as everything else
@@ -87,6 +106,7 @@ export async function recordRestart(
 export async function restoreState(
   phoneNumber: string,
   previous: SendStallState | null,
+  ttlMs: number | null = null,
 ): Promise<void> {
   const key = clusterKeys.sendStall(phoneNumber);
   if (previous === null) {
@@ -94,7 +114,11 @@ export async function restoreState(
     return;
   }
   await redis.set(key, JSON.stringify(previous), {
-    expiration: { type: "PX", value: SEND_STALL_TTL_MS },
+    // The expiry the key had when recordRestart found it, not a fresh one. The
+    // window is per phone and slides with each GENUINE restart; a restart that
+    // was called off must not slide it, or an old history keeps escalating the
+    // backoff for up to a day longer than it earned.
+    expiration: { type: "PX", value: ttlMs ?? SEND_STALL_TTL_MS },
   });
 }
 

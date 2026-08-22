@@ -265,7 +265,9 @@ export class BaileysConnection {
   private inFlightSends = 0;
   // The backoff state as it was before this episode's strike, so a restart
   // cancelled after the fact can undo exactly its own increment.
-  private stallStrikeRollback: SendStallState | null | undefined;
+  private stallStrikeRollback:
+    | { previous: SendStallState | null; ttlMs: number | null }
+    | undefined;
   // When each keystore key last gave up acquiring, and when it last released.
   // Both are needed to tell "the wedge is still there" from "it let go while the
   // failure was still on its way to us". Keyed by the handful of distinct
@@ -1436,27 +1438,58 @@ export class BaileysConnection {
     // an escalating suppression from a socket that no longer exists.
     if (!this.isDiscarded) {
       try {
-        const { previous } = await recordStallRestart(this.phoneNumber);
-        this.stallStrikeRollback = previous;
-        // Re-read after the write: the DEL can land inside it, which the check
-        // above cannot see. Undoing is the only way back, since nothing in the
-        // store fences a write against a session that has already ended.
-        // Two ways this write can be obsolete by the time it lands, and both
-        // end the same way. isDiscarded: logout began, and the coordinator's DEL
-        // may have already run. !restartRequested: a late send completion or the
-        // wedged key releasing cleared the stall, so the handler's own guard will
-        // veto the restart -- and a strike that outlives the restart it stands
-        // for suppresses the NEXT genuine stall for five minutes on the strength
-        // of a recovery.
-        // Two ways to be obsolete, and they undo differently. Discarded means
-        // the session is being torn down and its logout has (or will) DELETE
-        // this key: restoring the previous episode's value here would resurrect
-        // a backoff for a session that no longer exists, and hand it to whatever
-        // is paired on this number next. Recovered means the connection is still
-        // ours and healed itself, so only THIS episode's increment is wrong.
+        // The lease read rides along with the write rather than sitting before
+        // it, so the fence ends up at the last point before requestRestart with
+        // no await of ours after it. The check further up is what saves the
+        // restart slot and this strike in the common case, but by now it is a
+        // Redis round trip old, and a takeover landing inside that round trip
+        // would leave this rebuilding the old owner's socket against the new
+        // one's.
+        const [{ previous, previousTtlMs }, ownedElsewhere] = await Promise.all(
+          [
+            recordStallRestart(this.phoneNumber),
+            this.shouldYieldToLeaseOwner(),
+          ],
+        );
+        // The expiry travels with the value: restoring with a fresh 24h would
+        // hand an old history another full day on the strength of a restart that
+        // never happened.
+        this.stallStrikeRollback = { previous, ttlMs: previousTtlMs };
+        // Re-checked after the write: all three of these can land inside it,
+        // which the guard above cannot see. Undoing is the only way back, since
+        // nothing in the store fences a write against a session that has already
+        // ended.
+        //
+        // Three ways this write can be obsolete by the time it lands, and they
+        // undo differently.
+        //
+        // isDiscarded: logout began and the coordinator DELs this key in its
+        // finally, so restoring the previous episode's value would resurrect a
+        // backoff for a session that no longer exists and hand it to whatever is
+        // paired on this number next. Clear instead.
+        //
+        // ownedElsewhere: another instance force-acquired the phone. Its socket
+        // is the legitimate one, so ours is a duplicate that is still receiving
+        // and has to go -- and the strike goes back, because the backoff key is
+        // cluster-wide and charging one for a restart we are not performing
+        // would suppress the new owner's watchdog. Ranked above recovery: a
+        // socket we do not own has to be given up whether or not it healed.
+        //
+        // !restartRequested: a late send completion or the wedged key releasing
+        // cleared the stall, so the handler's own guard will veto the restart --
+        // and a strike that outlives the restart it stands for suppresses the
+        // NEXT genuine stall on the strength of a recovery. The connection is
+        // still ours, so only THIS episode's increment is wrong.
         if (this.isDiscarded) {
           this.stallStrikeRollback = undefined;
           await clearSendStall(this.phoneNumber).catch(() => {});
+          return;
+        }
+        if (ownedElsewhere) {
+          // Before the abort, which sets isDiscarded and would send the rollback
+          // down the clear-instead branch above.
+          await this.rollBackStallStrike();
+          this.abort();
           return;
         }
         if (!this.restartRequested) {
@@ -1530,9 +1563,9 @@ export class BaileysConnection {
   // history is per phone and lives 24h, so a delete would also wipe an earlier
   // genuine strike and hand the phone a clean slate it did not earn.
   private async rollBackStallStrike() {
-    const previous = this.stallStrikeRollback;
+    const rollback = this.stallStrikeRollback;
     this.stallStrikeRollback = undefined;
-    if (previous === undefined) {
+    if (rollback === undefined) {
       return;
     }
     try {
@@ -1550,7 +1583,11 @@ export class BaileysConnection {
         await clearSendStall(this.phoneNumber);
         return;
       }
-      await restoreSendStallState(this.phoneNumber, previous);
+      await restoreSendStallState(
+        this.phoneNumber,
+        rollback.previous,
+        rollback.ttlMs,
+      );
     } catch (error) {
       logger.error(
         "[%s] [sendStall] failed to roll back strike: %s",

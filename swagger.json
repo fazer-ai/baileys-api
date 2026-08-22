@@ -1697,7 +1697,7 @@
             "description": "Phone number not connected"
           },
           "409": {
-            "description": "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`."
+            "description": "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`. `indeterminate` is not resolved by retrying, under any id or under a new `chatwootMessageId`, because the timed-out attempt reserved no WhatsApp message id and may still be delivered."
           },
           "421": {
             "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",

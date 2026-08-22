@@ -102,6 +102,21 @@ const mockRedis = {
     return stringData.has(key) || hashData.has(key) ? 1 : 0;
   }),
   pExpire: mock(async (_key: string, _ttlMs: number) => 1),
+  // -2 when the key is gone, -1 when it has no expiry, else the duration it was
+  // written with. The fake has no clock, so this is the configured lifetime
+  // rather than a true remaining time; a test that cares pins it per call.
+  pTTL: mock(async (key: string) => {
+    if (!stringData.has(key)) {
+      return -2;
+    }
+    const expiration = expirations.get(key);
+    if (!expiration) {
+      return -1;
+    }
+    return expiration.type === "PX"
+      ? expiration.value
+      : expiration.value * 1000;
+  }),
   ping: mock(async () => "PONG"),
   // Emulates the known Lua scripts (dispatched by distinctive content) so the
   // real redisAuthState/leaseStore code paths behave faithfully in tests.

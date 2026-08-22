@@ -350,6 +350,15 @@ describe("connectionsController send-message", () => {
       // change that never comes and turn a message needing reconciliation into
       // a job that retries for a day.
       expect(res.headers.get("retry-after")).toBeNull();
+      // The body reaches a person: Chatwoot stores it as the message's
+      // external_error, and it is what an agent acts on. It must not name the
+      // one procedure that duplicates: a resend under a new chatwootMessageId
+      // asks a different question and sidesteps this marker entirely, while the
+      // timed-out attempt reserved no WhatsApp id for anything to deduplicate
+      // against.
+      const body = await res.text();
+      expect(body).toContain("Reconcile against the conversation");
+      expect(body).not.toContain("chatwootMessageId");
     } finally {
       spy.mockRestore();
       stringData.clear();

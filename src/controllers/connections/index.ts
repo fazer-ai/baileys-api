@@ -629,11 +629,20 @@ const connectionsController = new Elysia({
         // No retry-after: nothing clears this marker on a timer. It outlives the
         // caller's retries on purpose, so advertising a 60-second wait would
         // promise a state change that never comes and turn a message needing
-        // reconciliation into a job that retries for a day. The way forward is
-        // named in the body instead, and it works: a resend carrying a reserved
-        // messageId is admitted, because it cannot produce a second message.
+        // reconciliation into a job that retries for a day.
+        //
+        // And no way forward is named, because there is not one. A marker is only
+        // ever written for a send that reserved NO WhatsApp message id, so the key
+        // that attempt used is unknown here and nothing can deduplicate a resend
+        // against it: not a freshly reserved id, which lands on a different key
+        // and is therefore a second message (which is why the marker refuses one
+        // (see withIdempotency), and not a new chatwootMessageId, which only
+        // sidesteps the marker by asking a different question. The parked send can
+        // still reach WhatsApp, and "it is not in the conversation yet" is no
+        // evidence that it will not. Reconciliation is the answer; reserving an id
+        // on the FIRST send is how a caller avoids ever landing here.
         return new Response(
-          "Previous send timed out; outcome unknown. Check the conversation on WhatsApp and, if the message is not there, resend it under a new chatwootMessageId.",
+          "Previous send timed out and may still be delivered; the outcome is unknown. It reserved no WhatsApp message id, so no resend can be deduplicated against it. Reconcile against the conversation on WhatsApp instead of resending.",
           {
             status: 409,
             headers: { "x-baileys-idempotency-state": "indeterminate" },
@@ -682,7 +691,7 @@ const connectionsController = new Elysia({
           },
           409: {
             description:
-              "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`.",
+              "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`. `indeterminate` is not resolved by retrying, under any id or under a new `chatwootMessageId`, because the timed-out attempt reserved no WhatsApp message id and may still be delivered.",
           },
           500: {
             description: "Message not sent",

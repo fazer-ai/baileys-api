@@ -1916,6 +1916,78 @@ describe("BaileysConnection", () => {
       setSystemTime();
     });
 
+    // The fence above is one Redis round trip old by the time the restart is
+    // actually asked for, and a takeover can land inside that round trip. This is
+    // the one that has to hold, because it is the last point before the socket is
+    // rebuilt.
+    it("yields when the lease moves while the strike is being written", async () => {
+      const key = clusterKeys.sendStall("+5511999999999");
+      const stringData = (
+        redis as unknown as { __stringData: Map<string, string> }
+      ).__stringData;
+      // An earlier genuine episode, already past its backoff window, so the
+      // rollback has something to restore and can be told apart from a wipe.
+      stringData.set(
+        key,
+        JSON.stringify({ restarts: 1, nextRestartAllowedAt: Date.now() - 1 }),
+      );
+
+      const restarts: string[] = [];
+      let closed = 0;
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+        onConnectionClose: () => {
+          closed += 1;
+        },
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+
+      const realRecord = sendStallStore.recordRestart;
+      const record = spyOn(sendStallStore, "recordRestart").mockImplementation(
+        async (phone: string) => {
+          // Another instance force-acquires inside the window this write
+          // occupies -- after the earlier fence read, before the later one.
+          stringData.set(
+            "@baileys-api:cluster:lease:+5511999999999",
+            JSON.stringify({ owner: "other-instance", epoch: 9 }),
+          );
+          return realRecord(phone);
+        },
+      );
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        fetchCalls.length = 0;
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 5));
+
+        // The write did happen -- the fence is downstream of it.
+        expect(record).toHaveBeenCalledTimes(1);
+        // No socket rebuilt against the legitimate owner's.
+        expect(restarts.length).toBe(0);
+        // And the increment is taken back rather than the key wiped: the backoff
+        // is cluster-wide, so charging a strike for a restart we are not
+        // performing would suppress the new owner's watchdog, while deleting
+        // would hand the phone a clean slate an earlier episode already spent.
+        expect(JSON.parse(stringData.get(key) ?? "{}").restarts).toBe(1);
+        expect(closed).toBe(1);
+        expect(connection.isOpen).toBe(false);
+        expect(
+          fetchCalls.some((call) => call.body.includes("send_stall_detected")),
+        ).toBe(false);
+      } finally {
+        record.mockRestore();
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // The backoff key is per phone number and outlives the session by up to 24h,
     // so a strike written while this session is being torn down is inherited by
     // whatever is paired on that number next -- its watchdog suppressed on the
