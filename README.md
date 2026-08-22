@@ -80,7 +80,9 @@ What this API provides:
   `data.error = "send_stall_detected"` is emitted when a stall is detected. Its
   `sendStall.action` says what the provider did: `restart` (the socket was
   recreated), `suppressed` (a backoff is holding it off until `until`), or
-  `cancelled` (the connection recovered before the restart ran).
+  `cancelled` (the connection recovered before the restart ran), or `failed`
+  (the restart ran and could not rebuild the socket, which is where a human has
+  to step in).
 - **Automatic recovery.** With `BAILEYS_SEND_STALL_RESTART_ENABLED=true`, a
   stalled connection restarts its own socket, rate-limited per process and
   backed off per phone.

@@ -2556,6 +2556,43 @@ describe("BaileysConnection", () => {
       config.baileys.sendTimeoutMs = 45_000;
     });
 
+    // Without a reserved id we only learn the generated one when
+    // socket.sendMessage resolves, and WhatsApp can acknowledge before that --
+    // the node is on the wire while the enclosing keystore transaction is still
+    // committing. Discarding that ack leaves lastOutgoingAckAt null for a
+    // message that was demonstrably delivered.
+    it("claims an ack that arrived before the generated id was known", async () => {
+      await connectOpen();
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      mockSocket.sendMessage.mockImplementationOnce(async () => {
+        // WhatsApp acknowledges while the send is still resolving.
+        mockEventHandlers.get("messages.update")?.([
+          {
+            key: { fromMe: true, id: "GENERATED-EARLY" },
+            update: { status: 2 },
+          },
+        ]);
+        return { key: { id: "GENERATED-EARLY" } };
+      });
+
+      await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
+
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
+    // A `fromMe` ack is not proof our send path works: it also covers messages
+    // the operator sent from the phone itself. Holding one must not credit it.
+    it("does not credit an ack for a message it never submitted", async () => {
+      await connectOpen();
+
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: true, id: "FROM-THE-PHONE" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).toBeNull();
+    });
+
     // Group delivery and read acknowledgements ride message-receipt.update, not
     // messages.update. Without this a connection that only writes to groups sits
     // at `unknown` forever no matter how many recipients confirmed.

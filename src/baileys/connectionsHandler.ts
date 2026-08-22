@@ -316,6 +316,9 @@ export class BaileysConnectionsHandler {
                 phoneNumber,
                 errorToString(error),
               );
+              // Consumers were told the socket was being recreated. Nothing
+              // rebuilt it, and nothing else would ever correct that.
+              connection.reportFailedStallRestart();
               // Only when nothing came up in the meantime: a later connect may
               // have succeeded while this one was failing.
               if (this.connections[phoneNumber]) {

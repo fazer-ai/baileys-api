@@ -81,6 +81,13 @@ class MockBaileysConnection {
   // before. Examples flip it to false to model recovery arriving while the
   // restart waited on the per-number slot.
   restartPending = true;
+  reportedFailures = 0;
+
+  reportFailedStallRestart() {
+    this.reportedFailures += 1;
+  }
+
+  async withdrawStallRestart() {}
 
   constructor(phoneNumber: string, options: any) {
     this.phoneNumber = phoneNumber;
@@ -1248,6 +1255,10 @@ describe("BaileysConnectionsHandler", () => {
         ...defaultOptions,
         leaseEpoch: 7,
       });
+      // Captured before the restart: spawnConnection registers a replacement
+      // under the same phone, and it is the ORIGINAL that observed the stall and
+      // announced the restart, so it is the one that has to correct it.
+      const original = mockConnectionInstances.get("+5511999999999");
       const failures: Array<[string, number | null]> = [];
       handler.onSpawnFailed = (phone: string, epoch: number | null) => {
         failures.push([phone, epoch]);
@@ -1267,6 +1278,9 @@ describe("BaileysConnectionsHandler", () => {
       // force-acquired while this restart was failing, leaving its live socket
       // unowned.
       expect(failures).toEqual([["+5511999999999", 7]]);
+      // And the consumers who were told the socket was being recreated hear
+      // that it was not. Nothing else would ever correct that verdict.
+      expect(original.reportedFailures).toBe(1);
       expect(handler.hasConnection("+5511999999999")).toBe(false);
       handler.onSpawnFailed = null;
     });

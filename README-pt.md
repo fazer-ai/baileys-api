@@ -80,7 +80,9 @@ O que esta API oferece:
   `data.error = "send_stall_detected"` é emitido quando um travamento é
   detectado. O `sendStall.action` diz o que o provedor fez: `restart` (o socket
   foi recriado), `suppressed` (um backoff está segurando até `until`) ou
-  `cancelled` (a conexão se recuperou antes de o restart rodar).
+  `cancelled` (a conexão se recuperou antes de o restart rodar), ou `failed`
+  (o restart rodou e não conseguiu reconstruir o socket, que é onde alguém
+  precisa intervir).
 - **Recuperação automática.** Com `BAILEYS_SEND_STALL_RESTART_ENABLED=true`,
   uma conexão travada reinicia o próprio socket, com limite de taxa por
   processo e backoff por telefone.

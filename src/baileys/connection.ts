@@ -116,6 +116,11 @@ const SEND_STALL_RESTART_COOLDOWN_MS = 30_000;
 // follows its send within seconds, so this is generous; the cap is what keeps a
 // long-lived busy connection from growing the set without bound.
 const SUBMITTED_ID_HISTORY = 500;
+// Acknowledgements for `fromMe` ids we have not (yet) submitted. Smaller than the
+// submitted history because it only has to cover the gap between WhatsApp
+// acknowledging and socket.sendMessage resolving, and because most entries here
+// are genuinely not ours -- messages the operator sent from the phone.
+const UNMATCHED_ACK_HISTORY = 100;
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -291,6 +296,7 @@ export class BaileysConnection {
   // an ack that matters arrives seconds after its send, so the oldest entries are
   // dead weight, and an unbounded set on a busy connection is a leak.
   private submittedMessageIds = new Set<string>();
+  private unmatchedAckIds = new Map<string, number>();
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -337,6 +343,14 @@ export class BaileysConnection {
       }
     }
     this.submittedMessageIds.add(messageId);
+    // The ack may have beaten the id here. Claiming it now is the difference
+    // between "we have never seen this connection deliver anything" and the
+    // truth, on the send whose own response was the slow part.
+    const ackedAt = this.unmatchedAckIds.get(messageId);
+    if (ackedAt !== undefined) {
+      this.unmatchedAckIds.delete(messageId);
+      this._lastOutgoingAckAt = ackedAt;
+    }
   }
 
   // The connection's CURRENT options, which are not the ones it was built with:
@@ -656,6 +670,7 @@ export class BaileysConnection {
       // lastOutgoingAckAt now, presenting end-to-end evidence about a
       // replacement that may itself be wedged and has sent nothing.
       this.submittedMessageIds.clear();
+      this.unmatchedAckIds.clear();
       this.inFlightSends = 0;
       // Both belong to the keystore that just went away.
       this.txTimeoutAt.clear();
@@ -1436,7 +1451,7 @@ export class BaileysConnection {
 
   private reportSendStall(
     streakMs: number,
-    action: "restart" | "suppressed" | "cancelled",
+    action: "restart" | "suppressed" | "cancelled" | "failed",
     until: string | undefined,
   ) {
     logger.warn(
@@ -1465,6 +1480,14 @@ export class BaileysConnection {
   // after this connection committed to it. Two things then have to be undone: the
   // strike, which would otherwise suppress the NEXT genuine stall on the strength
   // of a restart that never happened, and the verdict already sent to consumers.
+  // The restart was asked for and could not rebuild anything. The strike stands
+  // -- an attempt was made and it burned -- but consumers were told the socket
+  // was being recreated, and nothing else would ever correct that. This is the
+  // state where a human has to step in, so it has to be visible.
+  reportFailedStallRestart() {
+    this.reportSendStall(0, "failed", undefined);
+  }
+
   async withdrawStallRestart(streakMs = 0) {
     this.restartRequested = false;
     await this.rollBackStallStrike();
@@ -2177,12 +2200,31 @@ export class BaileysConnection {
   }
 
   private isOurSubmittedKey(key: WAMessageKey | undefined | null): boolean {
-    return (
-      key?.fromMe === true &&
-      key.id !== undefined &&
-      key.id !== null &&
-      this.submittedMessageIds.has(key.id)
-    );
+    if (key?.fromMe !== true || key.id === undefined || key.id === null) {
+      return false;
+    }
+    if (this.submittedMessageIds.has(key.id)) {
+      return true;
+    }
+    // Not ours yet, and it may never be: `fromMe` also covers messages the
+    // operator sent from the phone itself, which must not count as proof that
+    // OUR send path works. But when the caller reserved no messageId we only
+    // learn the generated one once socket.sendMessage resolves, and WhatsApp can
+    // acknowledge before that -- the node is on the wire while the enclosing
+    // keystore transaction is still committing. Held here so trackSubmittedId
+    // can claim it retroactively; if it never does, it decays with the socket.
+    this.rememberUnmatchedAck(key.id);
+    return false;
+  }
+
+  private rememberUnmatchedAck(messageId: string) {
+    if (this.unmatchedAckIds.size >= UNMATCHED_ACK_HISTORY) {
+      const oldest = this.unmatchedAckIds.keys().next().value;
+      if (oldest !== undefined) {
+        this.unmatchedAckIds.delete(oldest);
+      }
+    }
+    this.unmatchedAckIds.set(messageId, Date.now());
   }
 
   private hasAccountRestrictionError(

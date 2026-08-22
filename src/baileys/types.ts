@@ -64,7 +64,7 @@ export interface BaileysConnectionWebhookPayload {
         sendStall?: {
           consecutiveTimeouts: number;
           stalledForMs: number;
-          action: "restart" | "suppressed" | "cancelled";
+          action: "restart" | "suppressed" | "cancelled" | "failed";
           until?: string;
         };
       };
