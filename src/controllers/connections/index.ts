@@ -547,10 +547,12 @@ const connectionsController = new Elysia({
           ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
           : null;
 
-      // Whether the indeterminate marker actually reached Redis. Holding an
+      // The indeterminate marker that actually reached Redis, if any. Holding an
       // idempotency key is not the same thing: withIdempotency fails open, so a
       // Redis outage lets the send run with no lock and leaves no marker behind.
-      let indeterminateRecorded = false;
+      // The value, not a flag, because retracting it later has to prove the
+      // marker is still the one this attempt wrote.
+      let indeterminateMarker: string | null = null;
       let result: Awaited<ReturnType<typeof withIdempotency>>;
       try {
         result = await withIdempotency(
@@ -573,7 +575,15 @@ const connectionsController = new Elysia({
               // happened, that resend is exactly the right thing.
               onLateDefinitiveFailure: idempotencyKey
                 ? () => {
-                    void clearIndeterminate(idempotencyKey);
+                    // Nothing to retract if no marker of ours ever landed -- and
+                    // deleting on that evidence would strip a retry's own marker
+                    // off an outcome that is still unknown.
+                    if (indeterminateMarker) {
+                      void clearIndeterminate(
+                        idempotencyKey,
+                        indeterminateMarker,
+                      );
+                    }
                   }
                 : undefined,
             });
@@ -596,8 +606,8 @@ const connectionsController = new Elysia({
             // reconcile rather than resend blindly.
             isIndeterminate: (e) =>
               e instanceof OperationTimeoutError && !messageId,
-            onIndeterminate: (persisted) => {
-              indeterminateRecorded = persisted;
+            onIndeterminate: (marker) => {
+              indeterminateMarker = marker;
             },
           },
         );
@@ -629,7 +639,7 @@ const connectionsController = new Elysia({
         // stop the next attempt from sending a second message, and `retry-after`
         // is an instruction to make one.
         const sendPathResponse = sendPathErrorResponse(e, {
-          retrySafe: Boolean(messageId) || indeterminateRecorded,
+          retrySafe: Boolean(messageId) || indeterminateMarker !== null,
         });
         if (sendPathResponse) {
           return sendPathResponse;

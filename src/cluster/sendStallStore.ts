@@ -40,8 +40,7 @@ export function backoffMs(restarts: number): number {
   );
 }
 
-async function readState(key: string): Promise<SendStallState | null> {
-  const raw = await redis.get(key);
+function parseState(raw: string | null): SendStallState | null {
   if (!raw) {
     return null;
   }
@@ -52,6 +51,10 @@ async function readState(key: string): Promise<SendStallState | null> {
   }
 }
 
+async function readState(key: string): Promise<SendStallState | null> {
+  return parseState(await redis.get(key));
+}
+
 // Whether a restart may run now. The FIRST restart for a phone is always
 // allowed — the backoff only gates repeats inside the window, because the whole
 // point is to recover fast the first time.
@@ -60,33 +63,81 @@ export async function canRestart(phoneNumber: string): Promise<boolean> {
   return !state || state.nextRestartAllowedAt <= Date.now();
 }
 
-// Plain read-modify-write, no CAS, mirroring quarantineStore: the only writer
-// is the instance that owns the stalled socket.
+// Compare-and-set, not the plain read-modify-write quarantineStore uses. That
+// pattern rests on "the only writer is the instance that owns the stalled
+// socket", and this key has a window where two of them exist: during a lease
+// handoff the old owner can still be inside an episode -- it discovers the
+// handoff in the same round trip that writes this strike -- while the new owner
+// starts one of its own. A lost increment costs one step of escalation; an old
+// owner's rollback landing on the new owner's strike costs the whole history,
+// on precisely the phone that is flapping between instances.
+//
+// KEYS[1]=key, ARGV=[expected ("" for absent), value, ttlMs]. Every value ever
+// stored here is JSON, so "" is unambiguous as "the key must not exist".
+const CAS_SCRIPT = `-- send-stall-cas
+local raw = redis.call("GET", KEYS[1])
+if (raw == false and ARGV[1] == "") or raw == ARGV[1] then
+  redis.call("SET", KEYS[1], ARGV[2], "PX", ARGV[3])
+  return 1
+end
+return 0`;
+
+// The delete half of the same rule: drop the key only if it still holds what we
+// wrote. KEYS[1]=key, ARGV[1]=expected.
+const CAD_SCRIPT = `-- send-stall-cad
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("DEL", KEYS[1])
+  return 1
+end
+return 0`;
+
+// Bounded, because a retry only makes sense while the contention is real. Losing
+// three in a row means another owner is writing steadily, and its strikes are
+// doing the job this one would have.
+const CAS_ATTEMPTS = 3;
+
 export async function recordRestart(phoneNumber: string): Promise<{
   state: SendStallState;
   previous: SendStallState | null;
   previousTtlMs: number | null;
+  // Exactly what was written, so a rollback can prove the key is still its own
+  // before touching it.
+  wrote: string;
 }> {
   const key = clusterKeys.sendStall(phoneNumber);
-  const previous = await readState(key);
-  // Read BEFORE the write below resets it. A cancelled restart has to put back
-  // the expiry it found as well as the value: restoring with a fresh 24h would
-  // give an old restart history another full day to escalate from, on the
-  // strength of a restart that never happened.
-  const previousTtlMs = previous === null ? null : await readTtlMs(key);
-  const restarts = (previous?.restarts ?? 0) + 1;
-  const state: SendStallState = {
-    restarts,
-    nextRestartAllowedAt: Date.now() + backoffMs(restarts),
-  };
-  await redis.set(key, JSON.stringify(state), {
-    expiration: { type: "PX", value: SEND_STALL_TTL_MS },
-  });
-  // `previous` travels back so a caller whose restart is cancelled after the
-  // fact can undo exactly its own increment. Deleting instead would hand the
-  // phone a clean slate it did not earn: the history in here is per phone and
-  // lives 24h, so an earlier genuine strike would go with it.
-  return { state, previous, previousTtlMs };
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    const raw = await redis.get(key);
+    const previous = parseState(raw);
+    // Read BEFORE the write below resets it. A cancelled restart has to put back
+    // the expiry it found as well as the value: restoring with a fresh 24h would
+    // give an old restart history another full day to escalate from, on the
+    // strength of a restart that never happened.
+    const previousTtlMs = previous === null ? null : await readTtlMs(key);
+    const restarts = (previous?.restarts ?? 0) + 1;
+    const state: SendStallState = {
+      restarts,
+      nextRestartAllowedAt: Date.now() + backoffMs(restarts),
+    };
+    const wrote = JSON.stringify(state);
+    const applied = await redis.eval(CAS_SCRIPT, {
+      keys: [key],
+      arguments: [raw ?? "", wrote, String(SEND_STALL_TTL_MS)],
+    });
+    if (applied === 1) {
+      // `previous` travels back so a caller whose restart is cancelled after the
+      // fact can undo exactly its own increment. Deleting instead would hand the
+      // phone a clean slate it did not earn: the history in here is per phone and
+      // lives 24h, so an earlier genuine strike would go with it.
+      return { state, previous, previousTtlMs, wrote };
+    }
+  }
+  // Throwing rather than forcing the write, and the caller treats it as it does
+  // any other failure to record: suppress, do not restart blind. That is the
+  // right answer here too -- losing every attempt means another owner recorded
+  // its own strike, so this phone is already accounted for.
+  throw new Error(
+    `send-stall strike for ${phoneNumber} lost every compare-and-set attempt`,
+  );
 }
 
 // -1 means the key has no expiry and -2 that it is gone; neither is a duration
@@ -106,19 +157,29 @@ async function readTtlMs(key: string): Promise<number | null> {
 export async function restoreState(
   phoneNumber: string,
   previous: SendStallState | null,
-  ttlMs: number | null = null,
+  ttlMs: number | null,
+  // What recordRestart wrote. The undo only applies while the key is still that
+  // exact value: a newer owner's strike landing in between is a real event this
+  // rollback knows nothing about, and putting our `previous` back over it would
+  // erase the whole history on the one phone that is flapping between instances.
+  expected: string,
 ): Promise<void> {
   const key = clusterKeys.sendStall(phoneNumber);
   if (previous === null) {
-    await redis.del(key);
+    await redis.eval(CAD_SCRIPT, { keys: [key], arguments: [expected] });
     return;
   }
-  await redis.set(key, JSON.stringify(previous), {
-    // The expiry the key had when recordRestart found it, not a fresh one. The
-    // window is per phone and slides with each GENUINE restart; a restart that
-    // was called off must not slide it, or an old history keeps escalating the
-    // backoff for up to a day longer than it earned.
-    expiration: { type: "PX", value: ttlMs ?? SEND_STALL_TTL_MS },
+  await redis.eval(CAS_SCRIPT, {
+    keys: [key],
+    arguments: [
+      expected,
+      JSON.stringify(previous),
+      // The expiry the key had when recordRestart found it, not a fresh one. The
+      // window is per phone and slides with each GENUINE restart; a restart that
+      // was called off must not slide it, or an old history keeps escalating the
+      // backoff for up to a day longer than it earned.
+      String(ttlMs ?? SEND_STALL_TTL_MS),
+    ],
   });
 }
 

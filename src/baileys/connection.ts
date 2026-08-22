@@ -275,7 +275,7 @@ export class BaileysConnection {
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
   private stallStrikeRollback:
-    | { previous: SendStallState | null; ttlMs: number | null }
+    | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
   // When each keystore key last gave up acquiring, and when it last released.
   // Both are needed to tell "the wedge is still there" from "it let go while the
@@ -1517,16 +1517,15 @@ export class BaileysConnection {
         // Redis round trip old, and a takeover landing inside that round trip
         // would leave this rebuilding the old owner's socket against the new
         // one's.
-        const [{ previous, previousTtlMs }, ownedElsewhere] = await Promise.all(
-          [
+        const [{ previous, previousTtlMs, wrote }, ownedElsewhere] =
+          await Promise.all([
             recordStallRestart(this.phoneNumber),
             this.shouldYieldToLeaseOwner(),
-          ],
-        );
+          ]);
         // The expiry travels with the value: restoring with a fresh 24h would
         // hand an old history another full day on the strength of a restart that
         // never happened.
-        this.stallStrikeRollback = { previous, ttlMs: previousTtlMs };
+        this.stallStrikeRollback = { previous, ttlMs: previousTtlMs, wrote };
         // Re-checked after the write: all three of these can land inside it,
         // which the guard above cannot see. Undoing is the only way back, since
         // nothing in the store fences a write against a session that has already
@@ -1727,6 +1726,7 @@ export class BaileysConnection {
         this.phoneNumber,
         rollback.previous,
         rollback.ttlMs,
+        rollback.wrote,
       );
     } catch (error) {
       logger.error(

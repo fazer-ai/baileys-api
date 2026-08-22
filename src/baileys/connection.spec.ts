@@ -1218,6 +1218,28 @@ describe("BaileysConnection", () => {
       });
     };
 
+    // The strike write is a compare-and-set EVAL now, not a plain SET. This runs
+    // `during` at the moment that write lands and then applies what the script
+    // would have written, so an example can still drive the race it is about.
+    const interceptStrikeWrite = (during: () => void | Promise<void>) => {
+      const evalMock = redis.eval as unknown as ReturnType<typeof mock>;
+      const keysWritten: string[] = [];
+      evalMock.mockImplementationOnce(
+        async (
+          _script: string,
+          opts: { keys: string[]; arguments: string[] },
+        ) => {
+          keysWritten.push(opts.keys[0]);
+          await during();
+          (
+            redis as unknown as { __stringData: Map<string, string> }
+          ).__stringData.set(opts.keys[0], opts.arguments[1]);
+          return 1;
+        },
+      );
+      return keysWritten;
+    };
+
     beforeEach(() => {
       config.baileys.sendTimeoutMs = 10;
       config.baileys.sendStallRestartEnabled = false;
@@ -2184,15 +2206,10 @@ describe("BaileysConnection", () => {
       await connectOpen();
       wedge();
 
-      const setMock = redis.set as unknown as ReturnType<typeof mock>;
-      setMock.mockImplementationOnce(async (k: string, v: string) => {
+      interceptStrikeWrite(() => {
         // A concurrent POST /restart discards this socket and spawns its
         // replacement. The session lives on; only this socket is gone.
         (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
-        (
-          redis as unknown as { __stringData: Map<string, string> }
-        ).__stringData.set(k, v);
-        return "OK";
       });
 
       try {
@@ -2392,15 +2409,8 @@ describe("BaileysConnection", () => {
       // The preload's redis.set is itself a mock, and laying a spyOn over one is
       // the pattern that leaks across spec files here. Use its own one-shot API
       // and write straight into the fake's store.
-      const setMock = redis.set as unknown as ReturnType<typeof mock>;
-      const setKeys: string[] = [];
-      setMock.mockImplementationOnce(async (k: string, v: string) => {
-        setKeys.push(k);
+      const setKeys = interceptStrikeWrite(() => {
         (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
-        (
-          redis as unknown as { __stringData: Map<string, string> }
-        ).__stringData.set(k, v);
-        return "OK";
       });
 
       try {
@@ -2438,19 +2448,12 @@ describe("BaileysConnection", () => {
       wedge();
 
       const key = clusterKeys.sendStall("+5511999999999");
-      const setMock = redis.set as unknown as ReturnType<typeof mock>;
-      const setKeys: string[] = [];
-      setMock.mockImplementationOnce(async (k: string, v: string) => {
-        setKeys.push(k);
+      const setKeys = interceptStrikeWrite(async () => {
         // A genuine recovery signal, not a hand-cleared flag: `open` is a new
         // socket, and clearing the stall is what withdraws the restart.
         await mockEventHandlers.get("connection.update")?.({
           connection: "open",
         });
-        (
-          redis as unknown as { __stringData: Map<string, string> }
-        ).__stringData.set(k, v);
-        return "OK";
       });
 
       try {
@@ -2541,16 +2544,11 @@ describe("BaileysConnection", () => {
       wedge();
 
       const key = clusterKeys.sendStall("+5511999999999");
-      const setMock = redis.set as unknown as ReturnType<typeof mock>;
-      setMock.mockImplementationOnce(async (k: string, v: string) => {
+      interceptStrikeWrite(async () => {
         // Recovery lands while the strike is being written.
         await mockEventHandlers.get("connection.update")?.({
           connection: "open",
         });
-        (
-          redis as unknown as { __stringData: Map<string, string> }
-        ).__stringData.set(k, v);
-        return "OK";
       });
 
       try {
@@ -2616,18 +2614,13 @@ describe("BaileysConnection", () => {
       await connectOpen();
       wedge();
 
-      const setMock = redis.set as unknown as ReturnType<typeof mock>;
-      setMock.mockImplementationOnce(async (k: string, v: string) => {
+      interceptStrikeWrite(() => {
         // Logout landing inside the write: it marks the session ended and
         // discards before its first await, and close() DELs this key.
         Object.assign(connection as unknown as Record<string, unknown>, {
           isDiscarded: true,
           sessionEnded: true,
         });
-        (
-          redis as unknown as { __stringData: Map<string, string> }
-        ).__stringData.set(k, v);
-        return "OK";
       });
 
       try {
@@ -2661,18 +2654,13 @@ describe("BaileysConnection", () => {
       wedge();
 
       const key = clusterKeys.sendStall("+5511999999999");
-      const setMock = redis.set as unknown as ReturnType<typeof mock>;
-      setMock.mockImplementationOnce(async (k: string, v: string) => {
+      interceptStrikeWrite(async () => {
         await mockEventHandlers.get("connection.update")?.({
           connection: "close" as const,
           lastDisconnect: {
             error: { output: { statusCode: 401, payload: {} }, message: "x" },
           },
         });
-        (
-          redis as unknown as { __stringData: Map<string, string> }
-        ).__stringData.set(k, v);
-        return "OK";
       });
 
       try {

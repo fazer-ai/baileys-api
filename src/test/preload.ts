@@ -171,15 +171,40 @@ const mockRedis = {
         return 0;
       }
 
-      // clear-indeterminate (compare-and-delete): KEYS=[key]. Drops the marker
-      // only if it is still one, so a late verdict cannot delete a cached result
-      // a retry wrote after it. Checked before the generic DEL branch below,
-      // which would otherwise claim this script.
+      // clear-indeterminate (compare-and-delete): KEYS=[key], ARGV=[marker].
+      // Drops the marker only if it is still the exact one the retracting
+      // attempt wrote, so neither a cached result nor a later attempt's own
+      // marker goes with it. Checked before the generic DEL branch below, which
+      // would otherwise claim this script.
       if (script.includes("clear-indeterminate")) {
-        const raw = stringData.get(keys[0]);
-        if (raw?.startsWith("indeterminate:")) {
+        if (stringData.get(keys[0]) === args[0]) {
           stringData.delete(keys[0]);
           expirations.delete(keys[0]);
+          return 1;
+        }
+        return 0;
+      }
+
+      // send-stall-cas (compare-and-set): KEYS=[key],
+      // ARGV=[expected ("" for absent), value, ttlMs].
+      if (script.includes("send-stall-cas")) {
+        const [key] = keys;
+        const [expected, value, ttl] = args;
+        const raw = stringData.get(key);
+        if ((raw === undefined && expected === "") || raw === expected) {
+          stringData.set(key, value);
+          expirations.set(key, { type: "PX", value: Number(ttl) });
+          return 1;
+        }
+        return 0;
+      }
+
+      // send-stall-cad (compare-and-delete): KEYS=[key], ARGV=[expected].
+      if (script.includes("send-stall-cad")) {
+        const [key] = keys;
+        if (stringData.get(key) === args[0]) {
+          stringData.delete(key);
+          expirations.delete(key);
           return 1;
         }
         return 0;

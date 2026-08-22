@@ -53,6 +53,18 @@ const INDETERMINATE_PREFIX = "indeterminate:";
 const processingValue = () =>
   `${PROCESSING_PREFIX}${instanceId}#${incarnationId}`;
 
+// The indeterminate marker carries a per-ATTEMPT suffix on top of the
+// per-process identity, because two attempts in one process would otherwise
+// write a byte-identical value -- and the late retraction compares against that
+// value to prove the marker is still its own. Unlike the processing marker,
+// nothing parses this one (acquireOrSteal only checks its prefix), so the extra
+// segment costs nothing.
+let attemptCounter = 0;
+const indeterminateValue = () => {
+  attemptCounter += 1;
+  return `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}#${attemptCounter.toString(36)}`;
+};
+
 // Atomic compare-and-set: only overwrite the orphaned marker if it is still the
 // exact value we observed, so two instances racing to reclaim the same dead
 // lock cannot both win. KEYS[1]=key, ARGV[1]=expected, ARGV[2]=new, ARGV[3]=ttl.
@@ -63,13 +75,15 @@ if redis.call("GET", KEYS[1]) == ARGV[1] then
 end
 return 0`;
 
-// Compare-and-delete, so a late verdict can only drop the marker it is a verdict
-// about. By the time this runs the request is long gone and anything may have
-// written to the key -- a retry that got past a cleared marker and cached its
-// result, most of all. KEYS[1]=key.
+// Compare-and-delete against the EXACT marker this attempt wrote, not merely
+// against the prefix. By the time a late verdict runs the request is long gone
+// and anything may sit under the key: a retry that got past a cleared marker and
+// cached its result, or -- the case a prefix check cannot see -- a retry's OWN
+// indeterminate marker, whose outcome is still unknown. Dropping that one strips
+// the protection off a live attempt and lets a third send go out.
+// KEYS[1]=key, ARGV[1]=the marker written by the attempt now retracting it.
 const CLEAR_INDETERMINATE_SCRIPT = `-- clear-indeterminate
-local raw = redis.call("GET", KEYS[1])
-if raw and string.sub(raw, 1, ${INDETERMINATE_PREFIX.length}) == "${INDETERMINATE_PREFIX}" then
+if redis.call("GET", KEYS[1]) == ARGV[1] then
   redis.call("DEL", KEYS[1])
   return 1
 end
@@ -109,10 +123,14 @@ return 0`;
 // makes an operator's resend of the SAME message answer 409 for 24h. Once the
 // send is known not to have happened, that retry is exactly the right thing and
 // nothing should be blocking it.
-export async function clearIndeterminate(key: string): Promise<boolean> {
+export async function clearIndeterminate(
+  key: string,
+  marker: string,
+): Promise<boolean> {
   try {
     const result = await redis.eval(CLEAR_INDETERMINATE_SCRIPT, {
       keys: [key],
+      arguments: [marker],
     });
     return result === 1;
   } catch (error) {
@@ -136,12 +154,13 @@ export interface IdempotencyOptions {
   // Predicate for "the work threw, but it may still take effect". Returning
   // true records the indeterminate marker instead of releasing the lock.
   isIndeterminate?: (error: unknown) => boolean;
-  // Whether that marker actually reached Redis. Everything in this module fails
-  // open -- acquireLock returns true when it cannot write, and markIndeterminate
-  // only warns -- so holding a key is NOT evidence that a retry is protected. A
-  // caller that answers differently for a protected retry has to know which of
-  // the two it got.
-  onIndeterminate?: (persisted: boolean) => void;
+  // The marker that actually reached Redis, or null if none did. Everything in
+  // this module fails open -- acquireLock returns success when it cannot write,
+  // and markIndeterminate only warns -- so holding a key is NOT evidence that a
+  // retry is protected. The value itself is handed back rather than a boolean
+  // because a later retraction has to prove the marker is still the one this
+  // attempt wrote before deleting it.
+  onIndeterminate?: (marker: string | null) => void;
 }
 
 export async function withIdempotency<T>(
@@ -186,8 +205,8 @@ export async function withIdempotency<T>(
       // reads the same but is not: optional chaining short-circuits the whole
       // call expression when the callback is absent, arguments included, so the
       // marker would never be written for any caller that did not pass one.
-      const persisted = await markIndeterminate(key, held);
-      options.onIndeterminate?.(persisted);
+      const marker = await markIndeterminate(key, held);
+      options.onIndeterminate?.(marker);
     } else {
       await releaseLock(key, held);
     }
@@ -368,13 +387,17 @@ async function stealLock(key: string, expected: string): Promise<boolean> {
   }
 }
 
-async function markIndeterminate(key: string, held: boolean): Promise<boolean> {
+async function markIndeterminate(
+  key: string,
+  held: boolean,
+): Promise<string | null> {
+  const marker = indeterminateValue();
   try {
     const result = await redis.eval(WRITE_IF_OURS_SCRIPT, {
       keys: [key],
       arguments: [
         processingValue(),
-        `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
+        marker,
         String(INDETERMINATE_TTL),
         held ? "1" : "0",
       ],
@@ -389,9 +412,9 @@ async function markIndeterminate(key: string, held: boolean): Promise<boolean> {
         "[withIdempotency] %s moved on before it could be marked indeterminate",
         key,
       );
-      return false;
+      return null;
     }
-    return true;
+    return marker;
   } catch (error) {
     // Leave the `processing:` marker in place rather than releasing: it 409s
     // the retry for the rest of the TTL, which is the safe direction here —
@@ -403,7 +426,7 @@ async function markIndeterminate(key: string, held: boolean): Promise<boolean> {
       key,
       errorToString(error),
     );
-    return false;
+    return null;
   }
 }
 

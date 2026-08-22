@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { incarnationId } from "@/cluster/identity";
 import { clusterKeys } from "@/cluster/keys";
 import redis from "@/lib/redis";
-import { withIdempotency } from "./withIdempotency";
+import { clearIndeterminate, withIdempotency } from "./withIdempotency";
 
 const stringData = (redis as any).__stringData as Map<string, string>;
 const expirations = (redis as any).__expirations as Map<
@@ -324,7 +324,7 @@ describe("withIdempotency", () => {
       setMock.mockImplementationOnce(async () => {
         throw new Error("redis down");
       });
-      let persisted: boolean | undefined;
+      let marker: string | null | undefined;
 
       await expect(
         withIdempotency(
@@ -336,8 +336,8 @@ describe("withIdempotency", () => {
           },
           {
             isIndeterminate: () => true,
-            onIndeterminate: (ok) => {
-              persisted = ok;
+            onIndeterminate: (written) => {
+              marker = written;
             },
           },
         ),
@@ -347,7 +347,7 @@ describe("withIdempotency", () => {
       expect(JSON.parse(stringData.get(KEY) ?? "{}")).toEqual({ ok: true });
       // And the caller is told the marker did not land, so it must not answer
       // with a `retry-after` that claims the retry is protected.
-      expect(persisted).toBe(false);
+      expect(marker).toBeNull();
     });
 
     // The processing marker identifies a PROCESS, not an acquisition: two
@@ -362,7 +362,7 @@ describe("withIdempotency", () => {
       setMock.mockImplementationOnce(async () => {
         throw new Error("redis down");
       });
-      let persisted: boolean | undefined;
+      let marker: string | null | undefined;
 
       await expect(
         withIdempotency(
@@ -375,8 +375,8 @@ describe("withIdempotency", () => {
           },
           {
             isIndeterminate: () => true,
-            onIndeterminate: (ok) => {
-              persisted = ok;
+            onIndeterminate: (written) => {
+              marker = written;
             },
           },
         ),
@@ -386,7 +386,7 @@ describe("withIdempotency", () => {
       expect(stringData.get(KEY)).toBe(
         `processing:test-instance#${incarnationId}`,
       );
-      expect(persisted).toBe(false);
+      expect(marker).toBeNull();
     });
 
     // Same rule on the way out: you may only delete what you hold. A DEL from a
@@ -405,6 +405,71 @@ describe("withIdempotency", () => {
 
       expect(result).toEqual({ status: "failed" });
       expect(JSON.parse(stringData.get(KEY) ?? "{}")).toEqual({ ok: true });
+    });
+
+    // The retraction proves the marker is still its own before deleting it. A
+    // prefix check cannot: an attempt that failed open and could not write a
+    // marker at all is still handed a late "never sent" verdict, and on the
+    // prefix it would delete whatever indeterminate marker it found -- including
+    // a later attempt's, whose outcome is still unknown. The next caller then
+    // sends on top of it.
+    it("retracts only the marker its own attempt wrote", async () => {
+      let mine: string | null | undefined;
+      await expect(
+        withIdempotency(
+          KEY,
+          async () => {
+            throw new Error("timed out");
+          },
+          {
+            isIndeterminate: () => true,
+            onIndeterminate: (written) => {
+              mine = written;
+            },
+          },
+        ),
+      ).rejects.toThrow();
+      expect(mine).toStartWith("indeterminate:");
+
+      // A different attempt's marker is under the key by the time the late
+      // verdict for `mine` arrives.
+      const theirs = `${mine}-other`;
+      stringData.set(KEY, theirs);
+
+      expect(await clearIndeterminate(KEY, mine as string)).toBe(false);
+      expect(stringData.get(KEY)).toBe(theirs);
+
+      // And the attempt that does own it still retracts its own.
+      expect(await clearIndeterminate(KEY, theirs)).toBe(true);
+      expect(stringData.has(KEY)).toBe(false);
+    });
+
+    // Two attempts in one process must not write the same marker, or the
+    // comparison above compares nothing.
+    it("gives each attempt a distinguishable marker", async () => {
+      const written: (string | null)[] = [];
+      const record = async () => {
+        await expect(
+          withIdempotency(
+            KEY,
+            async () => {
+              throw new Error("timed out");
+            },
+            {
+              isIndeterminate: () => true,
+              onIndeterminate: (marker) => {
+                written.push(marker);
+              },
+            },
+          ),
+        ).rejects.toThrow();
+        stringData.clear();
+      };
+
+      await record();
+      await record();
+
+      expect(written[0]).not.toBe(written[1]);
     });
 
     // The marker has to outlive both the abandoned operation (nothing cancels it; it
