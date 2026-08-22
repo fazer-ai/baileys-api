@@ -14,6 +14,7 @@ const fetchCalls: Array<{ url: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
 
 import * as baileysModule from "@whiskeysockets/baileys";
+import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { clusterKeys } from "@/cluster/keys";
 import * as sendStallStore from "@/cluster/sendStallStore";
 import config from "@/config";
@@ -1158,6 +1159,32 @@ describe("BaileysConnection", () => {
       expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
     });
 
+    // preprocessAudio runs up to two ffmpeg jobs for a PTT. A caller retrying into
+    // a stalled connection would burn that CPU on every attempt only to be told 503
+    // at the end, which is not what "fails immediately" means.
+    it("refuses a stalled send before spending ffmpeg on it", async () => {
+      await connection.connect();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+
+      // The preload already replaces this module, so read ITS mock rather than
+      // laying a spy over it: a spy on an already-mocked module export outlives
+      // mockRestore and breaks the spec that tests the real implementation.
+      const preprocess = preprocessAudio as unknown as ReturnType<typeof mock>;
+      preprocess.mockClear();
+
+      await expect(
+        connection.sendMessage("jid@s.whatsapp.net", {
+          audio: Buffer.from("fake-audio"),
+          ptt: true,
+        }),
+      ).rejects.toThrow(BaileysSendStalledError);
+
+      expect(preprocess.mock.calls.length).toBe(0);
+    });
+
     // The failure is total: one success proves the mutex is free, so the
     // counter has to reset rather than accumulate across unrelated hiccups.
     it("resets the streak after a send succeeds", async () => {
@@ -1428,14 +1455,18 @@ describe("BaileysConnection", () => {
           .length,
       ).toBe(1);
 
-      // Past it: the connection is due for review again.
+      // Past it: the connection is due for review again. Waited for rather than
+      // timed: the breaker now rejects before any of the send-path work, so the
+      // caller's rejection arrives ahead of the episode the rejection triggered.
       setSystemTime(new Date(start + 400_000));
       await expect(send()).rejects.toThrow(BaileysSendStalledError);
-      await asyncSleep(0);
-      expect(
+      const stallWebhooks = () =>
         fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
-          .length,
-      ).toBe(2);
+          .length;
+      for (let i = 0; i < 50 && stallWebhooks() < 2; i += 1) {
+        await asyncSleep(1);
+      }
+      expect(stallWebhooks()).toBe(2);
 
       setSystemTime();
       await redis.del(clusterKeys.sendStall("+5511999999999"));
@@ -1623,11 +1654,18 @@ describe("BaileysConnection", () => {
       reject?.(new Error("upload failed"));
       await asyncSleep(0);
 
-      expect(connection.consecutiveSendTimeouts).toBe(0);
-      // The failure says the queue drained, NOT that a message went out, so the
+      // ONE slot back, not the whole queue: the rejection proves this operation
+      // left, and media upload runs BEFORE the mutex is taken, so it says nothing
+      // about whether the others are still queued behind a wedged one.
+      expect(connection.consecutiveSendTimeouts).toBe(2);
+      // The failure says an operation departed, NOT that a message went out, so the
       // health timestamp must stay untouched.
       expect(connection.lastSendCompletedAt).toBeNull();
-      expect(connection.sendState).toBe("unknown");
+      // And the freed slot is real: the next send reaches the socket instead of
+      // being refused outright.
+      mockSocket.sendMessage.mockClear();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(mockSocket.sendMessage.mock.calls.length).toBe(1);
     });
 
     // The exception that makes the rule safe: a rejection that IS the
@@ -1671,11 +1709,35 @@ describe("BaileysConnection", () => {
       await connection.connect();
       expect(connection.lastOutgoingAckAt).toBeNull();
 
+      await connection.sendMessage(
+        "jid@s.whatsapp.net",
+        { text: "hi" },
+        { messageId: "3EB0RESERVED" },
+      );
       mockEventHandlers.get("messages.update")?.([
-        { key: { fromMe: true, id: "x" }, update: { status: 2 } },
+        { key: { fromMe: true, id: "3EB0RESERVED" }, update: { status: 2 } },
       ]);
 
       expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
+    // `fromMe` is true for everything the account sends, including from the phone
+    // and from other linked devices — none of which went through this socket's
+    // keystore mutex. Counting those would let a busy account keep a wedged
+    // connection reporting `ok`, which is the exact blindness this signal exists
+    // to remove.
+    it("ignores an ack for a message this socket never sent", async () => {
+      await connection.connect();
+
+      mockEventHandlers.get("messages.update")?.([
+        {
+          key: { fromMe: true, id: "SENT_FROM_THE_PHONE" },
+          update: { status: 2 },
+        },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).toBeNull();
+      expect(connection.sendState).toBe("unknown");
     });
 
     it("ignores status updates for messages that are not ours", async () => {

@@ -91,6 +91,10 @@ const SEND_STALL_MIN_DURATION_MS = 90_000;
 // once, they recover over minutes instead of reconnecting simultaneously
 // against the same IP.
 const SEND_STALL_RESTART_COOLDOWN_MS = 30_000;
+// How many recently submitted WhatsApp ids to remember for ack matching. An ack
+// follows its send within seconds, so this is generous; the cap is what keeps a
+// long-lived busy connection from growing the set without bound.
+const SUBMITTED_ID_HISTORY = 500;
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -241,6 +245,11 @@ export class BaileysConnection {
   // trackConnectionReplaced.
   private _lastSendCompletedAt: number | null = null;
   private _lastOutgoingAckAt: number | null = null;
+  // WhatsApp ids this socket actually submitted, so an ack can be told apart from
+  // the same account's traffic on another device. Insertion-ordered and capped:
+  // an ack that matters arrives seconds after its send, so the oldest entries are
+  // dead weight, and an unbounded set on a busy connection is a leak.
+  private submittedMessageIds = new Set<string>();
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -276,6 +285,16 @@ export class BaileysConnection {
 
   private markTraffic() {
     this._lastTrafficAt = performance.now();
+  }
+
+  private trackSubmittedId(messageId: string) {
+    if (this.submittedMessageIds.size >= SUBMITTED_ID_HISTORY) {
+      const oldest = this.submittedMessageIds.values().next().value;
+      if (oldest !== undefined) {
+        this.submittedMessageIds.delete(oldest);
+      }
+    }
+    this.submittedMessageIds.add(messageId);
   }
 
   // The connection's CURRENT options, which are not the ones it was built with:
@@ -681,8 +700,17 @@ export class BaileysConnection {
     options?: { quoted?: WAMessage; messageId?: string },
   ) {
     this.safeSocket();
+    // Before the audio work below, not only inside relayWithTimeout. An open breaker
+    // means this request is already decided, and preprocessAudio runs up to two ffmpeg
+    // jobs for a PTT: a caller retrying into a stalled connection would burn that CPU
+    // on every attempt to be told 503 at the end. "Fails immediately" has to mean
+    // immediately.
+    this.assertCanSend();
     this.markTraffic();
     this.autoSubscribePresence(jid);
+    if (options?.messageId) {
+      this.trackSubmittedId(options.messageId);
+    }
 
     let waveformProxy: Buffer | null = null;
     try {
@@ -717,13 +745,35 @@ export class BaileysConnection {
     // Spread it only when set: Baileys spreads our options over its own
     // `messageId: generateMessageIDV2(user)` default, so an explicit
     // `undefined` would downgrade that default to the user-less fallback.
-    return this.relayWithTimeout("sendMessage", () =>
+    const sent = await this.relayWithTimeout("sendMessage", () =>
       this.safeSocket().sendMessage(jid, messageContent, {
         waveformProxy,
         quoted: options?.quoted,
         ...(options?.messageId ? { messageId: options.messageId } : {}),
       }),
     );
+    // Also on the way out, for the sends that let Baileys generate the id: without
+    // a reservation this response is the first time we learn it, and an ack for it
+    // still lands afterwards.
+    if (sent?.key?.id) {
+      this.trackSubmittedId(sent.key.id);
+    }
+    return sent;
+  }
+
+  // Throws when the breaker is open, and re-evaluates the episode on the way out.
+  // The re-evaluation belongs here, not only where a fresh timeout lands: once the
+  // breaker is open no send reaches the socket, so no further timeout is ever
+  // recorded. Three sends started together all expire at sendTimeoutMs with a streak
+  // near zero, which latches the breaker below the minimum duration — without this
+  // the watchdog would stay disarmed for the life of the socket, answering 503 with
+  // no webhook and no restart.
+  private assertCanSend() {
+    if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
+      return;
+    }
+    this.maybeReportSendStall();
+    throw new BaileysSendStalledError();
   }
 
   // Bounds every path that goes through the socket's sendMessage, which is what
@@ -735,16 +785,7 @@ export class BaileysConnection {
     operation: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    if (this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD) {
-      // Re-evaluate here, not only when a fresh timeout lands: once the breaker
-      // is open no send reaches the socket, so no further timeout is ever
-      // recorded. Three sends started together all expire at sendTimeoutMs with
-      // a streak near zero, which latches the breaker below the minimum
-      // duration — without this the watchdog would stay disarmed for the life
-      // of the socket, answering 503 with no webhook and no restart.
-      this.maybeReportSendStall();
-      throw new BaileysSendStalledError();
-    }
+    this.assertCanSend();
     // Captured BEFORE the send starts, and carried into every callback below.
     // A reconnect mid-send replaces the socket while these deadlines keep
     // running against a keystore that no longer exists: unstamped, three of
@@ -840,7 +881,20 @@ export class BaileysConnection {
       this.recordSendSuccess(generation);
       return;
     }
-    this.clearSendStallState();
+    // ONE slot, not the whole streak. A rejection proves this operation left the
+    // queue; it does not prove the mutex is free, because media generation and
+    // upload run BEFORE the transaction is taken — a failing upload can depart
+    // while other sends are still queued behind a wedged mutex. Clearing
+    // everything here would readmit a full batch into that queue and give up the
+    // bound the breaker exists to hold. A late SUCCESS is different, and that is
+    // why it clears: it proves the transaction was both acquired and released.
+    this._consecutiveSendTimeouts = Math.max(
+      0,
+      this._consecutiveSendTimeouts - 1,
+    );
+    if (this._consecutiveSendTimeouts === 0) {
+      this.clearSendStallState();
+    }
   }
 
   private recordSendTimeout(operation: string, generation: number) {
@@ -1632,10 +1686,20 @@ export class BaileysConnection {
   // before the send and on inbound traffic, so it stays fresh while sending is
   // dead — it cannot serve as this signal. A resolved socket.sendMessage proves
   // the keystore mutex was free, not that the server took the message.
+  //
+  // "Ours" means submitted through THIS socket, which `fromMe` does not say: the
+  // same account sending from the phone or another companion device produces
+  // `fromMe` keys too, and none of those went through this connection's keystore
+  // mutex. Accepting them would let a busy account keep a wedged connection
+  // reporting `ok` — the store's own phone answering customers by hand is exactly
+  // the situation this signal is supposed to see through.
   private trackOutgoingAck(data: BaileysEventMap["messages.update"]) {
     const acked = data.some(
       ({ key, update }) =>
         key?.fromMe === true &&
+        key.id !== undefined &&
+        key.id !== null &&
+        this.submittedMessageIds.has(key.id) &&
         update?.status !== undefined &&
         update.status !== null &&
         update.status >= WAMessageStatus.SERVER_ACK,
