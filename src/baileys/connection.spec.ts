@@ -1381,11 +1381,22 @@ describe("BaileysConnection", () => {
     it("bounds the audio preprocessing that precedes the send deadline", async () => {
       await connectOpen();
       config.baileys.audioPreprocessTimeoutMs = 10;
-      // mockImplementationOnce, twice (a PTT runs two jobs), so nothing leaks into
-      // the spec that exercises the real preprocessAudio.
+      // Honours the signal, like the real implementation: what this layer owes is
+      // a deadline the worker can act on, and a stub that ignores it would pass
+      // whether or not one was ever passed. mockImplementationOnce, twice (a PTT
+      // runs two jobs), so nothing leaks into the spec that exercises the real
+      // preprocessAudio.
+      const parked = (
+        _audio: unknown,
+        _format: unknown,
+        signal?: AbortSignal,
+      ) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
       const preprocess = preprocessAudio as unknown as ReturnType<typeof mock>;
-      preprocess.mockImplementationOnce(() => new Promise(() => {}));
-      preprocess.mockImplementationOnce(() => new Promise(() => {}));
+      preprocess.mockImplementationOnce(parked);
+      preprocess.mockImplementationOnce(parked);
 
       // Raced rather than awaited: without the deadline this send never settles,
       // and a hung example is a worse CI failure than a failed assertion.
@@ -1605,6 +1616,43 @@ describe("BaileysConnection", () => {
           (await redis.get(clusterKeys.sendStall("+5511999999999"))) ?? "{}",
         ).restarts,
       ).toBe(1);
+      setSystemTime();
+      await redis.del(clusterKeys.sendStall("+5511999999999"));
+    });
+
+    // The backoff key is per phone number and outlives the session by up to 24h,
+    // so a strike written while this session is being torn down is inherited by
+    // whatever is paired on that number next -- its watchdog suppressed on the
+    // strength of a socket that no longer exists. The coordinator DELs the key in
+    // logout's finally, and the store is a plain read-modify-write, so a write
+    // that straddles the DEL simply recreates it.
+    it("does not leave a stall strike behind for a session being discarded", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: () => {
+          restarts.push("asked");
+          // Stands in for logout landing while the strike is being written:
+          // logout() sets this before its first await.
+          (connection as unknown as { isDiscarded: boolean }).isDiscarded =
+            true;
+        },
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+      const start = Date.now();
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await asyncSleep(0);
+
+      expect(restarts.length).toBe(1);
+      expect(await redis.get(clusterKeys.sendStall("+5511999999999"))).toBe(
+        null,
+      );
       setSystemTime();
       await redis.del(clusterKeys.sendStall("+5511999999999"));
     });

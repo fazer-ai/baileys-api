@@ -7,6 +7,13 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+export class AudioPreprocessAbortedError extends Error {
+  constructor() {
+    super("audio preprocessing aborted");
+    this.name = "AudioPreprocessAbortedError";
+  }
+}
+
 const POOL_SIZE =
   typeof navigator !== "undefined" && navigator.hardwareConcurrency
     ? navigator.hardwareConcurrency
@@ -62,10 +69,26 @@ function getWorkerPool(): Worker[] {
   return workers;
 }
 
+// `signal` is how a caller that has stopped waiting says so. Without it a
+// abandoned conversion leaves its entry in pendingRequests and its promise
+// pending for as long as the worker takes -- forever if the job is wedged, which
+// is exactly the case a deadline exists for.
+//
+// It deliberately does NOT terminate the worker. The pool is fixed-size and
+// round-robin, so several conversions share one worker: killing it to reclaim a
+// slot would take healthy jobs down with it. Nothing accumulates either way --
+// no process per request, and the reply handler already drops an entry it no
+// longer recognises. What remains is that a genuinely wedged ffmpeg costs a pool
+// slot, which is a property of the pool, not of this deadline.
 export async function preprocessAudio(
   audio: Buffer,
   format: AudioFormat,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
+  if (signal?.aborted) {
+    throw new AudioPreprocessAbortedError();
+  }
+
   const pool = getWorkerPool();
   const worker = pool[nextWorkerIndex % pool.length];
   nextWorkerIndex++;
@@ -74,7 +97,23 @@ export async function preprocessAudio(
   const arrayBuffer = new Uint8Array(audio).buffer as ArrayBuffer;
 
   return new Promise<Buffer>((resolve, reject) => {
-    pendingRequests.set(id, { resolve, reject });
+    const onAbort = () => {
+      // Only if it is still ours: a reply that arrived first already removed it.
+      if (pendingRequests.delete(id)) {
+        reject(new AudioPreprocessAbortedError());
+      }
+    };
+    const settle = <T>(finish: (value: T) => void) => {
+      return (value: T) => {
+        signal?.removeEventListener("abort", onAbort);
+        finish(value);
+      };
+    };
+    pendingRequests.set(id, {
+      resolve: settle(resolve),
+      reject: settle(reject),
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
     worker.postMessage({ id, audio: arrayBuffer, format }, [arrayBuffer]);
   });
 }

@@ -49,6 +49,7 @@ import {
 } from "@/cluster/quarantineStore";
 import {
   canRestart as canRestartAfterStall,
+  clearSendStall,
   nextRestartAllowedAt,
   recordRestart as recordStallRestart,
 } from "@/cluster/sendStallStore";
@@ -820,21 +821,26 @@ export class BaileysConnection {
         // sendTimeoutMs < PROXY_REQUEST_TIMEOUT_MS exists to give: the proxy would
         // cut first and answer its own generic 504, and the worker would never
         // reach the code that releases the idempotency lock or counts the stall.
-        // On expiry the catch below sends the original buffer, which is exactly
-        // what already happens when ffmpeg is missing.
-        [messageContent.audio, waveformProxy] = await withTimeout(
-          "preprocessAudio",
+        //
+        // Expressed as a signal rather than a race, because a race only stops us
+        // waiting: the abandoned conversion would keep its slot in the worker
+        // pool's pending map with a promise nobody can ever settle. On expiry the
+        // catch below sends the original buffer, which is exactly what already
+        // happens when ffmpeg is missing.
+        const preprocessDeadline = AbortSignal.timeout(
           config.baileys.audioPreprocessTimeoutMs,
-          () =>
-            Promise.all([
-              preprocessAudio(
-                originalAudio,
-                // NOTE: Use lower quality for ptt messages for more realistic quality.
-                messageContent.ptt ? "ogg-low" : "mp3-high",
-              ),
-              messageContent.ptt ? preprocessAudio(originalAudio, "wav") : null,
-            ]),
         );
+        [messageContent.audio, waveformProxy] = await Promise.all([
+          preprocessAudio(
+            originalAudio,
+            // NOTE: Use lower quality for ptt messages for more realistic quality.
+            messageContent.ptt ? "ogg-low" : "mp3-high",
+            preprocessDeadline,
+          ),
+          messageContent.ptt
+            ? preprocessAudio(originalAudio, "wav", preprocessDeadline)
+            : null,
+        ]);
         messageContent.mimetype = messageContent.ptt
           ? "audio/ogg; codecs=opus"
           : "audio/mpeg";
@@ -1253,8 +1259,23 @@ export class BaileysConnection {
     // while Redis answered still counted: the backoff store then suppressed the
     // next genuine stall for five minutes and handed it an inflated interval, on
     // the strength of a restart that never happened.
+    // Not while this connection is being torn down. logout() sets isDiscarded
+    // before its first await, and the coordinator DELs the send-stall backoff in
+    // its finally; the store is a plain read-modify-write, so a strike written
+    // across that DEL recreates the state it just removed. The NEXT session
+    // paired on this number then inherits an escalating restart suppression --
+    // up to 24h of it -- on the strength of a socket that no longer exists.
+    if (this.isDiscarded) {
+      return;
+    }
     try {
       await recordStallRestart(this.phoneNumber);
+      // Re-read after the write, because the DEL can land during it and the
+      // check above cannot see that. Undoing is the only way back: nothing in
+      // the store fences a write against a session that has already ended.
+      if (this.isDiscarded) {
+        await clearSendStall(this.phoneNumber);
+      }
     } catch (error) {
       logger.error(
         "[%s] [sendStall] failed to record restart: %s",
