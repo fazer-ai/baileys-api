@@ -2390,12 +2390,19 @@ export class BaileysConnection {
   // reporting `ok` — the store's own phone answering customers by hand is exactly
   // the situation this signal is supposed to see through.
   private trackOutgoingAck(data: BaileysEventMap["messages.update"]) {
+    // Evidence first, ownership second, and the order is load-bearing:
+    // isOurSubmittedKey has a side effect. It parks an id it does not recognise
+    // so a send that had not yet learned its generated id can claim it
+    // retroactively -- and that claim is read as an acknowledgement. Running it
+    // ahead of the status check parks ids from updates that are not
+    // acknowledgements at all (an ERROR status, or an edit carrying none), and
+    // /health then reports end-to-end delivery for a message WhatsApp rejected.
     const acked = data.some(
       ({ key, update }) =>
-        this.isOurSubmittedKey(key) &&
         update?.status !== undefined &&
         update.status !== null &&
-        update.status >= WAMessageStatus.SERVER_ACK,
+        update.status >= WAMessageStatus.SERVER_ACK &&
+        this.isOurSubmittedKey(key),
     );
     if (acked) {
       this._lastOutgoingAckAt = Date.now();
@@ -2410,12 +2417,15 @@ export class BaileysConnection {
   private trackOutgoingReceiptAck(
     data: BaileysEventMap["message-receipt.update"],
   ) {
+    // Same ordering as trackOutgoingAck, and for the same reason: a receipt with
+    // no timestamp on it is not an acknowledgement, and must not park an id that
+    // a later send would then claim as one.
     const acked = data.some(
       ({ key, receipt }) =>
-        this.isOurSubmittedKey(key) &&
         (receipt?.receiptTimestamp != null ||
           receipt?.readTimestamp != null ||
-          receipt?.playedTimestamp != null),
+          receipt?.playedTimestamp != null) &&
+        this.isOurSubmittedKey(key),
     );
     if (acked) {
       this._lastOutgoingAckAt = Date.now();

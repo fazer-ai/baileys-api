@@ -14,6 +14,7 @@ const fetchCalls: Array<{ url: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
 
 import * as baileysModule from "@whiskeysockets/baileys";
+import { WAMessageStatus } from "@whiskeysockets/baileys";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { clusterKeys } from "@/cluster/keys";
 import * as sendStallStore from "@/cluster/sendStallStore";
@@ -3174,6 +3175,73 @@ describe("BaileysConnection", () => {
 
       expect(connection.lastOutgoingAckAt).not.toBeNull();
       config.baileys.sendTimeoutMs = 45_000;
+    });
+
+    // The retroactive claim above is the whole reason isOurSubmittedKey has a side
+    // effect, and it is why the status has to be read BEFORE it. An update that
+    // is not an acknowledgement -- an ERROR status, or an edit carrying none --
+    // would otherwise park its id, and the send that follows would claim it as
+    // end-to-end proof. /health would then report delivery for a message
+    // WhatsApp rejected, which is worse than reporting nothing.
+    it("does not claim a failed update as an acknowledgement", async () => {
+      await connectOpen();
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      mockSocket.sendMessage.mockImplementationOnce(async () => {
+        // WhatsApp answers while the send is still resolving -- but with a
+        // rejection, and then with an update carrying no status at all.
+        mockEventHandlers.get("messages.update")?.([
+          {
+            key: { fromMe: true, id: "GENERATED-FAILED" },
+            update: { status: WAMessageStatus.ERROR },
+          },
+        ]);
+        mockEventHandlers.get("messages.update")?.([
+          { key: { fromMe: true, id: "GENERATED-FAILED" }, update: {} },
+        ]);
+        return { key: { id: "GENERATED-FAILED" } };
+      });
+
+      await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
+
+      // The send itself resolved, so sendState is legitimately `ok` -- that only
+      // says the keystore mutex was free. lastOutgoingAckAt is the end-to-end
+      // half, and nothing here earned it.
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      // A real acknowledgement for the same message still lands, so this is not
+      // passing by refusing everything.
+      mockEventHandlers.get("messages.update")?.([
+        {
+          key: { fromMe: true, id: "GENERATED-FAILED" },
+          update: { status: WAMessageStatus.SERVER_ACK },
+        },
+      ]);
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
+    // A receipt with no timestamp on it is not an acknowledgement either.
+    it("does not claim an empty receipt as an acknowledgement", async () => {
+      await connectOpen();
+
+      mockSocket.sendMessage.mockImplementationOnce(async () => {
+        mockEventHandlers.get("message-receipt.update")?.([
+          { key: { fromMe: true, id: "GENERATED-GROUP" }, receipt: {} },
+        ]);
+        return { key: { id: "GENERATED-GROUP" } };
+      });
+
+      await connection.sendMessage("group@g.us", { text: "hi" });
+
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      mockEventHandlers.get("message-receipt.update")?.([
+        {
+          key: { fromMe: true, id: "GENERATED-GROUP" },
+          receipt: { receiptTimestamp: 1 },
+        },
+      ]);
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
     });
 
     // Without a reserved id we only learn the generated one when
