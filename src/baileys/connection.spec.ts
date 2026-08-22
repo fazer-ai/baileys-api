@@ -1960,6 +1960,75 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // The coordinator clears this key in logoutWithLease, but that is one of
+    // several destructive paths: admin logoutAll, the wrong-number
+    // requestLogout and a remote `loggedOut` close all go through close()
+    // instead. The key is per phone number and lives 24h, so whatever is paired
+    // on that number next inherits a suppression it never earned.
+    it("clears the stall backoff when the session is torn down", async () => {
+      const key = clusterKeys.sendStall("+5511999999999");
+      await redis.set(
+        key,
+        JSON.stringify({ restarts: 3, nextRestartAllowedAt: Date.now() + 1e6 }),
+      );
+
+      await connectOpen();
+      // Through a real destructive path rather than the private close() it
+      // funnels into, so the example still means something if that plumbing
+      // changes.
+      await connection.logout();
+
+      expect(await redis.get(key)).toBe(null);
+    });
+
+    // Discarded and recovered undo differently. A torn-down session's logout
+    // DELETES this key, so restoring the previous episode's value resurrects a
+    // backoff for a session that no longer exists and hands it to the next
+    // pairing on this number.
+    it("does not resurrect an old backoff when the session is discarded", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const key = clusterKeys.sendStall("+5511999999999");
+      // An earlier genuine episode, which is what makes `previous` non-null.
+      await redis.set(
+        key,
+        JSON.stringify({ restarts: 1, nextRestartAllowedAt: Date.now() - 1 }),
+      );
+
+      await connectOpen();
+      wedge();
+
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      setMock.mockImplementationOnce(async (k: string, v: string) => {
+        // Logout landing inside the write: it sets isDiscarded before its first
+        // await, and the coordinator DELs this key in its finally.
+        (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
+        (
+          redis as unknown as { __stringData: Map<string, string> }
+        ).__stringData.set(k, v);
+        return "OK";
+      });
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(await redis.get(key)).toBe(null);
+        expect(restarts.length).toBe(0);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // Without this, the breaker stays open across an in-place reconnect (the
     // connection object survives a socket drop) and the connection answers 503
     // forever — worse than the original stall, which at least cleared itself

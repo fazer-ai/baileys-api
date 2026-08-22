@@ -749,6 +749,19 @@ export class BaileysConnection {
     }
     await this.clearAuthState?.();
     this.clearAuthState = null;
+    // Here, not only in the coordinator's logout: this is where the session
+    // stops existing, and every destructive path goes through it -- admin
+    // logoutAll, the wrong-number requestLogout, a remote `loggedOut` close.
+    // The backoff key is per phone number and lives 24h, so without this the
+    // next pairing on that number inherits the discarded session's restart
+    // suppression and its watchdog is disarmed for a stall it never caused.
+    await clearSendStall(this.phoneNumber).catch((error) => {
+      logger.warn(
+        "[%s] [close] failed to clear send-stall backoff: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    });
     this.socket = null;
     this.reconnectCount = 0;
     this.connectionReplacedTimestamps = [];
@@ -1335,7 +1348,18 @@ export class BaileysConnection {
         // veto the restart -- and a strike that outlives the restart it stands
         // for suppresses the NEXT genuine stall for five minutes on the strength
         // of a recovery.
-        if (this.isDiscarded || !this.restartRequested) {
+        // Two ways to be obsolete, and they undo differently. Discarded means
+        // the session is being torn down and its logout has (or will) DELETE
+        // this key: restoring the previous episode's value here would resurrect
+        // a backoff for a session that no longer exists, and hand it to whatever
+        // is paired on this number next. Recovered means the connection is still
+        // ours and healed itself, so only THIS episode's increment is wrong.
+        if (this.isDiscarded) {
+          this.stallStrikeRollback = undefined;
+          await clearSendStall(this.phoneNumber).catch(() => {});
+          return;
+        }
+        if (!this.restartRequested) {
           await this.rollBackStallStrike();
           return;
         }
