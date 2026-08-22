@@ -1596,6 +1596,27 @@ describe("BaileysConnection", () => {
       expect(mockSocket.sendMessage).toHaveBeenCalled();
     });
 
+    // The breaker only opens after three COMPLETED timeouts, a whole send
+    // deadline away. Everything arriving inside that first window passes an empty
+    // counter and parks behind the wedged mutex, and those operations are not
+    // cancellable: if the mutex frees while the socket is alive they all fire at
+    // once, hours late, at a real customer whose caller long since retried. The
+    // queue depth was "however many sends arrived in 45 seconds", not three.
+    it("caps how many sends can queue behind a wedged mutex", async () => {
+      await connectOpen();
+      wedge();
+      mockSocket.sendMessage.mockClear();
+
+      // None of these settle, so none of them are counted yet -- which is the
+      // whole point: the breaker cannot see them.
+      const pending = Array.from({ length: 12 }, () =>
+        send().catch(() => "rejected"),
+      );
+      await Promise.all(pending);
+
+      expect(mockSocket.sendMessage.mock.calls.length).toBeLessThanOrEqual(8);
+    });
+
     // preprocessAudio runs up to two ffmpeg jobs for a PTT. A caller retrying into
     // a stalled connection would burn that CPU on every attempt only to be told 503
     // at the end, which is not what "fails immediately" means.

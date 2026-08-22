@@ -35,6 +35,12 @@ export interface BaileysConnectionOptions {
   // requestLogout: the restart has to participate in the handler's inFlightOps
   // lock rather than bypass it. See the send-stall watchdog in connection.ts.
   requestRestart?: (reason: string) => void;
+  // Invoked when this connection gives up rebuilding its own socket and aborts.
+  // The handler has evicted it by then, but the LEASE is the coordinator's: the
+  // claim scan skips any phone that already has one, so without this the number
+  // stays dark until the TTL and the unclaimed grace expire while requests route
+  // here and 404.
+  onUnrecoverable?: () => void;
 }
 
 export interface BaileysConnectionWebhookPayload {

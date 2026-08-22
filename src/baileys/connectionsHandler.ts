@@ -248,6 +248,12 @@ export class BaileysConnectionsHandler {
             );
           });
         },
+        onUnrecoverable: () => {
+          void this.onSpawnFailed?.(
+            phoneNumber,
+            connection.currentOptions.leaseEpoch ?? null,
+          );
+        },
         requestRestart: (reason: string) => {
           // NOTE: Do NOT wrap this in withInFlightOp. spawnConnection takes the
           // same per-number slot, and its `while (this.inFlightOps[phone])`

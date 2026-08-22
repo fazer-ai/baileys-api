@@ -1295,6 +1295,27 @@ describe("BaileysConnectionsHandler", () => {
       expect(withdrawals).toEqual(["withdrawn"]);
     });
 
+    // A background reconnect that gives up aborts, which evicts it from the
+    // handler -- but the lease is the coordinator's, and the claim scan skips any
+    // phone that still has one. Without this the number stays dark until the TTL
+    // and the unclaimed grace expire, with requests routing here and 404ing.
+    it("reports a background reconnect that gave up rebuilding", async () => {
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 4,
+      });
+      const connection = mockConnectionInstances.get("+5511999999999");
+      const failures: Array<[string, number | null]> = [];
+      handler.onSpawnFailed = (phone: string, epoch: number | null) => {
+        failures.push([phone, epoch]);
+      };
+
+      connection.options.onUnrecoverable();
+
+      expect(failures).toEqual([["+5511999999999", 4]]);
+      handler.onSpawnFailed = null;
+    });
+
     // Regression guard for a deadlock that is silent when it happens: the
     // obvious implementation wraps this in withInFlightOp, and spawnConnection
     // takes the SAME per-number slot, so it would wait forever on a slot the

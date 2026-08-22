@@ -92,6 +92,21 @@ const REACHOUT_TIMELOCK_REFETCH_WINDOW_MS = 60_000;
 // sends started together all expire at sendTimeoutMs, which would otherwise let
 // one 45s hiccup with three sends in flight recreate a healthy socket.
 const SEND_STALL_THRESHOLD = 3;
+// Hard ceiling on sends in flight at once, and it is a queue bound rather than a
+// stall detector. The breaker only opens after three COMPLETED timeouts, which
+// is one whole BAILEYS_SEND_TIMEOUT_MS away: everything arriving inside that
+// first window passes an empty counter and parks behind the wedged mutex. Those
+// operations are not cancellable -- withTimeout stops us waiting, nothing stops
+// them running -- so if the mutex frees while the socket is still alive they all
+// fire at once, hours late, at a real customer, while their callers have long
+// since timed out and retried. That burst is the failure this whole file is
+// shaped around, and until this cap its size was "however many sends arrived in
+// 45 seconds", not three.
+//
+// Generous on purpose: the keystore transaction serialises the relay anyway, so
+// concurrency past a handful buys only parallel media uploads, and a healthy
+// connection to one WhatsApp account rarely has eight sends in the air.
+const MAX_IN_FLIGHT_SENDS = 8;
 const SEND_STALL_MIN_DURATION_MS = 90_000;
 // Spreads restarts across a fleet-wide event: with several inboxes stalled at
 // once, they recover over minutes instead of reconnecting simultaneously
@@ -189,6 +204,7 @@ export class BaileysConnection {
   private onConnectionClose: (() => void) | null;
   private requestLogout: (() => void) | null;
   private requestRestart: ((reason: string) => void) | null;
+  private onUnrecoverable: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
@@ -239,6 +255,9 @@ export class BaileysConnection {
   // is the only proof the mutex freed itself that arrives while the breaker is
   // open and nothing can reach the socket.
   private wedgedTxKey: string | null = null;
+  // Sends admitted to the current socket and not yet settled. Reset with the
+  // socket, because a parked send never settles and its decrement never comes.
+  private inFlightSends = 0;
   // The backoff state as it was before this episode's strike, so a restart
   // cancelled after the fact can undo exactly its own increment.
   private stallStrikeRollback: SendStallState | null | undefined;
@@ -281,6 +300,7 @@ export class BaileysConnection {
     this.onConnectionClose = options.onConnectionClose || null;
     this.requestLogout = options.requestLogout ?? null;
     this.requestRestart = options.requestRestart ?? null;
+    this.onUnrecoverable = options.onUnrecoverable ?? null;
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
@@ -636,6 +656,7 @@ export class BaileysConnection {
       // lastOutgoingAckAt now, presenting end-to-end evidence about a
       // replacement that may itself be wedged and has sent nothing.
       this.submittedMessageIds.clear();
+      this.inFlightSends = 0;
       // Both belong to the keystore that just went away.
       this.txTimeoutAt.clear();
       this.txReleasedAt.clear();
@@ -939,6 +960,18 @@ export class BaileysConnection {
   // the watchdog would stay disarmed for the life of the socket, answering 503 with
   // no webhook and no restart.
   private assertCanSend() {
+    if (this.inFlightSends >= MAX_IN_FLIGHT_SENDS) {
+      logger.warn(
+        "[%s] [sendStall] refusing send: %d already in flight",
+        this.phoneNumber,
+        this.inFlightSends,
+      );
+      // The same answer as an open breaker, and for the same reason: the
+      // connection is not accepting sends right now and must NOT be marked down.
+      // Deliberately without maybeReportSendStall -- a full queue is backpressure,
+      // not evidence of a wedge, and it must not spend a restart.
+      throw new BaileysSendStalledError();
+    }
     if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
       return;
     }
@@ -971,6 +1004,7 @@ export class BaileysConnection {
     // them expiring after the swap would open the breaker on a healthy
     // replacement that had not refused a single send.
     const generation = this.socketGeneration;
+    this.inFlightSends += 1;
     try {
       const result = await withTimeout(
         operation,
@@ -1003,6 +1037,13 @@ export class BaileysConnection {
         this.recordSendTimeout(operation, generation, "mutex-wedge");
       }
       throw error;
+    } finally {
+      // Only for the socket that admitted it. A parked send never settles, so a
+      // replacement inheriting those decrements would drift its own count
+      // downwards; the counter is reset with the socket instead.
+      if (this.isCurrentGeneration(generation)) {
+        this.inFlightSends -= 1;
+      }
     }
   }
 
@@ -1739,6 +1780,10 @@ export class BaileysConnection {
       if (!this.isDiscarded) {
         this.abort();
       }
+      // abort() gets us out of the handler's registry, but the lease is the
+      // coordinator's and the claim scan skips any phone that still has one.
+      // Same route a failed restart spawn takes, for the same reason.
+      this.onUnrecoverable?.();
     });
   }
 
