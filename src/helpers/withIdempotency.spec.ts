@@ -5,6 +5,10 @@ import redis from "@/lib/redis";
 import { withIdempotency } from "./withIdempotency";
 
 const stringData = (redis as any).__stringData as Map<string, string>;
+const expirations = (redis as any).__expirations as Map<
+  string,
+  { type: string; value: number }
+>;
 
 // instanceId resolves to "test-instance" via the mocked config in preload.ts.
 const SELF = "test-instance";
@@ -310,6 +314,28 @@ describe("withIdempotency", () => {
       ).rejects.toBe(error);
 
       expect(stringData.get(KEY)).toStartWith("indeterminate:");
+    });
+
+    // The marker has to outlive both the abandoned operation (nothing cancels it; it
+    // sits in the keystore mutex until that socket dies) and the person reconciling
+    // it. On the cached-result TTL, a send that landed 11 minutes late would find its
+    // marker gone and let a retry duplicate the message — the exact outcome the
+    // marker exists to prevent.
+    it("keeps the indeterminate marker far longer than a cached result", async () => {
+      await expect(
+        withIdempotency(
+          KEY,
+          async () => {
+            throw new Error("timed out");
+          },
+          { isIndeterminate: () => true },
+        ),
+      ).rejects.toThrow();
+
+      expect(expirations.get(KEY)).toEqual({ type: "EX", value: 86_400 });
+
+      await withIdempotency("other-key", async () => ({ ok: true }));
+      expect(expirations.get("other-key")).toEqual({ type: "EX", value: 600 });
     });
 
     it("still releases the key when the failure is conclusive", async () => {

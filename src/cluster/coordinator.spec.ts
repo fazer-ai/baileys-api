@@ -895,7 +895,12 @@ describe("ClusterCoordinator", () => {
       );
     });
 
-    it("reports false when there is no stored session", async () => {
+    // The lease is taken BEFORE the session is inspected, and given back when there
+    // turns out to be nothing to restart. Reading first would let a restart racing a
+    // logout or an options update rebuild from state the previous owner was still
+    // entitled to change; holding the lease afterwards would route 421s here until
+    // the TTL expires, for a phone this instance just declined to serve.
+    it("reports false when there is no stored session, releasing the lease it took", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
       getRedisAuthMetadata.mockResolvedValue(null);
@@ -903,7 +908,8 @@ describe("ClusterCoordinator", () => {
       const restarted = await coordinator.restartWithLease("+5511999");
 
       expect(restarted).toBe(false);
-      expect(forceAcquireLease).not.toHaveBeenCalled();
+      expect(forceAcquireLease).toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
       expect(handler.connect).not.toHaveBeenCalled();
     });
 
@@ -920,8 +926,27 @@ describe("ClusterCoordinator", () => {
       const restarted = await coordinator.restartWithLease("+5511999");
 
       expect(restarted).toBe(false);
-      expect(forceAcquireLease).not.toHaveBeenCalled();
+      expect(forceAcquireLease).toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
       expect(handler.connect).not.toHaveBeenCalled();
+    });
+
+    // The ordering, not just the outcome: until the lease moves, the previous owner
+    // may still rewrite the metadata (an options update) or delete the auth state (a
+    // logout). Reading first means a restart racing either one rebuilds from
+    // configuration that has since been superseded.
+    it("takes the lease before reading the stored session", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      let leaseHeldAtRead = false;
+      getRedisAuthMetadata.mockImplementation((async () => {
+        leaseHeldAtRead = forceAcquireLease.mock.calls.length > 0;
+        return storedMetadata;
+      }) as typeof redisAuthState.getRedisAuthMetadata);
+
+      await coordinator.restartWithLease("+5511999");
+
+      expect(leaseHeldAtRead).toBe(true);
     });
 
     it("clears quarantine — an operator asking for the phone wins now", async () => {

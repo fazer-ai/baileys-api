@@ -1714,10 +1714,10 @@
             "description": "Message not sent"
           },
           "503": {
-            "description": "Connection is not accepting sends (send stall detected)"
+            "description": "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
           },
           "504": {
-            "description": "Send timed out; outcome unknown"
+            "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
           }
         },
         "requestBody": {
@@ -3602,10 +3602,10 @@
             }
           },
           "503": {
-            "description": "Connection is not accepting sends (send stall detected)"
+            "description": "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
           },
           "504": {
-            "description": "Send timed out; outcome unknown"
+            "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
           }
         },
         "description": "Deletes a message for everyone in the chat. For group messages not sent by you, this requires admin privileges.",
@@ -3823,10 +3823,10 @@
             "description": "Message not edited"
           },
           "503": {
-            "description": "Connection is not accepting sends (send stall detected)"
+            "description": "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
           },
           "504": {
-            "description": "Send timed out; outcome unknown"
+            "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
           }
         },
         "description": "Edits a previously sent message. Only text messages (including captions) can be edited. The message must have been sent by you and must be within the editable time window (approximately 15 minutes).",

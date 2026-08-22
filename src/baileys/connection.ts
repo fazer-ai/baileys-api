@@ -933,6 +933,15 @@ export class BaileysConnection {
           this.phoneNumber,
           errorToString(error),
         );
+        // Re-arm. maybeReportSendStall raised the silence to Infinity before
+        // launching this, on the assumption that it would come back with a
+        // verdict; a Redis blip is not a verdict, and leaving it there means no
+        // later send can ever re-evaluate — the breaker rejects them all
+        // without touching the socket, so this connection would stay muted for
+        // the life of the socket with the restart it needed never requested.
+        // A cooldown rather than 0, so a Redis outage cannot turn every
+        // rejected send into its own webhook.
+        this.sendStallSilentUntil = Date.now() + SEND_STALL_RESTART_COOLDOWN_MS;
       }
     }
 

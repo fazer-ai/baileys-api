@@ -692,10 +692,17 @@ export class ClusterCoordinator {
     try {
       return await work();
     } catch (error) {
-      await this.releaseHeldLease(phoneNumber).catch(() => {});
-      void registry.publishOwnershipChanged(phoneNumber);
+      await this.abandonExplicitLease(phoneNumber);
       throw error;
     }
+  }
+
+  // Gives back a lease we acquired but are not going to use. Same reasoning as the
+  // catch above: an explicit lease with no socket behind it routes 421s here until
+  // the TTL expires, so every path that acquires one and then bails has to unwind it.
+  private async abandonExplicitLease(phoneNumber: string) {
+    await this.releaseHeldLease(phoneNumber).catch(() => {});
+    void registry.publishOwnershipChanged(phoneNumber);
   }
 
   // Explicit intent overrides quarantine: the operator asked for this phone
@@ -787,20 +794,33 @@ export class ClusterCoordinator {
   //
   // Returns false when there is no stored session — nothing to restart.
   async restartWithLease(phoneNumber: string, reason?: string) {
-    const metadata = await getRedisAuthMetadata<StoredMetadata>(phoneNumber);
-    if (!metadata?.webhookUrl) {
-      return false;
-    }
-    // Metadata alone is not a session: useRedisAuthState writes it when the
-    // socket starts, so a QR flow that nobody ever scanned satisfies the check
-    // above. Restarting that would hand back 202 and spawn another unpaired QR
-    // socket, which is the opposite of what this route promises. Same rule the
-    // claim loop applies: a phone that never finished pairing has no session to
-    // resume, and only an explicit POST /connections can move it forward.
-    if (!(await isRedisAuthStatePaired(phoneNumber))) {
-      return false;
-    }
+    // Fence BEFORE reading. Both checks below describe the stored session, and until
+    // the lease moves the previous owner is still entitled to rewrite it: an options
+    // update replaces the webhook metadata, a logout deletes the auth state. Reading
+    // first means a restart racing either one rebuilds the socket from configuration
+    // that has since been superseded, or answers 202 and spawns a fresh QR socket for
+    // a session the user just removed.
     const acquired = await this.acquireExplicitLease(phoneNumber);
+    let metadata: StoredMetadata | null;
+    try {
+      metadata = await getRedisAuthMetadata<StoredMetadata>(phoneNumber);
+      // Metadata alone is not a session: useRedisAuthState writes it when the
+      // socket starts, so a QR flow that nobody ever scanned satisfies the first
+      // check. Restarting that would hand back 202 and spawn another unpaired QR
+      // socket, which is the opposite of what this route promises. Same rule the
+      // claim loop applies: a phone that never finished pairing has no session to
+      // resume, and only an explicit POST /connections can move it forward.
+      if (
+        !metadata?.webhookUrl ||
+        !(await isRedisAuthStatePaired(phoneNumber))
+      ) {
+        await this.abandonExplicitLease(phoneNumber);
+        return false;
+      }
+    } catch (error) {
+      await this.abandonExplicitLease(phoneNumber);
+      throw error;
+    }
     await this.clearQuarantineForExplicitIntent(phoneNumber);
     logger.warn(
       "[coordinator] restarting socket for %s (reason=%s)",

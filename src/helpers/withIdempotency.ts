@@ -5,6 +5,14 @@ import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 
 const IDEMPOTENCY_TTL = 600;
+// An unknown outcome outlives a cached result by design, and by a lot. The 600s above
+// bounds a convenience: how long a repeated request gets the same answer for free. This
+// one bounds a safety record, and it has to outlive both the abandoned operation (which
+// nothing cancels — it sits in the socket's keystore mutex until that socket dies) and
+// the human who has to reconcile it. At 600s a send that finally landed 11 minutes late
+// would find its marker gone and let a retry duplicate the message, which is the one
+// outcome the marker exists to prevent.
+const INDETERMINATE_TTL = 86_400;
 const PROCESSING_PREFIX = "processing:";
 // Marks work that threw in a way that leaves the outcome unknowable — a send
 // that timed out is still parked inside the socket's keystore mutex and may
@@ -261,7 +269,7 @@ async function markIndeterminate(key: string): Promise<void> {
     await redis.set(
       key,
       `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
-      { EX: IDEMPOTENCY_TTL },
+      { EX: INDETERMINATE_TTL },
     );
   } catch (error) {
     // Leave the `processing:` marker in place rather than releasing: it 409s

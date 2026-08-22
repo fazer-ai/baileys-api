@@ -211,8 +211,58 @@ describe("connectionsController send-message", () => {
 
       expect(res.status).toBe(503);
       expect(res.headers.get("retry-after")).toBe("60");
+      // An ordinary outage, a draining proxy and a wedged socket all answer 503,
+      // and only this one means "the connection is up, do not mark it down". A
+      // caller that reads the status alone skips a reconnect it needed.
+      expect(res.headers.get("x-baileys-send-state")).toBe("stalled");
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  // With neither a chatwootMessageId nor a messageId there is no key, so
+  // withIdempotency takes its no-key path and never records anything: nothing
+  // stands between a retry and a second WhatsApp message. The response must not
+  // ask for that retry.
+  it("does not invite a retry when a timed-out send reserved no id at all", async () => {
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(sendMessageRequest("+551234567890"));
+
+      expect(res.status).toBe(504);
+      expect(res.headers.get("retry-after")).toBeNull();
+      expect(res.headers.get("x-baileys-idempotency-state")).toBe(
+        "unprotected",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // The idempotency key alone is protection enough: the retry meets the
+  // indeterminate marker and gets a 409 instead of sending again.
+  it("still invites a retry when only an idempotency key was supplied", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+
+      expect(res.status).toBe(504);
+      expect(res.headers.get("retry-after")).toBe("60");
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
     }
   });
 

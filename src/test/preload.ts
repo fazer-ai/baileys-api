@@ -83,6 +83,10 @@ const mockRedis = {
       stringData.set(key, value);
       if (options?.expiration) {
         expirations.set(key, options.expiration);
+      } else if (options?.EX !== undefined) {
+        // node-redis accepts the TTL either way; recording both is what lets a
+        // spec assert that a marker was written with the lifetime it needs.
+        expirations.set(key, { type: "EX", value: options.EX });
       } else {
         expirations.delete(key);
       }

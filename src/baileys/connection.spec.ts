@@ -6,6 +6,7 @@ import {
   it,
   mock,
   setSystemTime,
+  spyOn,
 } from "bun:test";
 
 // Track fetch calls for webhook tests
@@ -14,6 +15,7 @@ const originalFetch = globalThis.fetch;
 
 import * as baileysModule from "@whiskeysockets/baileys";
 import { clusterKeys } from "@/cluster/keys";
+import * as sendStallStore from "@/cluster/sendStallStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { OperationTimeoutError } from "@/helpers/withTimeout";
@@ -1399,6 +1401,54 @@ describe("BaileysConnection", () => {
 
       setSystemTime();
       await redis.del(clusterKeys.sendStall("+5511999999999"));
+    });
+
+    // maybeReportSendStall raises the silence to Infinity before launching the
+    // async verdict, so anything that returns without lowering it mutes the
+    // connection for the life of the socket: the breaker rejects every later send
+    // without touching the socket, so nothing else would ever bring it back up for
+    // review, and the restart it needed is never requested.
+    it("re-arms the episode when the backoff lookup fails", async () => {
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: () => {},
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const canRestart = spyOn(sendStallStore, "canRestart").mockRejectedValue(
+        new Error("redis down"),
+      );
+      const start = Date.now();
+
+      try {
+        await connection.connect();
+        wedge();
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        const stallCalls = () =>
+          fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+            .length;
+        expect(stallCalls()).toBe(1);
+
+        // Inside the cooldown the failure does not become a webhook per send.
+        setSystemTime(new Date(start + 130_000));
+        await expect(send()).rejects.toThrow(BaileysSendStalledError);
+        await asyncSleep(0);
+        expect(stallCalls()).toBe(1);
+
+        // Past it, the connection is due for review again.
+        setSystemTime(new Date(start + 200_000));
+        await expect(send()).rejects.toThrow(BaileysSendStalledError);
+        await asyncSleep(0);
+        expect(stallCalls()).toBe(2);
+      } finally {
+        canRestart.mockRestore();
+        setSystemTime();
+      }
     });
 
     // The one that made the watchdog defeat itself in production. `isOnline` is

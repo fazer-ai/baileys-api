@@ -46,8 +46,27 @@ const TAKEOVER_SUFFIXES = ["", "/import-session", "/restart"] as const;
 // and the two mean different things to a caller — 504 is "this attempt's outcome
 // is unknown, you may retry it", 503 is "this connection is known not to be
 // sending, retrying only burns workers".
-function sendPathErrorResponse(error: unknown): Response | null {
+// `retrySafe` is whether a retry of THIS request can be prevented from creating a
+// second WhatsApp message — either because the caller reserved a messageId (WhatsApp
+// dedupes on the key) or because an idempotency key exists, in which case the
+// indeterminate marker answers 409 instead of sending again. With neither, nothing
+// stands between a retry and a duplicate, so the response must not invite one:
+// `retry-after` is an instruction, and a 504 carrying it tells the caller to do the
+// one thing that cannot be undone.
+function sendPathErrorResponse(
+  error: unknown,
+  { retrySafe = true }: { retrySafe?: boolean } = {},
+): Response | null {
   if (error instanceof OperationTimeoutError) {
+    if (!retrySafe) {
+      return new Response(
+        "Send timed out; outcome unknown and this request reserved no id, so a retry may duplicate the message. Reconcile, or resend with a reserved messageId.",
+        {
+          status: 504,
+          headers: { "x-baileys-idempotency-state": "unprotected" },
+        },
+      );
+    }
     return new Response("Send timed out; outcome unknown", {
       status: 504,
       headers: { "retry-after": "60" },
@@ -56,7 +75,14 @@ function sendPathErrorResponse(error: unknown): Response | null {
   if (error instanceof BaileysSendStalledError) {
     return new Response("Connection is not accepting sends", {
       status: 503,
-      headers: { "retry-after": "60" },
+      headers: {
+        "retry-after": "60",
+        // The discriminator, and it has to be a header: an ordinary outage, a
+        // draining proxy and a wedged socket all answer 503, and only this one
+        // means "the connection is up, do not mark it down". A caller that
+        // treats every 503 as a stall skips the reconnect it needed.
+        "x-baileys-send-state": "stalled",
+      },
     });
   }
   return null;
@@ -66,9 +92,13 @@ function sendPathErrorResponse(error: unknown): Response | null {
 // document different things for the same two failures.
 const SEND_PATH_RESPONSES = {
   503: {
-    description: "Connection is not accepting sends (send stall detected)",
+    description:
+      "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down.",
   },
-  504: { description: "Send timed out; outcome unknown" },
+  504: {
+    description:
+      "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message.",
+  },
 } as const;
 
 // Responses every route under this controller can return, on top of its own.
@@ -539,7 +569,12 @@ const connectionsController = new Elysia({
             phoneNumber,
           );
         }
-        const sendPathResponse = sendPathErrorResponse(e);
+        // With no key at all, withIdempotency took its no-key path and never
+        // consulted isIndeterminate, so nothing was recorded and nothing will
+        // stop the next attempt from sending a second message.
+        const sendPathResponse = sendPathErrorResponse(e, {
+          retrySafe: Boolean(messageId) || idempotencyKey !== null,
+        });
         if (sendPathResponse) {
           return sendPathResponse;
         }
