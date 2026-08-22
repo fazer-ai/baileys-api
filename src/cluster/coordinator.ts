@@ -903,6 +903,14 @@ export class ClusterCoordinator {
   // Keeping ownership means handing the socket the epoch that now holds it, or
   // the client discards its webhooks as stale.
   private async unwindRestartLease(phoneNumber: string, epoch: number) {
+    // Not ours any more: a newer explicit operation force-acquired while we were
+    // reading. Its lease is live and its socket already carries its epoch, so
+    // there is nothing here to give back — and writing our older epoch into that
+    // connection would leave every webhook it sends stamped stale, which is the
+    // one way to make a healthy socket look like a dead one to the client.
+    if (this.heldLeaseEpochs.get(phoneNumber) !== epoch) {
+      return;
+    }
     if (this.handler.hasConnection(phoneNumber)) {
       await this.handler.updateLeaseEpoch(phoneNumber, epoch);
       return;

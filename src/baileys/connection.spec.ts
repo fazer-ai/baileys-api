@@ -1617,6 +1617,54 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // The entry gate checks isOpen, but the verdict is decided after two Redis
+    // round trips. A socket that emits `close` in that window still matches on
+    // generation and streak, so without carrying the gate across the awaits an
+    // ordinary disconnect is reported as a stall, spends a backoff strike and
+    // asks for a restart of something already reconnecting on its own.
+    it("abandons the episode when the socket closes while the backoff is read", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const canRestart = spyOn(sendStallStore, "canRestart").mockImplementation(
+        async () => {
+          // WhatsApp dropped the socket while Redis was answering.
+          (
+            connection as unknown as { connectionState: string }
+          ).connectionState = "close";
+          return true;
+        },
+      );
+      const start = Date.now();
+
+      try {
+        await connectOpen();
+        wedge();
+        fetchCalls.length = 0;
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(
+          fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+            .length,
+        ).toBe(0);
+        expect(restarts.length).toBe(0);
+        expect(await redis.get(clusterKeys.sendStall("+5511999999999"))).toBe(
+          null,
+        );
+      } finally {
+        canRestart.mockRestore();
+        setSystemTime();
+      }
+    });
+
     // The one that made the watchdog defeat itself in production. `isOnline` is
     // a presence echo on the socket we already have — sendPresenceUpdate emits
     // it, and POST /connections calls exactly that when it reuses a live

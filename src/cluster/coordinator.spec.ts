@@ -912,10 +912,11 @@ describe("ClusterCoordinator", () => {
       expect(shouldProceed()).toBe(false);
     });
 
-    // heldLeaseEpochs is where releaseHeldLease reads the epoch from, and it stops
-    // describing THIS operation the moment a concurrent explicit one force-acquires its
-    // own. Unwinding by the current value hands away that operation's lease and leaves
-    // its live socket unowned, free for any claim loop to take.
+    // heldLeaseEpochs stops describing THIS operation the moment a concurrent explicit
+    // one force-acquires its own. Unwinding by the current value would hand away that
+    // operation's lease and leave its live socket unowned, free for any claim loop to
+    // take; stamping our older epoch into its connection would leave every webhook it
+    // sends discarded by the client as stale.
     it("releases only the epoch it acquired when it unwinds", async () => {
       const handler = makeHandlerMock();
       const coordinator = makeCoordinator(handler);
@@ -930,8 +931,9 @@ describe("ClusterCoordinator", () => {
       const restarted = await coordinator.restartWithLease("+5511999");
 
       expect(restarted).toBe("not-found");
-      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
-      expect(releaseLease).not.toHaveBeenCalledWith("+5511999", 2);
+      // Nothing is given back and nothing is corrected: the lease is not ours to
+      // unwind, and its owner's socket already carries its own epoch.
+      expect(releaseLease).not.toHaveBeenCalled();
       expect(
         (
           coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
@@ -975,6 +977,28 @@ describe("ClusterCoordinator", () => {
 
       expect(releaseLease).not.toHaveBeenCalled();
       expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 1);
+    });
+
+    // Same rule, the other outcome: with a live socket under a lease that is no
+    // longer ours, the correction we would apply belongs to the newer operation and
+    // would stamp its webhooks with our older epoch.
+    it("leaves a newer operation's connection untouched when unwinding", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connections.add("+5511999");
+      isRedisAuthStatePaired.mockResolvedValue(false);
+      getRedisAuthMetadata.mockImplementation((async () => {
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.set("+5511999", 2);
+        return storedMetadata;
+      }) as typeof redisAuthState.getRedisAuthMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("not-found");
+      expect(handler.updateLeaseEpoch).not.toHaveBeenCalled();
+      expect(releaseLease).not.toHaveBeenCalled();
     });
 
     // A veto after the drain means nothing was rebuilt. Reporting it as success

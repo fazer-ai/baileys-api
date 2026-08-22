@@ -979,6 +979,13 @@ export class BaileysConnection {
   // connection and asking the handler to discard it.
   private isStallEpisodeCurrent(generation: number): boolean {
     return (
+      // isOpen carries the entry gate across the awaits. The socket can emit
+      // `close` while Redis answers, and until the reconnect builds its
+      // replacement the generation and the streak both still match — so without
+      // this the handler reports a send stall, spends a backoff strike and asks
+      // for a restart, all for an ordinary disconnect that is already
+      // reconnecting on its own.
+      this.isOpen &&
       !this.isDiscarded &&
       this.isCurrentGeneration(generation) &&
       this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD
