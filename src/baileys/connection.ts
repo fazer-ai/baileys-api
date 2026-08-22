@@ -1461,6 +1461,17 @@ export class BaileysConnection {
         // the life of the socket with the restart it needed never requested.
         // A cooldown rather than 0, so a Redis outage cannot turn every
         // rejected send into its own webhook.
+        //
+        // Guarded like every other path out of an await here. A Redis lookup can
+        // outlive the episode that started it, and an in-place reconnect keeps
+        // THIS object and only bumps the generation -- so the cooldown would land
+        // on the new socket's detector and mute it for a stall it never had,
+        // while the `suppressed` verdict below would describe an episode that is
+        // over.
+        if (!this.isStallEpisodeCurrent(generation)) {
+          this.sendStallSilentUntil = 0;
+          return;
+        }
         this.sendStallSilentUntil = Date.now() + SEND_STALL_RESTART_COOLDOWN_MS;
       }
     }
@@ -1582,7 +1593,17 @@ export class BaileysConnection {
         // already suppresses (the backoff-lookup catch above); a failed write is
         // no different, and answering the same way keeps one outage from having
         // two behaviours depending on which call it hit.
+        // Cleared unconditionally: this handler set it for an episode that is
+        // now over either way, and leaving it would report restartPending on a
+        // connection nobody is restarting.
         this.restartRequested = false;
+        // Same guard as the lookup catch above, and for the same reason: the
+        // write we were waiting on can outlive the episode, and everything below
+        // belongs to that episode.
+        if (!this.isStallEpisodeCurrent(generation)) {
+          this.sendStallSilentUntil = 0;
+          return;
+        }
         // Re-armed on the cooldown rather than 0, for the same reason as the
         // lookup catch: a Redis outage must not turn every rejected send into
         // its own webhook, and leaving the silence at Infinity would mute this

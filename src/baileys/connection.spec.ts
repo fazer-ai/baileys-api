@@ -2306,6 +2306,68 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // A Redis lookup can outlive the episode that started it. An in-place
+    // reconnect keeps THIS object and only bumps the generation, so a cooldown
+    // written from the failure path lands on the new socket's detector and mutes
+    // it for a stall it never had, while the `suppressed` verdict describes an
+    // episode that is already over.
+    it("drops a stale episode when the backoff lookup fails after recovery", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const key = clusterKeys.sendStall("+5511999999999");
+      const canRestart = spyOn(sendStallStore, "canRestart").mockImplementation(
+        async () => {
+          // Recovery lands while the lookup is in flight, and only then does the
+          // lookup fail.
+          await mockEventHandlers.get("connection.update")?.({
+            connection: "open",
+          });
+          throw new Error("redis down");
+        },
+      );
+
+      try {
+        await connectOpen();
+        wedge();
+        const start = Date.now();
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        fetchCalls.length = 0;
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 5));
+
+        const stallCalls = () =>
+          fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+            .length;
+        // Nothing reported: the episode this verdict would describe is over.
+        expect(stallCalls()).toBe(0);
+        expect(restarts.length).toBe(0);
+
+        // And the detector is not muted. The silence went back to 0, so a fresh
+        // episode on the recovered socket reports itself instead of waiting out
+        // a cooldown it did not earn.
+        canRestart.mockRestore();
+        const second = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(second + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 5));
+
+        expect(stallCalls()).toBe(1);
+      } finally {
+        canRestart.mockRestore();
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // The backoff key is per phone number and outlives the session by up to 24h,
     // so a strike written while this session is being torn down is inherited by
     // whatever is paired on that number next -- its watchdog suppressed on the

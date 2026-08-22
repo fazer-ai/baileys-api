@@ -82,10 +82,20 @@ return 0`;
 // an "outcome unknown" that then 409s every later caller for 24h -- for a message
 // that demonstrably went out. Write only over our own processing marker, or over
 // nothing. KEYS[1]=key, ARGV=[ourProcessingValue, marker, ttl].
-const MARK_INDETERMINATE_SCRIPT = `-- mark-indeterminate
+const WRITE_IF_OURS_SCRIPT = `-- mark-indeterminate write-if-ours
 local raw = redis.call("GET", KEYS[1])
-if raw == false or raw == ARGV[1] then
+if raw == false or (ARGV[4] == "1" and raw == ARGV[1]) then
   redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+  return 1
+end
+return 0`;
+
+// Same rule for the release: you may only delete what you hold. On the fail-open
+// path there is nothing of ours under the key, so a DEL there would drop a
+// successor's live lock -- or its cached result. KEYS[1]=key, ARGV[1]=our marker.
+const RELEASE_IF_OURS_SCRIPT = `-- release-if-ours
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("DEL", KEYS[1])
   return 1
 end
 return 0`;
@@ -154,17 +164,20 @@ export async function withIdempotency<T>(
     return { status: outcome.status };
   }
 
-  // outcome.status === "owned": we hold the lock, run the work.
+  // outcome.status === "owned": run the work. `held` says whether the key is
+  // actually ours; on the fail-open path it is not, and every write below is
+  // conditioned on that.
+  const held = outcome.held;
   try {
     const value = await fn();
 
     if (value === null) {
-      await releaseLock(key);
+      await releaseLock(key, held);
       return { status: "failed" };
     }
 
-    const cached = await cacheResult(key, value);
-    if (!cached) await releaseLock(key);
+    const cached = await cacheResult(key, value, held);
+    if (!cached) await releaseLock(key, held);
 
     return { status: "executed", value };
   } catch (error) {
@@ -173,24 +186,27 @@ export async function withIdempotency<T>(
       // reads the same but is not: optional chaining short-circuits the whole
       // call expression when the callback is absent, arguments included, so the
       // marker would never be written for any caller that did not pass one.
-      const persisted = await markIndeterminate(key);
+      const persisted = await markIndeterminate(key, held);
       options.onIndeterminate?.(persisted);
     } else {
-      await releaseLock(key);
+      await releaseLock(key, held);
     }
     throw error;
   }
 }
 
 type AcquireOutcome<T> =
-  | { status: "owned" }
+  // `held` is false only on the fail-open path: we are running the work, but the
+  // key is not ours and may belong to someone else by the time we finish.
+  | { status: "owned"; held: boolean }
   | { status: "cached"; value: T }
   | { status: "processing" }
   | { status: "indeterminate" };
 
 async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
-  if (await acquireLock(key)) {
-    return { status: "owned" };
+  const first = await acquireLock(key);
+  if (first !== "taken") {
+    return { status: "owned", held: first === "acquired" };
   }
 
   // Someone else holds the key. Inspect it: it is either a finished result we
@@ -208,9 +224,10 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
 
   if (current === null) {
     // Released in the gap between the failed NX and this read; try once more.
-    return (await acquireLock(key))
-      ? { status: "owned" }
-      : { status: "processing" };
+    const second = await acquireLock(key);
+    return second === "taken"
+      ? { status: "processing" }
+      : { status: "owned", held: second === "acquired" };
   }
 
   // Our own genuine in-flight request (exact match incl. our incarnation).
@@ -268,6 +285,7 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
 
   // Holder is gone: reclaim the orphaned lock atomically.
   if (await stealLock(key, current)) {
+    // A steal leaves OUR processingValue under the key, so this is held.
     logger.info(
       "[withIdempotency] reclaimed orphaned lock %s from dead holder %s",
       key,
@@ -275,7 +293,7 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
         ? `${holder.instanceId}#${holder.incarnationId}`
         : holder.instanceId,
     );
-    return { status: "owned" };
+    return { status: "owned", held: true };
   }
   return { status: "processing" };
 }
@@ -310,19 +328,27 @@ function parseHolder(value: string): Holder | null {
   };
 }
 
-async function acquireLock(key: string): Promise<boolean> {
+// Three outcomes, and the third is the one every writer below has to respect.
+// "failed-open" means the work runs with NO lock behind it: the key may be free,
+// or a retry may take it while we run. Every later write has to know which of
+// these it got, because "only ever write over your own marker, or over nothing"
+// is the rule that keeps a request that holds nothing from clobbering the one
+// that does.
+type LockOutcome = "acquired" | "taken" | "failed-open";
+
+async function acquireLock(key: string): Promise<LockOutcome> {
   try {
     const result = await redis.set(key, processingValue(), {
       NX: true,
       EX: IDEMPOTENCY_TTL,
     });
-    return result === "OK";
+    return result === "OK" ? "acquired" : "taken";
   } catch (error) {
     logger.warn(
       "[withIdempotency] lock acquire failed, proceeding without cache: %s",
       errorToString(error),
     );
-    return true;
+    return "failed-open";
   }
 }
 
@@ -342,14 +368,15 @@ async function stealLock(key: string, expected: string): Promise<boolean> {
   }
 }
 
-async function markIndeterminate(key: string): Promise<boolean> {
+async function markIndeterminate(key: string, held: boolean): Promise<boolean> {
   try {
-    const result = await redis.eval(MARK_INDETERMINATE_SCRIPT, {
+    const result = await redis.eval(WRITE_IF_OURS_SCRIPT, {
       keys: [key],
       arguments: [
         processingValue(),
         `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
         String(INDETERMINATE_TTL),
+        held ? "1" : "0",
       ],
     });
     if (result !== 1) {
@@ -380,18 +407,45 @@ async function markIndeterminate(key: string): Promise<boolean> {
   }
 }
 
-async function releaseLock(key: string): Promise<void> {
+async function releaseLock(key: string, held: boolean): Promise<void> {
+  // Nothing of ours is under the key on the fail-open path, and the marker there
+  // identifies a PROCESS, not an acquisition: a concurrent retry on this same
+  // worker writes a byte-identical one. Deleting on that evidence drops the
+  // retry's live lock, and the request that gave up then has nothing guarding
+  // it.
+  if (!held) {
+    return;
+  }
   try {
-    await redis.del(key);
+    await redis.eval(RELEASE_IF_OURS_SCRIPT, {
+      keys: [key],
+      arguments: [processingValue()],
+    });
   } catch {
     /* fail-open */
   }
 }
 
-async function cacheResult<T>(key: string, value: T): Promise<boolean> {
+async function cacheResult<T>(
+  key: string,
+  value: T,
+  held: boolean,
+): Promise<boolean> {
   try {
-    await redis.set(key, JSON.stringify(value), { EX: IDEMPOTENCY_TTL });
-    return true;
+    const result = await redis.eval(WRITE_IF_OURS_SCRIPT, {
+      keys: [key],
+      arguments: [
+        processingValue(),
+        JSON.stringify(value),
+        String(IDEMPOTENCY_TTL),
+        held ? "1" : "0",
+      ],
+    });
+    // Not an error: a successor holds the key, so its answer stands. Reported as
+    // "not cached" so the caller does not then try to release a lock it never
+    // had -- releaseLock refuses that on its own, and this keeps the two honest
+    // together.
+    return result === 1;
   } catch (error) {
     logger.warn(
       "[withIdempotency] cache write failed: %s",

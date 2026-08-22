@@ -235,24 +235,20 @@ describe("withIdempotency", () => {
 
   describe("with idempotency key, cache write fails after successful send", () => {
     it("releases lock and still returns executed", async () => {
-      const originalSet = redis.set;
-      let callCount = 0;
-      (redis as any).set = mock(async () => {
-        callCount++;
-        if (callCount === 1) return "OK";
+      // The cache write is a compare-and-set EVAL now, and the release that
+      // follows it is another one that has to go through -- so this fails the
+      // first EVAL only, rather than swapping the whole client out.
+      const evalMock = redis.eval as unknown as ReturnType<typeof mock>;
+      evalMock.mockImplementationOnce(async () => {
         throw new Error("Cache write failed");
       });
 
-      try {
-        const fn = mock(async () => ({ id: "msg_1" }));
-        const result = await withIdempotency("test-key", fn);
+      const fn = mock(async () => ({ id: "msg_1" }));
+      const result = await withIdempotency("test-key", fn);
 
-        expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
-        expect(fn).toHaveBeenCalledTimes(1);
-        expect(stringData.has("test-key")).toBe(false);
-      } finally {
-        (redis as any).set = originalSet;
-      }
+      expect(result).toEqual({ status: "executed", value: { id: "msg_1" } });
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(stringData.has("test-key")).toBe(false);
     });
   });
 
@@ -352,6 +348,63 @@ describe("withIdempotency", () => {
       // And the caller is told the marker did not land, so it must not answer
       // with a `retry-after` that claims the retry is protected.
       expect(persisted).toBe(false);
+    });
+
+    // The processing marker identifies a PROCESS, not an acquisition: two
+    // requests on the same worker write a byte-identical one. So a request that
+    // failed open holds nothing, yet its marker matches the lock a concurrent
+    // retry legitimately owns -- and comparing against it would let the one that
+    // holds nothing overwrite the one that does. When that retry then releases,
+    // the first request is left with no guard at all and the next caller sends
+    // again.
+    it("cannot overwrite a concurrent lock it never held", async () => {
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      setMock.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+      let persisted: boolean | undefined;
+
+      await expect(
+        withIdempotency(
+          KEY,
+          async () => {
+            // Redis is back and a retry takes the lock -- with the same marker
+            // this process would write.
+            stringData.set(KEY, `processing:test-instance#${incarnationId}`);
+            throw new Error("timed out");
+          },
+          {
+            isIndeterminate: () => true,
+            onIndeterminate: (ok) => {
+              persisted = ok;
+            },
+          },
+        ),
+      ).rejects.toThrow();
+
+      // The retry's lock is untouched.
+      expect(stringData.get(KEY)).toBe(
+        `processing:test-instance#${incarnationId}`,
+      );
+      expect(persisted).toBe(false);
+    });
+
+    // Same rule on the way out: you may only delete what you hold. A DEL from a
+    // request that failed open drops a successor's live lock, or its result.
+    it("does not release a lock it never held", async () => {
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      setMock.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      const result = await withIdempotency(KEY, async () => {
+        stringData.set(KEY, JSON.stringify({ ok: true }));
+        // A null return is the "failed, release the lock" path.
+        return null;
+      });
+
+      expect(result).toEqual({ status: "failed" });
+      expect(JSON.parse(stringData.get(KEY) ?? "{}")).toEqual({ ok: true });
     });
 
     // The marker has to outlive both the abandoned operation (nothing cancels it; it

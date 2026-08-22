@@ -144,17 +144,28 @@ const mockRedis = {
         return 0;
       }
 
-      // mark-indeterminate (compare-and-set): KEYS=[key],
-      // ARGV=[ourProcessingValue, marker, ttl]. Writes only over our own
-      // processing marker or over nothing, so a successor's cached result
-      // survives.
-      if (script.includes("mark-indeterminate")) {
+      // write-if-ours (compare-and-set): KEYS=[key],
+      // ARGV=[ourProcessingValue, value, ttl, heldFlag]. Writes only over our own
+      // processing marker (and only when we actually hold it) or over nothing,
+      // so a successor's lock or cached result survives.
+      if (script.includes("write-if-ours")) {
         const [key] = keys;
-        const [expected, marker, ttl] = args;
+        const [expected, value, ttl, held] = args;
         const raw = stringData.get(key);
-        if (raw === undefined || raw === expected) {
-          stringData.set(key, marker);
+        if (raw === undefined || (held === "1" && raw === expected)) {
+          stringData.set(key, value);
           expirations.set(key, { type: "EX", value: Number(ttl) });
+          return 1;
+        }
+        return 0;
+      }
+
+      // release-if-ours (compare-and-delete): KEYS=[key], ARGV=[ourMarker].
+      if (script.includes("release-if-ours")) {
+        const [key] = keys;
+        if (stringData.get(key) === args[0]) {
+          stringData.delete(key);
+          expirations.delete(key);
           return 1;
         }
         return 0;
