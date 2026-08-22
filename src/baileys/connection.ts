@@ -22,7 +22,10 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
-import { isTxMutexTimeout } from "@/baileys/helpers/isTxMutexTimeout";
+import {
+  isTxMutexTimeout,
+  txMutexTimeoutKey,
+} from "@/baileys/helpers/isTxMutexTimeout";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
@@ -336,6 +339,13 @@ export class BaileysConnection {
     return this._consecutiveSendTimeouts;
   }
 
+  // True between asking for a restart and any evidence of recovery. The handler
+  // re-reads it after draining the per-number slot: a restart that queued behind
+  // an unrelated operation must not kill a socket that recovered while it waited.
+  get restartPending(): boolean {
+    return this.restartRequested;
+  }
+
   get isOpen(): boolean {
     return this.connectionState === "open" && this.socket !== null;
   }
@@ -415,11 +425,13 @@ export class BaileysConnection {
       }
       return;
     }
-    // stalled | timeout: this key is the one holding everything up, and knowing
-    // WHICH key is what lets the release above count as evidence. Recorded from
-    // both phases because either can be the only one that fires: `timeout` needs
-    // BAILEYS_TX_ACQUIRE_TIMEOUT_MS enabled, `stalled` needs BAILEYS_TX_HOLD_WARN_MS.
-    this.wedgedTxKey = event.key;
+    // Deliberately NOT the source of wedgedTxKey. `stalled` fires for whatever
+    // key happens to be held past BAILEYS_TX_HOLD_WARN_MS, which is regularly an
+    // unrelated one -- a group transaction, a lid-mapping write. Letting it
+    // overwrite the key would make that transaction's release close the breaker
+    // while the send mutex is still wedged, readmitting a batch into the queue
+    // the breaker exists to bound. Only our own send's failure names the key
+    // that is actually blocking sends.
     logger.warn(
       "[%s] [keystoreTx] %s key=%s waitedMs=%d heldMs=%s stillLocked=%s stack=%s",
       this.phoneNumber,
@@ -919,6 +931,7 @@ export class BaileysConnection {
       if (error instanceof OperationTimeoutError) {
         this.recordSendTimeout(operation, generation);
       } else if (isTxMutexTimeout(error)) {
+        this.noteMutexWedge(error);
         this.recordSendTimeout(operation, generation, "mutex-wedge");
       }
       throw error;
@@ -928,6 +941,20 @@ export class BaileysConnection {
   // True while the argument still describes the live socket. A settlement from
   // an earlier generation is not wrong, it is about a keystore that has since
   // been thrown away, and the watchdog's whole subject is the current one.
+  // Records which keystore key our sends are blocked on, from the Boom the
+  // patched transaction throws. This arms the release-based recovery in
+  // handleTxEvent, and it arms it in exactly the configuration that needs it:
+  // with BAILEYS_TX_ACQUIRE_TIMEOUT_MS at 0 no send ever rejects this way, but
+  // then nothing converts a parked send into a rejection either, so the parked
+  // send eventually succeeds and the ordinary late-success path closes the
+  // breaker on its own.
+  private noteMutexWedge(error: unknown) {
+    const key = txMutexTimeoutKey(error);
+    if (key !== null) {
+      this.wedgedTxKey = key;
+    }
+  }
+
   private isCurrentGeneration(generation: number): boolean {
     return generation === this.socketGeneration;
   }
@@ -996,6 +1023,7 @@ export class BaileysConnection {
     // That burst is the failure this whole file is shaped around, and it is
     // BAILEYS_TX_ACQUIRE_TIMEOUT_MS=0 that reopens it.
     if (error !== undefined && isTxMutexTimeout(error)) {
+      this.noteMutexWedge(error);
       logger.warn(
         "[%s] [sendStall] late tx-mutex timeout operation=%s afterTimeouts=%d (breaker stays open)",
         this.phoneNumber,

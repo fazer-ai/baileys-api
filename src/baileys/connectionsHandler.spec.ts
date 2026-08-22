@@ -76,6 +76,11 @@ class MockBaileysConnection {
   lastOutgoingAckAt: number | null = null;
   consecutiveSendTimeouts = 0;
   sendState: "unknown" | "ok" | "degraded" | "stalled" = "unknown";
+  // True by default because that is the only state from which the real
+  // connection ever calls requestRestart: handleSendStall sets it immediately
+  // before. Examples flip it to false to model recovery arriving while the
+  // restart waited on the per-number slot.
+  restartPending = true;
 
   constructor(phoneNumber: string, options: any) {
     this.phoneNumber = phoneNumber;
@@ -1213,6 +1218,27 @@ describe("BaileysConnectionsHandler", () => {
       mockConnectionInstances.get(phone)?.options?.requestRestart as (
         reason: string,
       ) => void;
+
+    // The restart queues behind whatever holds the per-number slot, and connect()
+    // re-checks the guard only after draining it. A late send completion or the
+    // wedged key releasing in that window clears the stall, and killing the
+    // socket then costs a live connection and a backoff strike for nothing.
+    it("abandons a queued restart once the connection has recovered", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+      mockDiscard.mockClear();
+      mockConnect.mockClear();
+
+      // Recovery landed between asking for the restart and reaching the guard.
+      original.restartPending = false;
+      restartOf("+5511999999999")?.("send stall");
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(original);
+      expect(mockDiscard).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+    });
 
     // Regression guard for a deadlock that is silent when it happens: the
     // obvious implementation wraps this in withInFlightOp, and spawnConnection

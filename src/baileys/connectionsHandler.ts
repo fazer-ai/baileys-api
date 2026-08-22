@@ -258,7 +258,15 @@ export class BaileysConnectionsHandler {
           // in-flight slot first, and an in-flight logout keeps its connection
           // registered until its RPC returns. Hence the same check again, run
           // by connect() after the drain.
-          const stillOurs = () => this.connections[phoneNumber] === connection;
+          // Two conditions, and the second is not redundant. connect() drains the
+          // per-number slot first, and an unrelated POST or logout can hold it
+          // for a while; a late send completion or the wedged key releasing in
+          // that window clears the stall, which clears restartPending. Without
+          // it the watchdog kills a socket that has already recovered and spends
+          // a backoff strike doing so.
+          const stillOurs = () =>
+            this.connections[phoneNumber] === connection &&
+            connection.restartPending;
           // connection.currentOptions, never the captured `options`: a later
           // POST /connections reuses a live connection and updates its webhook
           // config and lease epoch in place, so the closure's copy can be

@@ -22,3 +22,15 @@ export function isTxMutexTimeout(error: unknown): boolean {
     (error as { data: { code?: unknown } }).data.code === TX_MUTEX_TIMEOUT_CODE
   );
 }
+
+// The keystore key the timed-out acquisition was waiting on, straight from the
+// Boom the patch throws. Read from OUR OWN send's failure, this is the only
+// unambiguous statement of which mutex is blocking sends: a `stalled` event
+// names whatever key happened to be held long, which is often an unrelated one.
+export function txMutexTimeoutKey(error: unknown): string | null {
+  if (!isTxMutexTimeout(error)) {
+    return null;
+  }
+  const key = (error as { data: { key?: unknown } }).data.key;
+  return typeof key === "string" ? key : null;
+}

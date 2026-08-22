@@ -1185,18 +1185,36 @@ describe("BaileysConnection", () => {
           .at(-1)![0]
           .transactionOpts.onTransactionEvent(event);
 
-      wedge();
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      // The send's own failure is what names the blocked key, exactly as in
+      // production: the Boom the patched transaction throws carries it.
+      mockSocket.sendMessage.mockImplementation(() =>
+        Promise.reject(
+          Object.assign(new Error("keystore transaction timed out"), {
+            data: { key: "me@s.whatsapp.net", code: "E_TX_MUTEX_TIMEOUT" },
+          }),
+        ),
+      );
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
       await expect(send()).rejects.toThrow(BaileysSendStalledError);
 
-      // The wedge names its own key.
-      emit({ phase: "stalled", key: "me@s.whatsapp.net", waitedMs: 0 });
-
-      // A release on a DIFFERENT key proves nothing: the mutexes live in a
-      // per-key map, and this one was never the problem.
-      emit({ phase: "released", key: "lid-mapping", waitedMs: 0, heldMs: 5 });
+      // An unrelated key holding past the warn threshold, then releasing. Both
+      // must be inert: `stalled` names whatever key is held long, not the one
+      // blocking sends, and a release on a key we were never waiting for proves
+      // nothing -- the mutexes live in a per-key map.
+      emit({
+        phase: "stalled",
+        key: "lid-mapping",
+        waitedMs: 0,
+        heldMs: 31_000,
+      });
+      emit({
+        phase: "released",
+        key: "lid-mapping",
+        waitedMs: 0,
+        heldMs: 32_000,
+      });
       await expect(send()).rejects.toThrow(BaileysSendStalledError);
 
       emit({
@@ -1207,7 +1225,7 @@ describe("BaileysConnection", () => {
       });
 
       mockSocket.sendMessage.mockClear();
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
       expect(mockSocket.sendMessage).toHaveBeenCalled();
     });
 
