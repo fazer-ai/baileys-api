@@ -1617,6 +1617,32 @@ describe("BaileysConnection", () => {
       expect(mockSocket.sendMessage.mock.calls.length).toBeLessThanOrEqual(8);
     });
 
+    // The slot belongs to the operation, not to our wait on it. Giving it back
+    // when withTimeout rejects lets a replacement in while the abandoned send is
+    // still parked in the mutex -- so the queue grows past the ceiling exactly
+    // when the breaker closes, which is the moment sends start flowing again.
+    it("keeps a timed-out send's slot until the operation settles", async () => {
+      await connectOpen();
+      wedge();
+      mockSocket.sendMessage.mockClear();
+
+      // Eight admitted, all timing out, none of them settling underneath.
+      await Promise.all(
+        Array.from({ length: 8 }, () => send().catch(() => "rejected")),
+      );
+      expect(mockSocket.sendMessage.mock.calls.length).toBe(8);
+
+      // An `open` clears the breaker -- but the eight operations are still
+      // parked, so the ceiling has to keep holding on its own.
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "open",
+      });
+      mockSocket.sendMessage.mockClear();
+
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+      expect(mockSocket.sendMessage).not.toHaveBeenCalled();
+    });
+
     // preprocessAudio runs up to two ffmpeg jobs for a PTT. A caller retrying into
     // a stalled connection would burn that CPU on every attempt only to be told 503
     // at the end, which is not what "fails immediately" means.

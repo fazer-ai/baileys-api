@@ -1010,9 +1010,16 @@ export class BaileysConnection {
         operation,
         config.baileys.sendTimeoutMs,
         fn,
-        (error, value) =>
-          this.recordLateSettle(operation, generation, error, value),
+        (error, value) => {
+          // The slot belongs to the OPERATION, not to our wait on it. A timed-out
+          // send is still parked in the mutex and still the thing the cap exists
+          // to bound, so its slot is only given back here, when the underlying
+          // promise actually settles.
+          this.releaseInFlight(generation);
+          this.recordLateSettle(operation, generation, error, value);
+        },
       );
+      this.releaseInFlight(generation);
       this.recordSendSuccess(generation);
       return result;
     } catch (error) {
@@ -1024,11 +1031,14 @@ export class BaileysConnection {
       // fastest. recordLateSettle already reads this error as wedge evidence; this
       // is the same reading on the path that runs first.
       if (error instanceof OperationTimeoutError) {
+        // Deliberately no release: onLateSettle above owns it now. Holding the
+        // slot is the whole correction -- an abandoned send keeps running, and
+        // admitting a replacement for it is how the queue grew past the ceiling.
         this.recordSendTimeout(operation, generation);
-      } else if (
-        isTxMutexTimeout(error) &&
-        this.isCurrentGeneration(generation)
-      ) {
+        throw error;
+      }
+      this.releaseInFlight(generation);
+      if (isTxMutexTimeout(error) && this.isCurrentGeneration(generation)) {
         // Gated together, and the gate has to come first. recordSendTimeout drops
         // a stale generation on its own, but noteMutexWedge would already have
         // stamped a replaced socket's key onto the live watchdog -- the same
@@ -1037,13 +1047,15 @@ export class BaileysConnection {
         this.recordSendTimeout(operation, generation, "mutex-wedge");
       }
       throw error;
-    } finally {
-      // Only for the socket that admitted it. A parked send never settles, so a
-      // replacement inheriting those decrements would drift its own count
-      // downwards; the counter is reset with the socket instead.
-      if (this.isCurrentGeneration(generation)) {
-        this.inFlightSends -= 1;
-      }
+    }
+  }
+
+  // Only for the socket that admitted it. A parked send may settle long after
+  // its socket was replaced, and letting that decrement land would drift the
+  // replacement's count downwards; the counter is reset with the socket instead.
+  private releaseInFlight(generation: number) {
+    if (this.isCurrentGeneration(generation)) {
+      this.inFlightSends -= 1;
     }
   }
 
