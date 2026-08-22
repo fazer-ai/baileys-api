@@ -1913,6 +1913,53 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // `action` is documented as whether the socket was recreated, and everything
+    // after the decision can still call the restart off. Announcing "restart" up
+    // front tells a consumer recovery is underway when it may never start.
+    it("does not announce a restart it has not committed to", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+
+      const key = clusterKeys.sendStall("+5511999999999");
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      setMock.mockImplementationOnce(async (k: string, v: string) => {
+        // Recovery lands while the strike is being written.
+        await mockEventHandlers.get("connection.update")?.({
+          connection: "open",
+        });
+        (
+          redis as unknown as { __stringData: Map<string, string> }
+        ).__stringData.set(k, v);
+        return "OK";
+      });
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(restarts.length).toBe(0);
+        // Nothing was announced either: no restart happened, and the episode was
+        // never suppressed by a backoff, so there is no verdict to report.
+        expect(
+          fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+            .length,
+        ).toBe(0);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // Without this, the breaker stays open across an in-place reconnect (the
     // connection object survives a socket drop) and the connection answers 503
     // forever — worse than the original stall, which at least cleared itself

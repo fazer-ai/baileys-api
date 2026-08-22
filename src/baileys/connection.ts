@@ -52,6 +52,8 @@ import {
   clearSendStall,
   nextRestartAllowedAt,
   recordRestart as recordStallRestart,
+  restoreState as restoreSendStallState,
+  type SendStallState,
 } from "@/cluster/sendStallStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
@@ -237,6 +239,9 @@ export class BaileysConnection {
   // is the only proof the mutex freed itself that arrives while the breaker is
   // open and nothing can reach the socket.
   private wedgedTxKey: string | null = null;
+  // The backoff state as it was before this episode's strike, so a restart
+  // cancelled after the fact can undo exactly its own increment.
+  private stallStrikeRollback: SendStallState | null | undefined;
   // When each keystore key last gave up acquiring, and when it last released.
   // Both are needed to tell "the wedge is still there" from "it let go while the
   // failure was still on its way to us". Keyed by the handful of distinct
@@ -1284,28 +1289,14 @@ export class BaileysConnection {
       }
     }
 
-    logger.warn(
-      "[%s] [sendStall] detected consecutiveTimeouts=%d streakMs=%d action=%s",
-      this.phoneNumber,
-      this._consecutiveSendTimeouts,
-      streakMs,
-      action,
-    );
-
-    this.sendToWebhook({
-      event: "connection.update",
-      data: {
-        error: "send_stall_detected",
-        sendStall: {
-          consecutiveTimeouts: this._consecutiveSendTimeouts,
-          stalledForMs: streakMs,
-          action,
-          ...(until && { until }),
-        },
-      },
-    });
-
+    // Reported here only when nothing more can cancel it. `action` is documented
+    // as whether the socket was recreated, and everything below can still call
+    // the restart off -- the final gate, the discard check, the recovery check --
+    // so announcing "restart" up front tells a consumer that recovery is underway
+    // when it may not be. The suppressed verdict is final the moment it is
+    // decided, so it goes out now.
     if (action !== "restart") {
+      this.reportSendStall(streakMs, action, until);
       return;
     }
 
@@ -1332,7 +1323,8 @@ export class BaileysConnection {
     // an escalating suppression from a socket that no longer exists.
     if (!this.isDiscarded) {
       try {
-        await recordStallRestart(this.phoneNumber);
+        const { previous } = await recordStallRestart(this.phoneNumber);
+        this.stallStrikeRollback = previous;
         // Re-read after the write: the DEL can land inside it, which the check
         // above cannot see. Undoing is the only way back, since nothing in the
         // store fences a write against a session that has already ended.
@@ -1344,7 +1336,7 @@ export class BaileysConnection {
         // for suppresses the NEXT genuine stall for five minutes on the strength
         // of a recovery.
         if (this.isDiscarded || !this.restartRequested) {
-          await clearSendStall(this.phoneNumber);
+          await this.rollBackStallStrike();
           return;
         }
       } catch (error) {
@@ -1359,9 +1351,67 @@ export class BaileysConnection {
     // Through the handler, never inline: the replacement socket has to
     // participate in the handler's per-number inFlightOps lock. See
     // connectionsHandler.spawnConnection.
+    this.reportSendStall(streakMs, action, until);
     this.requestRestart?.(
       `send stall: ${this._consecutiveSendTimeouts} consecutive timeouts over ${streakMs}ms`,
     );
+  }
+
+  private reportSendStall(
+    streakMs: number,
+    action: "restart" | "suppressed" | "cancelled",
+    until: string | undefined,
+  ) {
+    logger.warn(
+      "[%s] [sendStall] detected consecutiveTimeouts=%d streakMs=%d action=%s",
+      this.phoneNumber,
+      this._consecutiveSendTimeouts,
+      streakMs,
+      action,
+    );
+    this.sendToWebhook({
+      event: "connection.update",
+      data: {
+        error: "send_stall_detected",
+        sendStall: {
+          consecutiveTimeouts: this._consecutiveSendTimeouts,
+          stalledForMs: streakMs,
+          action,
+          ...(until && { until }),
+        },
+      },
+    });
+  }
+
+  // The handler drains its per-number slot before re-checking whether the
+  // restart is still wanted, so a recovery landing in that window vetoes it long
+  // after this connection committed to it. Two things then have to be undone: the
+  // strike, which would otherwise suppress the NEXT genuine stall on the strength
+  // of a restart that never happened, and the verdict already sent to consumers.
+  async withdrawStallRestart(streakMs = 0) {
+    this.restartRequested = false;
+    await this.rollBackStallStrike();
+    this.reportSendStall(streakMs, "cancelled", undefined);
+  }
+
+  // Restores exactly this episode's increment rather than deleting the key: the
+  // history is per phone and lives 24h, so a delete would also wipe an earlier
+  // genuine strike and hand the phone a clean slate it did not earn.
+  private async rollBackStallStrike() {
+    const previous = this.stallStrikeRollback;
+    this.stallStrikeRollback = undefined;
+    if (previous === undefined) {
+      return;
+    }
+    try {
+      await restoreSendStallState(this.phoneNumber, previous);
+    } catch (error) {
+      logger.error(
+        "[%s] [sendStall] failed to roll back strike: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
   }
 
   // Process-wide, not per-connection: the point is to keep a fleet-wide stall

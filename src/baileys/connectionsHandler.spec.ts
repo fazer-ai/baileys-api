@@ -1271,6 +1271,30 @@ describe("BaileysConnectionsHandler", () => {
       handler.onSpawnFailed = null;
     });
 
+    // connect() drains the per-number slot before re-checking, so a recovery in
+    // that window vetoes a restart this connection had already committed to: a
+    // strike is written and consumers have been told the socket is being
+    // recreated. Both have to be taken back, or the next genuine stall is
+    // suppressed on the strength of a restart that never happened.
+    it("tells the connection to withdraw a restart that got vetoed", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+      const withdrawals: string[] = [];
+      connection.withdrawStallRestart = async () => {
+        withdrawals.push("withdrawn");
+      };
+      // Recovery lands after the commit but before connect() re-checks.
+      connection.restartPending = false;
+
+      restartOf("+5511999999999")?.("send stall");
+
+      for (let i = 0; i < 50 && withdrawals.length === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(withdrawals).toEqual(["withdrawn"]);
+    });
+
     // Regression guard for a deadlock that is silent when it happens: the
     // obvious implementation wraps this in withInFlightOp, and spawnConnection
     // takes the SAME per-number slot, so it would wait forever on a slot the

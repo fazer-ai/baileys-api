@@ -64,7 +64,7 @@ export async function canRestart(phoneNumber: string): Promise<boolean> {
 // is the instance that owns the stalled socket.
 export async function recordRestart(
   phoneNumber: string,
-): Promise<SendStallState> {
+): Promise<{ state: SendStallState; previous: SendStallState | null }> {
   const key = clusterKeys.sendStall(phoneNumber);
   const previous = await readState(key);
   const restarts = (previous?.restarts ?? 0) + 1;
@@ -75,7 +75,27 @@ export async function recordRestart(
   await redis.set(key, JSON.stringify(state), {
     expiration: { type: "PX", value: SEND_STALL_TTL_MS },
   });
-  return state;
+  // `previous` travels back so a caller whose restart is cancelled after the
+  // fact can undo exactly its own increment. Deleting instead would hand the
+  // phone a clean slate it did not earn: the history in here is per phone and
+  // lives 24h, so an earlier genuine strike would go with it.
+  return { state, previous };
+}
+
+// Undoes one recordRestart. Same read-modify-write assumption as everything else
+// in this file: the only writer is the instance that owns the stalled socket.
+export async function restoreState(
+  phoneNumber: string,
+  previous: SendStallState | null,
+): Promise<void> {
+  const key = clusterKeys.sendStall(phoneNumber);
+  if (previous === null) {
+    await redis.del(key);
+    return;
+  }
+  await redis.set(key, JSON.stringify(previous), {
+    expiration: { type: "PX", value: SEND_STALL_TTL_MS },
+  });
 }
 
 export async function nextRestartAllowedAt(

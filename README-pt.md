@@ -78,7 +78,9 @@ O que esta API oferece:
   prova fim a fim de que o envio funciona. `GET /cluster/health` traz
   `stalledConnectionCount`. Um webhook `connection.update` com
   `data.error = "send_stall_detected"` é emitido quando um travamento é
-  detectado.
+  detectado. O `sendStall.action` diz o que o provedor fez: `restart` (o socket
+  foi recriado), `suppressed` (um backoff está segurando até `until`) ou
+  `cancelled` (a conexão se recuperou antes de o restart rodar).
 - **Recuperação automática.** Com `BAILEYS_SEND_STALL_RESTART_ENABLED=true`,
   uma conexão travada reinicia o próprio socket, com limite de taxa por
   processo e backoff por telefone.

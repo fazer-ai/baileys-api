@@ -293,22 +293,33 @@ export class BaileysConnectionsHandler {
               forceRestart: true,
             },
             stillOurs,
-          ).catch(async (error) => {
-            logger.error(
-              "[%s] [requestRestart] %s",
-              phoneNumber,
-              errorToString(error),
-            );
-            // Only when nothing came up in the meantime: a later connect may
-            // have succeeded while this one was failing.
-            if (this.connections[phoneNumber]) {
-              return;
-            }
-            await this.onSpawnFailed?.(
-              phoneNumber,
-              connection.currentOptions.leaseEpoch ?? null,
-            );
-          });
+          )
+            .then(async (started) => {
+              // connect() resolves false when stillOurs vetoed it after draining
+              // the slot -- i.e. the connection recovered while this restart was
+              // queued. It committed to the restart before that: a strike is
+              // written and consumers have been told the socket is being
+              // recreated, and both have to be taken back.
+              if (started === false) {
+                await connection.withdrawStallRestart();
+              }
+            })
+            .catch(async (error) => {
+              logger.error(
+                "[%s] [requestRestart] %s",
+                phoneNumber,
+                errorToString(error),
+              );
+              // Only when nothing came up in the meantime: a later connect may
+              // have succeeded while this one was failing.
+              if (this.connections[phoneNumber]) {
+                return;
+              }
+              await this.onSpawnFailed?.(
+                phoneNumber,
+                connection.currentOptions.leaseEpoch ?? null,
+              );
+            });
         },
       });
       this.connections[phoneNumber] = connection;
