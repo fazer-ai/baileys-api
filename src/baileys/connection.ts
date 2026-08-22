@@ -529,6 +529,11 @@ export class BaileysConnection {
       // (and only here) is what makes every stamped watchdog reading below
       // mean "observed on the socket that is live right now".
       this.socketGeneration += 1;
+      // The id history belongs to the socket that submitted them. A delayed
+      // receipt for a message the PREVIOUS socket sent would otherwise stamp
+      // lastOutgoingAckAt now, presenting end-to-end evidence about a
+      // replacement that may itself be wedged and has sent nothing.
+      this.submittedMessageIds.clear();
     } catch (error) {
       logger.error(
         "[%s] [BaileysConnection.connect] Failed to create socket: %s",
@@ -1696,10 +1701,7 @@ export class BaileysConnection {
   private trackOutgoingAck(data: BaileysEventMap["messages.update"]) {
     const acked = data.some(
       ({ key, update }) =>
-        key?.fromMe === true &&
-        key.id !== undefined &&
-        key.id !== null &&
-        this.submittedMessageIds.has(key.id) &&
+        this.isOurSubmittedKey(key) &&
         update?.status !== undefined &&
         update.status !== null &&
         update.status >= WAMessageStatus.SERVER_ACK,
@@ -1707,6 +1709,35 @@ export class BaileysConnection {
     if (acked) {
       this._lastOutgoingAckAt = Date.now();
     }
+  }
+
+  // The group half of the same signal. A group message's delivery and read
+  // acknowledgements arrive on message-receipt.update, not messages.update, so a
+  // connection that only ever writes to groups would sit at `unknown` forever no
+  // matter how many recipients confirmed — an inbox whose send path is provably
+  // working, reported as never observed.
+  private trackOutgoingReceiptAck(
+    data: BaileysEventMap["message-receipt.update"],
+  ) {
+    const acked = data.some(
+      ({ key, receipt }) =>
+        this.isOurSubmittedKey(key) &&
+        (receipt?.receiptTimestamp != null ||
+          receipt?.readTimestamp != null ||
+          receipt?.playedTimestamp != null),
+    );
+    if (acked) {
+      this._lastOutgoingAckAt = Date.now();
+    }
+  }
+
+  private isOurSubmittedKey(key: WAMessageKey | undefined | null): boolean {
+    return (
+      key?.fromMe === true &&
+      key.id !== undefined &&
+      key.id !== null &&
+      this.submittedMessageIds.has(key.id)
+    );
   }
 
   private hasAccountRestrictionError(
@@ -1765,6 +1796,7 @@ export class BaileysConnection {
     data: BaileysEventMap["message-receipt.update"],
   ) {
     this.markTraffic();
+    this.trackOutgoingReceiptAck(data);
     this.sendToWebhook({
       event: "message-receipt.update",
       data,

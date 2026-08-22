@@ -1721,6 +1721,64 @@ describe("BaileysConnection", () => {
       expect(connection.lastOutgoingAckAt).not.toBeNull();
     });
 
+    // Group delivery and read acknowledgements ride message-receipt.update, not
+    // messages.update. Without this a connection that only writes to groups sits
+    // at `unknown` forever no matter how many recipients confirmed.
+    it("records an outgoing ack from a group receipt", async () => {
+      await connection.connect();
+      await connection.sendMessage(
+        "group@g.us",
+        { text: "hi" },
+        { messageId: "3EB0GROUP" },
+      );
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      mockEventHandlers.get("message-receipt.update")?.([
+        {
+          key: { fromMe: true, id: "3EB0GROUP", remoteJid: "group@g.us" },
+          receipt: { userJid: "5511@s.whatsapp.net", receiptTimestamp: 1 },
+        },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
+    // The id history describes the socket that submitted them. A receipt for a
+    // message the PREVIOUS socket sent would otherwise present end-to-end evidence
+    // about a replacement that has sent nothing and may itself be wedged.
+    it("stops honouring acks for ids the replaced socket submitted", async () => {
+      await connection.connect();
+      await connection.sendMessage(
+        "jid@s.whatsapp.net",
+        { text: "hi" },
+        { messageId: "3EB0OLDSOCKET" },
+      );
+
+      // The reconnect path, minus its async scheduling: drop the socket and build
+      // the replacement through the real connect(), which is what bumps the
+      // generation and clears the history.
+      (connection as unknown as { socket: unknown }).socket = null;
+      await connection.connect();
+
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: true, id: "3EB0OLDSOCKET" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      // And the replacement can still prove itself on its own traffic.
+      await connection.sendMessage(
+        "jid@s.whatsapp.net",
+        { text: "hi" },
+        { messageId: "3EB0NEWSOCKET" },
+      );
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: true, id: "3EB0NEWSOCKET" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
     // `fromMe` is true for everything the account sends, including from the phone
     // and from other linked devices — none of which went through this socket's
     // keystore mutex. Counting those would let a busy account keep a wedged
