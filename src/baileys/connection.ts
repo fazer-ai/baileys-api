@@ -1536,6 +1536,20 @@ export class BaileysConnection {
       return;
     }
     try {
+      // The same fork handleSendStall makes after its own write, for the same
+      // reason: the two ways a restart gets called off undo differently. The
+      // veto that lands here is issued by the handler AFTER it drains the
+      // per-number slot, so an explicit logout queued ahead of the restart is
+      // exactly what produces it -- and by then the auth state is gone and the
+      // coordinator has DELed this key in its finally. Restoring a previous
+      // episode's value would recreate it for a session that no longer exists
+      // and hand it to whatever is paired on this number next, its watchdog
+      // suppressed on the strength of a socket nobody can reach. Only a
+      // connection that is still ours has an increment worth taking back.
+      if (this.isDiscarded) {
+        await clearSendStall(this.phoneNumber);
+        return;
+      }
       await restoreSendStallState(this.phoneNumber, previous);
     } catch (error) {
       logger.error(

@@ -2017,6 +2017,60 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // The other way a restart gets called off, and it undoes differently. This
+    // veto is issued by the handler AFTER it drains the per-number slot, so an
+    // explicit logout queued ahead of the restart is exactly what produces it:
+    // by then the session is gone and the coordinator has DELed the backoff key
+    // in its finally. Restoring the previous episode's value would recreate it
+    // for a session that no longer exists, and hand it to whatever is paired on
+    // this number next.
+    it("does not resurrect the backoff when a logout is what vetoed the restart", async () => {
+      const key = clusterKeys.sendStall("+5511999999999");
+      const stringData = (
+        redis as unknown as { __stringData: Map<string, string> }
+      ).__stringData;
+      // An earlier genuine episode, already past its backoff window.
+      stringData.set(
+        key,
+        JSON.stringify({ restarts: 1, nextRestartAllowedAt: Date.now() - 1 }),
+      );
+
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(restarts.length).toBe(1);
+        expect(JSON.parse(stringData.get(key) ?? "{}").restarts).toBe(2);
+
+        // The logout that was holding the handler's slot runs: it ends the
+        // session, and the coordinator DELs this key on the way out.
+        (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
+        stringData.delete(key);
+
+        // The handler drains, sees the connection is no longer registered, and
+        // vetoes the restart it had queued.
+        await connection.withdrawStallRestart();
+
+        expect(await redis.get(key)).toBe(null);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // `action` is documented as whether the socket was recreated, and everything
     // after the decision can still call the restart off. Announcing "restart" up
     // front tells a consumer recovery is underway when it may never start.

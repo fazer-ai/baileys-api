@@ -77,6 +77,10 @@ function makeHandlerMock() {
     string,
     { inFlightWebhooks: number; lastTrafficAt: number | null }
   >();
+  // What a live connection currently answers for currentOptions -- which a POST
+  // /connections mutates in place, so it is not what the connection was spawned
+  // with and not necessarily what Redis holds.
+  const liveOptions = new Map<string, Record<string, unknown>>();
   const handler = {
     connections,
     activity,
@@ -99,6 +103,9 @@ function makeHandlerMock() {
       return connections.size;
     },
     updateLeaseEpoch: mock(async (_phone: string, _epoch: number) => {}),
+    liveOptions,
+    currentConnectionOptions: (phone: string) =>
+      connections.has(phone) ? (liveOptions.get(phone) ?? null) : null,
     inFlightWebhookCount: () => 0,
     connectionActivity: (phone: string) =>
       connections.has(phone)
@@ -901,6 +908,44 @@ describe("ClusterCoordinator", () => {
         "+5511999",
         {
           ...storedMetadata,
+          isReconnect: true,
+          leaseEpoch: 1,
+          forceRestart: true,
+        },
+        expect.any(Function),
+      );
+    });
+
+    // The lease fences other instances and nothing else. A POST /connections
+    // already running on THIS instance force-acquired an OLDER epoch, so the
+    // guard below does not veto this restart -- and its updateOptions writes the
+    // new webhook config into the live connection first, Redis after. Rebuilding
+    // from the snapshot read before that would hand the replacement the
+    // pre-update copy, and persistMetadata would write it back over the
+    // reconfiguration.
+    it("rebuilds from the live connection's options, not a superseded snapshot", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      // The reconfiguration lands in the window this restart spends on Redis.
+      clearQuarantine.mockImplementation(async () => {
+        handler.connections.add("+5511999");
+        handler.liveOptions.set("+5511999", {
+          webhookUrl: "https://reconfigured.example/hook",
+          webhookVerifyToken: "new-token",
+          clientName: "Stored Client",
+        });
+      });
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("restarted");
+      expect(handler.connect).toHaveBeenCalledWith(
+        "+5511999",
+        {
+          webhookUrl: "https://reconfigured.example/hook",
+          webhookVerifyToken: "new-token",
+          clientName: "Stored Client",
           isReconnect: true,
           leaseEpoch: 1,
           forceRestart: true,

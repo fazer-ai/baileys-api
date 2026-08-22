@@ -132,6 +132,20 @@ export class BaileysConnectionsHandler {
     };
   }
 
+  // The live connection's CURRENT options, which are not the ones it was
+  // spawned with: a POST /connections reuses a live connection and mutates them
+  // in place via updateOptions, in memory first and only then to Redis. So
+  // anything that rebuilds this socket has to prefer these over a metadata
+  // snapshot it read earlier -- connect() would otherwise persist the older
+  // copy back and revert the reconfiguration. Same reason the watchdog's
+  // requestRestart reads connection.currentOptions rather than the options its
+  // closure captured.
+  currentConnectionOptions(
+    phoneNumber: string,
+  ): BaileysConnectionOptions | null {
+    return this.connections[phoneNumber]?.currentOptions ?? null;
+  }
+
   // Connections that are registered and receiving but whose sends are wedged.
   // Exposed for alerting only — never for container liveness: failing the
   // container health check would restart the process and take every HEALTHY

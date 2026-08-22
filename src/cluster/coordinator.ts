@@ -854,6 +854,12 @@ export class ClusterCoordinator {
     // first means a restart racing either one rebuilds the socket from configuration
     // that has since been superseded, or answers 202 and spawns a fresh QR socket for
     // a session the user just removed.
+    //
+    // The lease fences OTHER instances, and only those. A POST /connections
+    // already in flight on THIS instance keeps writing: the auth writes are
+    // fenced on instanceId, not on the epoch, so its persistMetadata lands
+    // whatever epoch we hold. What that costs is handled at the spawn below,
+    // where the options are re-sourced from the live connection.
     const acquired = await this.acquireExplicitLease(phoneNumber);
     let metadata: StoredMetadata | null;
     try {
@@ -906,6 +912,18 @@ export class ClusterCoordinator {
     // Returned rather than assumed: a veto by that guard means nothing was
     // rebuilt, and reporting it as success hands the client a 202 for a session
     // that was deleted while this restart queued.
+    //
+    // Sourced from the live connection when there is one, and only from the
+    // snapshot above when there is not. A POST /connections for this phone can
+    // have started before this restart and still be running: it force-acquired
+    // an OLDER epoch, so the guard below does not veto us, and its
+    // updateOptions writes the new webhook config into the live connection
+    // first and to Redis after. Spawning from the snapshot would hand the
+    // replacement the pre-update copy and persistMetadata would write it back,
+    // reverting the reconfiguration -- the same hazard, and the same answer, as
+    // the watchdog's requestRestart. Read at the last statement before the call
+    // so no await of ours sits between it and the spawn.
+    const live = this.handler.currentConnectionOptions(phoneNumber);
     const proceeded = await this.runUnderExplicitLease(
       phoneNumber,
       acquired.epoch,
@@ -913,7 +931,7 @@ export class ClusterCoordinator {
         this.handler.connect(
           phoneNumber,
           {
-            ...metadata,
+            ...(live ?? metadata),
             isReconnect: true,
             leaseEpoch: acquired.epoch,
             forceRestart: true,
