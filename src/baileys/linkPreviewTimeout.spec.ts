@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 // preload mocks "@whiskeysockets/baileys", and the package has no "exports"
 // map, so this path resolves the real, patched file.
 import { getUrlInfo } from "@whiskeysockets/baileys/lib/Utils/link-preview.js";
+import { getHttpStream } from "@whiskeysockets/baileys/lib/Utils/messages-media.js";
 
 const PATCHED_FILE =
   "node_modules/@whiskeysockets/baileys/lib/Utils/link-preview.js";
@@ -52,6 +53,38 @@ describe("patched link preview", () => {
       ]);
 
       expect(seenSignal).not.toBeNull();
+      expect(outcome).toBe("settled");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // The thumbnail download that follows the oEmbed. messages-send.js hands it
+  // BOTH budgets -- `{ timeout: 3000, ...httpRequestOptions }` -- and taking the
+  // 120s one means a stalled thumbnail outlives the 45s send deadline, so the
+  // caller gets an unknown-outcome 504 and the connection a stall strike, for a
+  // keystore that was never touched. A thumbnail is worth 3s.
+  it("prefers the tighter link-preview budget for the thumbnail download", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((_url: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      })) as unknown as typeof fetch;
+
+    try {
+      const outcome = await Promise.race([
+        getHttpStream("https://example.com/thumb.jpg", {
+          timeout: 20,
+          timeoutMs: 120_000,
+        } as never).then(
+          () => "settled",
+          () => "settled",
+        ),
+        new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+      ]);
+
       expect(outcome).toBe("settled");
     } finally {
       globalThis.fetch = originalFetch;

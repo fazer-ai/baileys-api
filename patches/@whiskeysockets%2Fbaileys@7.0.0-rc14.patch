@@ -322,10 +322,10 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9
              const [image] = info.images;
              const urlInfo = {
 diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
-index a3d2fa6bae6af021a4a50b4270584fed08623f34..ea1e9ed9a4099e5609c0a483848f36a2bb6ec559 100644
+index a3d2fa6bae6af021a4a50b4270584fed08623f34..42b1f21786dd0d7bce3a09af35492a6c44516597 100644
 --- a/lib/Utils/messages-media.js
 +++ b/lib/Utils/messages-media.js
-@@ -295,10 +295,19 @@ export async function generateThumbnail(file, mediaType, options) {
+@@ -295,10 +295,26 @@ export async function generateThumbnail(file, mediaType, options) {
      };
  }
  export const getHttpStream = async (url, options = {}) => {
@@ -335,8 +335,15 @@ index a3d2fa6bae6af021a4a50b4270584fed08623f34..ea1e9ed9a4099e5609c0a483848f36a2
 +    // every send on the connection with no error, no log and no close -- the
 +    // silent send stall. `timeoutMs` comes from the socket's `options` config,
 +    // so the deadline stays policy-in-app and this patch stays mechanism-only.
++    // `timeout` first: link previews pass BOTH (messages-send.js builds
++    // `{ timeout: 3000, ...httpRequestOptions }`), and the tighter one is the
++    // right budget there -- a thumbnail is worth 3s, not two minutes of the
++    // caller's send, which would outlive the app-level send deadline and spend a
++    // stall strike on a keystore that is perfectly healthy. The app-state and
++    // media paths pass only `timeoutMs`, so they are unaffected.
++    const deadlineMs = options.timeout ?? options.timeoutMs;
 +    const signal = options.signal ??
-+        (options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined);
++        (deadlineMs ? AbortSignal.timeout(deadlineMs) : undefined);
      const response = await fetch(url.toString(), {
          dispatcher: options.dispatcher,
          method: 'GET',

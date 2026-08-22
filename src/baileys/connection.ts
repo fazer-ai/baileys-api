@@ -631,7 +631,11 @@ export class BaileysConnection {
         this.phoneNumber,
         errorToString(error),
       );
-      this.onConnectionClose?.();
+      // Not onConnectionClose here any more: every caller now handles the
+      // rejection and does its own, better cleanup (spawnConnection removes the
+      // entry it just registered and discards; the reconnect path below aborts).
+      // Firing it as well would double-notify and, on the reconnect path, evict
+      // through two routes at once.
       // Rethrown, not swallowed. Resolving here reports a connect that built
       // nothing as success: spawnConnection's cleanup never runs, an automatic
       // restart never reports the failure so the lease is never released, and
@@ -1598,6 +1602,28 @@ export class BaileysConnection {
     return this.socket;
   }
 
+  // Reconnects are fire-and-forget by design -- handleConnectionUpdate must not
+  // block on a handshake -- but connect() rejects when it cannot build a socket
+  // at all (Redis down inside useRedisAuthState, makeWASocket throwing). An
+  // unhandled rejection is fatal in Bun, so one failed reconnect would take the
+  // whole worker down and every other connection with it. Aborting rather than
+  // only logging because a connection left registered with no socket is the dark
+  // phone this change exists to eliminate: abort preserves the auth state and
+  // fires onConnectionClose, so the handler evicts us and the number becomes
+  // claimable again.
+  private reconnectInBackground() {
+    void this.connect().catch((error) => {
+      logger.error(
+        "[%s] [reconnect] could not rebuild socket: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      if (!this.isDiscarded) {
+        this.abort();
+      }
+    });
+  }
+
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
     // A discarded connection must be inert. `socket.end()` fires a final
     // connection.update before the listeners are torn down; without this
@@ -1715,7 +1741,7 @@ export class BaileysConnection {
           this.reconnectCount = 0;
           await this.handleReconnecting();
           this.socket = null;
-          this.connect();
+          this.reconnectInBackground();
           return;
         }
         // Distributed fence: a conflict/replaced kick may mean another
@@ -1757,7 +1783,7 @@ export class BaileysConnection {
           }
         }
 
-        this.connect();
+        this.reconnectInBackground();
         return;
       }
       await this.close();

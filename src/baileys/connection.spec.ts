@@ -1009,6 +1009,42 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("#connect failure", () => {
+    // Reconnects are fire-and-forget, and connect() now rejects when it cannot
+    // build a socket at all. An unhandled rejection is fatal in Bun, so one
+    // failed reconnect would take the worker down and every other connection
+    // with it. Aborting rather than only logging, because a connection left
+    // registered with no socket is the dark phone this change exists to end.
+    it("aborts instead of crashing when a reconnect cannot rebuild", async () => {
+      const closes: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        onConnectionClose: () => closes.push("closed"),
+      });
+      await connection.connect();
+
+      const baileysMod = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysMod.default as ReturnType<typeof mock>;
+      makeSocket.mockImplementationOnce(() => {
+        throw new Error("no socket for you");
+      });
+
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+
+      for (let i = 0; i < 50 && closes.length === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(closes.length).toBeGreaterThan(0);
+      expect(connection.isOpen).toBe(false);
+    });
+  });
+
   describe("#sendMessage", () => {
     it("throws BaileysNotConnectedError if not connected", async () => {
       await expect(
