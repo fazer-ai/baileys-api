@@ -316,6 +316,44 @@ describe("withIdempotency", () => {
       expect(stringData.get(KEY)).toStartWith("indeterminate:");
     });
 
+    // acquireLock fails OPEN, so a request can be running with no lock at all.
+    // By the time it gives up, a retry (or another instance) may have taken the
+    // key and cached a successful result under it. Burying that under an "outcome
+    // unknown" 409s every later caller for 24h about a message that demonstrably
+    // went out -- and, since a late mutex timeout now retracts the marker, opens
+    // the door to a resend that duplicates it.
+    it("does not bury a successor's result when it never held the lock", async () => {
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      // The acquire cannot reach Redis: withIdempotency proceeds unlocked.
+      setMock.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+      let persisted: boolean | undefined;
+
+      await expect(
+        withIdempotency(
+          KEY,
+          async () => {
+            // Redis comes back and a retry runs the send, succeeds, and caches.
+            stringData.set(KEY, JSON.stringify({ ok: true }));
+            throw new Error("timed out");
+          },
+          {
+            isIndeterminate: () => true,
+            onIndeterminate: (ok) => {
+              persisted = ok;
+            },
+          },
+        ),
+      ).rejects.toThrow();
+
+      // The successor's result stands.
+      expect(JSON.parse(stringData.get(KEY) ?? "{}")).toEqual({ ok: true });
+      // And the caller is told the marker did not land, so it must not answer
+      // with a `retry-after` that claims the retry is protected.
+      expect(persisted).toBe(false);
+    });
+
     // The marker has to outlive both the abandoned operation (nothing cancels it; it
     // sits in the keystore mutex until that socket dies) and the person reconciling
     // it. On the cached-result TTL, a send that landed 11 minutes late would find its

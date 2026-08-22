@@ -549,7 +549,21 @@ export class BaileysConnection {
     // A reused connection may have been re-leased under a newer epoch (e.g. a
     // force-acquire on POST /connections); stale epochs would get the
     // webhooks discarded by the client.
-    if (options.leaseEpoch !== undefined) {
+    //
+    // Forward only, and that is the half that bites. The epoch is a global INCR
+    // per phone, so it only ever grows -- but an explicit operation that acquired
+    // an OLDER one can still be parked before the handler when a newer one
+    // replaces the socket, and it arrives here afterwards carrying its own. Let
+    // it through and a live connection stamps events the client discards as
+    // stale while the coordinator renews an epoch nobody publishes: the channel
+    // simply stops updating. The rest of its options still apply -- it is a real
+    // reconfiguration, just no longer the owner of record. A null carries no
+    // epoch information at all and must not erase one either.
+    if (
+      options.leaseEpoch !== undefined &&
+      (this.leaseEpoch === null ||
+        (options.leaseEpoch !== null && options.leaseEpoch >= this.leaseEpoch))
+    ) {
       this.leaseEpoch = options.leaseEpoch;
     }
     await this.persistMetadata();

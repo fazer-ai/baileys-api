@@ -144,6 +144,22 @@ const mockRedis = {
         return 0;
       }
 
+      // mark-indeterminate (compare-and-set): KEYS=[key],
+      // ARGV=[ourProcessingValue, marker, ttl]. Writes only over our own
+      // processing marker or over nothing, so a successor's cached result
+      // survives.
+      if (script.includes("mark-indeterminate")) {
+        const [key] = keys;
+        const [expected, marker, ttl] = args;
+        const raw = stringData.get(key);
+        if (raw === undefined || raw === expected) {
+          stringData.set(key, marker);
+          expirations.set(key, { type: "EX", value: Number(ttl) });
+          return 1;
+        }
+        return 0;
+      }
+
       // clear-indeterminate (compare-and-delete): KEYS=[key]. Drops the marker
       // only if it is still one, so a late verdict cannot delete a cached result
       // a retry wrote after it. Checked before the generic DEL branch below,

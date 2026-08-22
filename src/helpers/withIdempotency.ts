@@ -75,6 +75,21 @@ if raw and string.sub(raw, 1, ${INDETERMINATE_PREFIX.length}) == "${INDETERMINAT
 end
 return 0`;
 
+// Compare-and-set, for the fail-open case. acquireLock returns success when it
+// cannot reach Redis, so this request may hold no lock at all: by the time it
+// gives up, a retry (or another instance) can have taken the key and even cached
+// a successful result under it. An unconditional SET would bury that result under
+// an "outcome unknown" that then 409s every later caller for 24h -- for a message
+// that demonstrably went out. Write only over our own processing marker, or over
+// nothing. KEYS[1]=key, ARGV=[ourProcessingValue, marker, ttl].
+const MARK_INDETERMINATE_SCRIPT = `-- mark-indeterminate
+local raw = redis.call("GET", KEYS[1])
+if raw == false or raw == ARGV[1] then
+  redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
+  return 1
+end
+return 0`;
+
 // Retracts an "outcome unknown" once the outcome becomes known to be "did not
 // happen". Only one thing proves that: a mutex-acquire timeout, whose waiter
 // never entered the transaction and so cannot have reached WhatsApp. Everything
@@ -329,11 +344,26 @@ async function stealLock(key: string, expected: string): Promise<boolean> {
 
 async function markIndeterminate(key: string): Promise<boolean> {
   try {
-    await redis.set(
-      key,
-      `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
-      { EX: INDETERMINATE_TTL },
-    );
+    const result = await redis.eval(MARK_INDETERMINATE_SCRIPT, {
+      keys: [key],
+      arguments: [
+        processingValue(),
+        `${INDETERMINATE_PREFIX}${instanceId}#${incarnationId}`,
+        String(INDETERMINATE_TTL),
+      ],
+    });
+    if (result !== 1) {
+      // A successor owns the key now. Reported as not persisted, which is the
+      // conservative reading: a retry may well be safe (if what is sitting there
+      // is a cached result, it gets that result back instead of sending), but we
+      // cannot tell that from a successor's own in-flight marker, and the caller
+      // uses this to decide whether to issue `retry-after`.
+      logger.warn(
+        "[withIdempotency] %s moved on before it could be marked indeterminate",
+        key,
+      );
+      return false;
+    }
     return true;
   } catch (error) {
     // Leave the `processing:` marker in place rather than releasing: it 409s

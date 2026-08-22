@@ -312,16 +312,19 @@ describe("connectionsController send-message", () => {
     const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
       throw new OperationTimeoutError("sendMessage", 45_000);
     });
-    // mockImplementationOnce on the existing mock, never spyOn: redis.set is
-    // already a mock here, and spying over one leaks past mockRestore into every
-    // later spec file. Twice, because the outage has to reach both writes -- the
-    // lock acquire, which fails open, and the marker.
+    // mockImplementationOnce on the existing mocks, never spyOn: these are
+    // already mocks here, and spying over one leaks past mockRestore into every
+    // later spec file. Both writes have to be reached -- the lock acquire (SET,
+    // which fails open) and the marker (a compare-and-set EVAL).
     const setMock = redis.set as unknown as ReturnType<typeof mock>;
+    const evalMock = redis.eval as unknown as ReturnType<typeof mock>;
     setMock.mockClear();
+    evalMock.mockClear();
     const down = async () => {
       throw new Error("redis down");
     };
-    setMock.mockImplementationOnce(down).mockImplementationOnce(down);
+    setMock.mockImplementationOnce(down);
+    evalMock.mockImplementationOnce(down);
 
     try {
       const app = new Elysia().use(connectionsController);
@@ -340,8 +343,9 @@ describe("connectionsController send-message", () => {
           "@baileys-api:idempotency:send-message:+551234567890:42",
         ),
       ).toBe(false);
-      // Both writes were actually attempted, or the stub above proved nothing.
-      expect(setMock.mock.calls.length).toBe(2);
+      // Both writes were actually attempted, or the stubs above proved nothing.
+      expect(setMock.mock.calls.length).toBe(1);
+      expect(evalMock.mock.calls.length).toBe(1);
     } finally {
       spy.mockRestore();
       stringData.clear();

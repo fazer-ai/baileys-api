@@ -558,6 +558,42 @@ describe("BaileysConnection", () => {
       conn.discard();
     });
 
+    it("refuses an epoch that would go backwards", async () => {
+      // Two explicit operations racing. The one that acquired the OLDER epoch can
+      // still be parked before the handler when the newer one replaces the
+      // socket, and it arrives here afterwards carrying its own. Taking it leaves
+      // a live connection stamping events the client discards as stale while the
+      // coordinator renews an epoch nobody publishes: the channel stops updating.
+      const conn = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 9,
+      });
+      await conn.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      await conn.updateOptions({
+        ...defaultOptions,
+        webhookUrl: "https://reconfigured.example/hook",
+        leaseEpoch: 7,
+      });
+      fetchCalls.length = 0;
+
+      await handler({ isNewLogin: true });
+      // A bounded wait, not the spin the sibling examples use: this one asserts
+      // an epoch is ABSENT, and a regression that stamps 7 would hang a spin for
+      // 9 instead of failing.
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(fetchCalls.some((c) => c.body?.includes('"epoch":9'))).toBe(true);
+      expect(fetchCalls.some((c) => c.body?.includes('"epoch":7'))).toBe(false);
+      // The rest of that operation still applied: it is a real reconfiguration,
+      // just no longer the owner of record.
+      expect(conn.currentOptions.webhookUrl).toBe(
+        "https://reconfigured.example/hook",
+      );
+      conn.discard();
+    });
+
     it("omits the epoch when none was provided", async () => {
       await connection.connect();
       const handler = mockEventHandlers.get("connection.update")!;
