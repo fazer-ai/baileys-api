@@ -419,8 +419,14 @@ export class ClusterCoordinator {
               id,
               errorToString(error),
             );
-            // Don't sit on a lease we can't service — let a peer try.
-            await this.releaseHeldLease(id).catch(() => {});
+            // Don't sit on a lease we can't service — let a peer try. Fenced on
+            // the epoch THIS cycle acquired, not on whatever heldLeaseEpochs now
+            // holds: an explicit connect, import or restart can force-acquire its
+            // own while this spawn is awaiting, and releasing that one would leave
+            // its live socket with a lease nobody renews, free for any claim loop
+            // to take. The guard above catches the same race before the connect,
+            // but nothing stops it landing during one.
+            await this.abandonExplicitLease(id, epoch).catch(() => {});
             void registry.publishOwnershipChanged(id);
           }
         }),

@@ -386,6 +386,30 @@ describe("ClusterCoordinator", () => {
       // Released under the epoch acquired in this same cycle.
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
     });
+
+    // An explicit connect, import or restart can force-acquire its own lease
+    // while this spawn is awaiting. The pre-connect guard catches that race
+    // before the attempt, but nothing stops it landing during one -- and
+    // releasing by "whatever we hold now" would hand away that operation's lease,
+    // leaving its live socket with nobody renewing it and free for any claim loop
+    // to take.
+    it("releases the failed claim's own epoch, not a newer one", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connect.mockImplementationOnce(async () => {
+        // A concurrent explicit operation force-acquires while we are awaiting.
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.set("+5511999", 9);
+        throw new Error("boom");
+      });
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+5511999")]);
+
+      await coordinator.runClaimCycle();
+
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+      expect(releaseLease).not.toHaveBeenCalledWith("+5511999", 9);
+    });
   });
 
   describe("#runRebalanceCycle", () => {
