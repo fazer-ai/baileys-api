@@ -930,7 +930,14 @@ export class BaileysConnection {
       // is the same reading on the path that runs first.
       if (error instanceof OperationTimeoutError) {
         this.recordSendTimeout(operation, generation);
-      } else if (isTxMutexTimeout(error)) {
+      } else if (
+        isTxMutexTimeout(error) &&
+        this.isCurrentGeneration(generation)
+      ) {
+        // Gated together, and the gate has to come first. recordSendTimeout drops
+        // a stale generation on its own, but noteMutexWedge would already have
+        // stamped a replaced socket's key onto the live watchdog -- the same
+        // ordering the late-settlement path gets right.
         this.noteMutexWedge(error);
         this.recordSendTimeout(operation, generation, "mutex-wedge");
       }

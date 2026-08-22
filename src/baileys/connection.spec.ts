@@ -1229,6 +1229,70 @@ describe("BaileysConnection", () => {
       expect(mockSocket.sendMessage).toHaveBeenCalled();
     });
 
+    // recordSendTimeout drops a stale generation, but noteMutexWedge ran first and
+    // stamped the replaced socket's key onto the live watchdog. A release on THAT
+    // key then closes a breaker that is open because of a different one.
+    it("ignores a mutex timeout that belongs to a replaced socket", async () => {
+      config.baileys.sendTimeoutMs = 5_000;
+      await connectOpen();
+      const baileysModule = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const emit = (event: Record<string, unknown>) =>
+        makeSocket.mock.calls
+          .at(-1)![0]
+          .transactionOpts.onTransactionEvent(event);
+
+      // A send left in flight on the socket that is about to be replaced.
+      let rejectStale!: (error: unknown) => void;
+      mockSocket.sendMessage.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectStale = reject;
+          }),
+      );
+      const stale = send().catch(() => "settled");
+
+      await mockEventHandlers.get("connection.update")!({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "open",
+      });
+
+      // The replacement wedges on its OWN key, which is what the breaker is about.
+      mockSocket.sendMessage.mockImplementation(() =>
+        Promise.reject(
+          Object.assign(new Error("live wedge"), {
+            data: { key: "live-key", code: "E_TX_MUTEX_TIMEOUT" },
+          }),
+        ),
+      );
+      await expect(send()).rejects.toThrow("live wedge");
+      await expect(send()).rejects.toThrow("live wedge");
+      await expect(send()).rejects.toThrow("live wedge");
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+
+      // Only now does the replaced socket's send report its own, different key.
+      rejectStale(
+        Object.assign(new Error("stale wedge"), {
+          data: { key: "stale-key", code: "E_TX_MUTEX_TIMEOUT" },
+        }),
+      );
+      await stale;
+
+      // A key the live socket was never blocked on says nothing about it.
+      emit({ phase: "released", key: "stale-key", waitedMs: 0, heldMs: 1_000 });
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+    });
+
     // The mirror of the reconnect finding: maybeReportSendStall already refuses to
     // call this a stall while the socket is not open, and the REFUSAL has to agree.
     // The stall-specific 503 tells the caller the connection is up and must not be

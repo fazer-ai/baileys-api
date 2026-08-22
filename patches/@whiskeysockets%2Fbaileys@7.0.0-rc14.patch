@@ -197,10 +197,10 @@ index 24a358326a704e3f95b27ad996d2bc5e8ecfd101..f5a738f2b7d501ece18be53032540b05
                  releaseTxMutexRef(key);
              }
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf71e7be00 100644
+index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9ff8f009d 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
-@@ -1,6 +1,52 @@
+@@ -1,6 +1,62 @@
  import { prepareWAMessageMedia } from './messages.js';
  import { extractImageThumb, getHttpStream } from './messages-media.js';
  const THUMBNAIL_WIDTH_PX = 192;
@@ -230,7 +230,17 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf
 +        throw new Error('Invalid YouTube URL');
 +    }
 +    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
-+    const response = await fetch(oembedUrl, fetchOpts);
++    // Native fetch ignores both budgets the caller passes here: the lib's own
++    // `timeout` (3000, set in messages-send.js) and our `timeoutMs`. Unbounded,
++    // a parked oEmbed request holds the send until the app-level deadline gives
++    // up, counts a stall strike against a keystore that is perfectly healthy,
++    // and leaks the request forever. Prefer the lib's tighter link-preview
++    // budget: a preview is worth 3s, not two minutes of the caller's send.
++    const previewTimeoutMs = fetchOpts?.timeout ?? fetchOpts?.timeoutMs;
++    const response = await fetch(oembedUrl, {
++        ...fetchOpts,
++        signal: fetchOpts?.signal ?? (previewTimeoutMs ? AbortSignal.timeout(previewTimeoutMs) : undefined)
++    });
 +    if (!response.ok) {
 +        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
 +    }
@@ -253,7 +263,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf
  /** Fetches an image and generates a thumbnail for it */
  const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
      const stream = await getHttpStream(url, fetchOpts);
-@@ -26,27 +72,36 @@ export const getUrlInfo = async (text, opts = {
+@@ -26,27 +82,36 @@ export const getUrlInfo = async (text, opts = {
          if (!text.startsWith('https://') && !text.startsWith('http://')) {
              previewLink = 'https://' + previewLink;
          }
