@@ -1684,6 +1684,53 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // The strike stands for a restart. If recovery lands while the write is in
+    // flight, the handler's own guard vetoes the restart -- and a strike left
+    // behind then suppresses the NEXT genuine stall for five minutes on the
+    // strength of a connection that healed itself.
+    it("rolls the strike back when recovery cancels the restart", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+
+      const key = clusterKeys.sendStall("+5511999999999");
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      const setKeys: string[] = [];
+      setMock.mockImplementationOnce(async (k: string, v: string) => {
+        setKeys.push(k);
+        // A genuine recovery signal, not a hand-cleared flag: `open` is a new
+        // socket, and clearing the stall is what withdraws the restart.
+        await mockEventHandlers.get("connection.update")?.({
+          connection: "open",
+        });
+        (
+          redis as unknown as { __stringData: Map<string, string> }
+        ).__stringData.set(k, v);
+        return "OK";
+      });
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(setKeys).toEqual([key]);
+        expect(await redis.get(key)).toBe(null);
+        expect(restarts.length).toBe(0);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // Without this, the breaker stays open across an in-place reconnect (the
     // connection object survives a socket drop) and the connection answers 503
     // forever — worse than the original stall, which at least cleared itself
@@ -2126,6 +2173,42 @@ describe("BaileysConnection", () => {
       ]);
 
       expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
+    // The send whose outcome we could not confirm is exactly the one whose
+    // acknowledgement matters most, and it is the one that used to be
+    // unmatchable: the success path that records Baileys' generated id never
+    // ran, so every receipt for it was rejected as not ours and the only
+    // end-to-end evidence there is stayed null. Reachable only without a
+    // reserved messageId; with one the same id was tracked before the send left.
+    it("matches acks for a send that only succeeded after timing out", async () => {
+      config.baileys.sendTimeoutMs = 10;
+      await connectOpen();
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      mockSocket.sendMessage.mockImplementationOnce(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ key: { id: "GENERATED-LATE" } }), 30),
+          ),
+      );
+      await expect(
+        connection.sendMessage("jid@s.whatsapp.net", { text: "hi" }),
+      ).rejects.toThrow(OperationTimeoutError);
+
+      // Real timers: asyncSleep is mocked in preload and would spin without ever
+      // letting the 30ms settle fire.
+      for (let i = 0; i < 50 && connection.lastSendCompletedAt === null; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(connection.lastSendCompletedAt).not.toBeNull();
+
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: true, id: "GENERATED-LATE" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+      config.baileys.sendTimeoutMs = 45_000;
     });
 
     // Group delivery and read acknowledgements ride message-receipt.update, not

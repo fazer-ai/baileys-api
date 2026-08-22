@@ -922,7 +922,8 @@ export class BaileysConnection {
         operation,
         config.baileys.sendTimeoutMs,
         fn,
-        (error) => this.recordLateSettle(operation, generation, error),
+        (error, value) =>
+          this.recordLateSettle(operation, generation, error, value),
       );
       this.recordSendSuccess(generation);
       return result;
@@ -1014,6 +1015,7 @@ export class BaileysConnection {
     operation: string,
     generation: number,
     error?: unknown,
+    value?: unknown,
   ) {
     if (this.isDiscarded || !this.isCurrentGeneration(generation)) {
       return;
@@ -1053,6 +1055,18 @@ export class BaileysConnection {
       this._consecutiveSendTimeouts,
     );
     if (error === undefined) {
+      // The id Baileys generated for this message, which the success path would
+      // have recorded and never got to. Without it every receipt for this
+      // message is rejected by isOurSubmittedKey, so lastOutgoingAckAt -- the
+      // only end-to-end evidence there is, and the only one that does not come
+      // from us -- stays null for precisely the send whose outcome was unknown.
+      // Only reachable when the caller reserved no messageId; with one, the
+      // same id was already tracked before the send left.
+      const sentId = (value as { key?: { id?: string | null } } | undefined)
+        ?.key?.id;
+      if (sentId) {
+        this.trackSubmittedId(sentId);
+      }
       this.recordSendSuccess(generation);
       return;
     }
@@ -1268,7 +1282,14 @@ export class BaileysConnection {
         // Re-read after the write: the DEL can land inside it, which the check
         // above cannot see. Undoing is the only way back, since nothing in the
         // store fences a write against a session that has already ended.
-        if (this.isDiscarded) {
+        // Two ways this write can be obsolete by the time it lands, and both
+        // end the same way. isDiscarded: logout began, and the coordinator's DEL
+        // may have already run. !restartRequested: a late send completion or the
+        // wedged key releasing cleared the stall, so the handler's own guard will
+        // veto the restart -- and a strike that outlives the restart it stands
+        // for suppresses the NEXT genuine stall for five minutes on the strength
+        // of a recovery.
+        if (this.isDiscarded || !this.restartRequested) {
           await clearSendStall(this.phoneNumber);
           return;
         }

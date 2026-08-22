@@ -1240,6 +1240,30 @@ describe("BaileysConnectionsHandler", () => {
       expect(mockConnect).not.toHaveBeenCalled();
     });
 
+    // The claim scan skips any phone that already has a lease, so a restart that
+    // fails to rebuild leaves the number dark until the TTL and the unclaimed
+    // grace elapse, with every request routed here answering 404.
+    it("reports a restart that could not rebuild its socket", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const failures: string[] = [];
+      handler.onSpawnFailed = (phone: string) => {
+        failures.push(phone);
+      };
+      mockConnect.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      restartOf("+5511999999999")?.("send stall");
+
+      for (let i = 0; i < 50 && failures.length === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(failures).toEqual(["+5511999999999"]);
+      expect(handler.hasConnection("+5511999999999")).toBe(false);
+      handler.onSpawnFailed = null;
+    });
+
     // Regression guard for a deadlock that is silent when it happens: the
     // obvious implementation wraps this in withInFlightOp, and spawnConnection
     // takes the SAME per-number slot, so it would wait forever on a slot the

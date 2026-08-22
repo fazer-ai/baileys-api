@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import {
   cancelAudioJob,
   completeAudioJob,
+  isAudioJobCancelled,
   registerAudioJob,
 } from "@/baileys/helpers/audioJobs";
 import ffmpeg from "@/bindings/ffmpeg";
@@ -59,6 +60,14 @@ async function processAudio(
 
     await new Promise<void>((ffResolve, ffReject) =>
       command
+        // The only moment ffmpegProc is guaranteed to exist. A cancel decided
+        // while fluent-ffmpeg was still preparing found nothing to kill, so this
+        // is where that decision is finally carried out.
+        .on("start", () => {
+          if (isAudioJobCancelled(id)) {
+            command.kill("SIGKILL");
+          }
+        })
         .on("end", () => ffResolve())
         .on("error", (err) => ffReject(err))
         .save(tmpFilename),

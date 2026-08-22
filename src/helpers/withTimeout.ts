@@ -36,14 +36,17 @@ export function withTimeout<T>(
   operation: string,
   timeoutMs: number,
   fn: () => Promise<T>,
-  onLateSettle?: (error?: unknown) => void,
+  onLateSettle?: (error?: unknown, value?: T) => void,
 ): Promise<T> {
   let timedOut = false;
   const underlying = fn();
   underlying.then(
-    () => {
+    (value) => {
       if (timedOut) {
-        onLateSettle?.();
+        // The value comes with it: the caller's success path never ran, so
+        // anything it would have recorded from the result is only available
+        // here. For a send that is the message id WhatsApp actually used.
+        onLateSettle?.(undefined, value);
       }
     },
     (error: unknown) => {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
   cancelAudioJob,
   completeAudioJob,
+  isAudioJobCancelled,
   registerAudioJob,
   runningAudioJobCount,
 } from "@/baileys/helpers/audioJobs";
@@ -41,5 +42,33 @@ describe("audioJobs", () => {
 
   it("is inert for a job it never saw", () => {
     expect(cancelAudioJob(3)).toBe(false);
+  });
+
+  // fluent-ffmpeg spawns asynchronously: during _prepare and its capability
+  // probing there is no ffmpegProc, and kill() only logs. A cancellation that
+  // lands in that window has nothing to act on, so it has to be remembered --
+  // otherwise the process starts afterwards and runs unbounded, which is exactly
+  // what the deadline exists to prevent.
+  it("kills a job that had not started when the cancel arrived", () => {
+    const kill = mock(() => {});
+
+    expect(cancelAudioJob(4)).toBe(false);
+    expect(isAudioJobCancelled(4)).toBe(true);
+
+    registerAudioJob(4, { kill });
+
+    expect(kill).toHaveBeenCalledWith("SIGKILL");
+    expect(runningAudioJobCount()).toBe(0);
+  });
+
+  // And the memory of it is bounded: a job that ends clears its own flag, so a
+  // later id reusing that number is not born cancelled.
+  it("forgets the cancellation once the job is done", () => {
+    cancelAudioJob(5);
+    expect(isAudioJobCancelled(5)).toBe(true);
+
+    completeAudioJob(5);
+
+    expect(isAudioJobCancelled(5)).toBe(false);
   });
 });

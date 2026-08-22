@@ -12,13 +12,28 @@ export interface KillableJob {
 }
 
 const running = new Map<number, KillableJob>();
+// Cancellations that arrived before there was anything to kill. fluent-ffmpeg
+// spawns asynchronously: during _prepare and its capability probing there is no
+// ffmpegProc yet, and kill() is a no-op that only logs. Forgetting the
+// cancellation there lets the process start afterwards and run unbounded, which
+// is the exact outcome the deadline exists to prevent.
+const cancelled = new Set<number>();
 
 export function registerAudioJob(id: number, job: KillableJob): void {
   running.set(id, job);
+  // The cancel may already have been decided while this job was still preparing.
+  if (cancelled.has(id)) {
+    cancelAudioJob(id);
+  }
+}
+
+export function isAudioJobCancelled(id: number): boolean {
+  return cancelled.has(id);
 }
 
 export function completeAudioJob(id: number): void {
   running.delete(id);
+  cancelled.delete(id);
 }
 
 // SIGKILL rather than SIGTERM: the case this exists for is a conversion that
@@ -26,6 +41,7 @@ export function completeAudioJob(id: number): void {
 // to act on a polite signal. Killing makes the command emit `error`, so the
 // worker's own finally still removes the temp file.
 export function cancelAudioJob(id: number): boolean {
+  cancelled.add(id);
   const job = running.get(id);
   if (!job) {
     return false;

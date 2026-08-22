@@ -108,6 +108,19 @@ export class ClusterCoordinator {
     options?: Partial<CoordinatorOptions>,
   ) {
     this.handler = handler;
+    // A restart that could not rebuild its socket must not leave us holding the
+    // lease: the claim scan skips any phone that already has one, so the number
+    // would stay dark until the TTL and unclaimed grace elapse while requests
+    // route here and 404. Same rule the claim cycle applies to its own failed
+    // reconnects.
+    this.handler.onSpawnFailed = async (phoneNumber: string) => {
+      logger.error(
+        "[coordinator] restart failed to rebuild %s, releasing lease",
+        phoneNumber,
+      );
+      await this.releaseHeldLease(phoneNumber).catch(() => {});
+      void registry.publishOwnershipChanged(phoneNumber);
+    };
     this.options = {
       claimIntervalMs: config.cluster.claimIntervalMs,
       claimJitterMs: config.cluster.claimJitterMs,

@@ -35,6 +35,13 @@ export class BaileysConnectionsHandler {
   // must keep seeing their in-flight count until it reaches zero.
   private drainingWebhooks = new Set<BaileysConnection>();
   private createConnection: ConnectionFactory;
+  // Set by the coordinator. A restart whose replacement never comes up leaves
+  // this number with no socket while the lease is still held, and the claim scan
+  // skips anything that already has a lease -- so nothing retries until the TTL
+  // and the unclaimed grace expire, and every request routed here 404s. The
+  // claim cycle's own reconnect failure already handles this the same way:
+  // do not sit on a lease we cannot service.
+  onSpawnFailed: ((phoneNumber: string) => void | Promise<void>) | null = null;
 
   constructor(createConnection?: ConnectionFactory) {
     this.createConnection =
@@ -280,12 +287,18 @@ export class BaileysConnectionsHandler {
               forceRestart: true,
             },
             stillOurs,
-          ).catch((error) => {
+          ).catch(async (error) => {
             logger.error(
               "[%s] [requestRestart] %s",
               phoneNumber,
               errorToString(error),
             );
+            // Only when nothing came up in the meantime: a later connect may
+            // have succeeded while this one was failing.
+            if (this.connections[phoneNumber]) {
+              return;
+            }
+            await this.onSpawnFailed?.(phoneNumber);
           });
         },
       });
