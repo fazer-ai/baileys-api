@@ -529,6 +529,18 @@ export class BaileysConnection {
       // (and only here) is what makes every stamped watchdog reading below
       // mean "observed on the socket that is live right now".
       this.socketGeneration += 1;
+      // The breaker counts refusals by ONE socket's keystore mutex, and this is a
+      // different mutex, so the streak dies with the socket that produced it. Two
+      // things go wrong when it survives. The count carries, so a single timeout
+      // during the new handshake (safeSocket only requires a socket object, and the
+      // replacement has one before `open` arrives) opens the breaker on a connection
+      // that was merely reconnecting, and every later request gets the stall-specific
+      // 503 that tells the caller NOT to mark the channel down. Worse, the streak
+      // CLOCK carries: sendStallStreakStartedAt still points at the old socket, so
+      // the 90s floor — the guard whose whole job is to stop one hiccup from
+      // recreating a healthy socket — is already satisfied and the watchdog restarts
+      // on the first timeout. Clearing on `open` alone is too late for both.
+      this.clearSendStallState();
       // The id history belongs to the socket that submitted them. A delayed
       // receipt for a message the PREVIOUS socket sent would otherwise stamp
       // lastOutgoingAckAt now, presenting end-to-end evidence about a
@@ -814,8 +826,17 @@ export class BaileysConnection {
       this.recordSendSuccess(generation);
       return result;
     } catch (error) {
+      // Both are refusals the breaker must count, and which one arrives first is
+      // decided by config, not by the failure: BAILEYS_TX_ACQUIRE_TIMEOUT_MS can be
+      // set below BAILEYS_SEND_TIMEOUT_MS, and then the wedge reports itself before
+      // our own deadline does. Counting only OperationTimeoutError there would leave
+      // the detector blind in exactly the configuration that detects the wedge
+      // fastest. recordLateSettle already reads this error as wedge evidence; this
+      // is the same reading on the path that runs first.
       if (error instanceof OperationTimeoutError) {
         this.recordSendTimeout(operation, generation);
+      } else if (isTxMutexTimeout(error)) {
+        this.recordSendTimeout(operation, generation, "mutex-wedge");
       }
       throw error;
     }
@@ -909,7 +930,11 @@ export class BaileysConnection {
     }
   }
 
-  private recordSendTimeout(operation: string, generation: number) {
+  private recordSendTimeout(
+    operation: string,
+    generation: number,
+    cause: "timeout" | "mutex-wedge" = "timeout",
+  ) {
     if (!this.isCurrentGeneration(generation)) {
       logger.warn(
         "[%s] [sendStall] ignoring timeout from a replaced socket operation=%s generation=%d current=%d",
@@ -925,8 +950,9 @@ export class BaileysConnection {
     const streakMs = Date.now() - this.sendStallStreakStartedAt;
 
     logger.warn(
-      "[%s] [sendStall] timeout operation=%s consecutive=%d streakMs=%d",
+      "[%s] [sendStall] %s operation=%s consecutive=%d streakMs=%d",
       this.phoneNumber,
+      cause,
       operation,
       this._consecutiveSendTimeouts,
       streakMs,

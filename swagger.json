@@ -1714,7 +1714,7 @@
             "description": "Message not sent"
           },
           "503": {
-            "description": "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
+            "description": "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
           },
           "504": {
             "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
@@ -3602,7 +3602,7 @@
             }
           },
           "503": {
-            "description": "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
+            "description": "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
           },
           "504": {
             "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
@@ -3823,7 +3823,7 @@
             "description": "Message not edited"
           },
           "503": {
-            "description": "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
+            "description": "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
           },
           "504": {
             "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."

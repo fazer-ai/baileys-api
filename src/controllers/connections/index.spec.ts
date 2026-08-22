@@ -220,6 +220,33 @@ describe("connectionsController send-message", () => {
     }
   });
 
+  // The wedge reported one layer down, by the patched keystore transaction. Left
+  // unmapped it leaves as a generic 500, which tells the caller nothing and gets
+  // the channel marked down on the Chatwoot side. It is retry-safe unconditionally,
+  // unlike the 504: a waiter that gave up on the mutex never entered the
+  // transaction, so no node reached the wire and the message was not sent.
+  it("answers 503 when a keystore transaction gives up on its mutex", async () => {
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw Object.assign(new Error("keystore transaction timed out"), {
+        data: { key: "me@s.whatsapp.net", code: "E_TX_MUTEX_TIMEOUT" },
+      });
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      // No reserved id, which is what makes the 504 branch above answer
+      // "unprotected". This branch must not care: nothing was sent.
+      const res = await app.handle(sendMessageRequest("+551234567890"));
+
+      expect(res.status).toBe(503);
+      expect(res.headers.get("x-baileys-send-state")).toBe("stalled");
+      expect(res.headers.get("retry-after")).toBe("60");
+      expect(await res.text()).toContain("was not sent");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   // With neither a chatwootMessageId nor a messageId there is no key, so
   // withIdempotency takes its no-key path and never records anything: nothing
   // stands between a retry and a second WhatsApp message. The response must not

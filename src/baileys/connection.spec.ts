@@ -1169,6 +1169,68 @@ describe("BaileysConnection", () => {
       expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
     });
 
+    // The breaker counts refusals by ONE socket's keystore mutex, and a replacement
+    // brings a new one. A streak that survives the swap accuses the wrong socket:
+    // two stale timeouts plus one during the new handshake (safeSocket only needs a
+    // socket object, and the replacement has one before `open` arrives) answer the
+    // stall-specific 503 for what was an ordinary reconnect.
+    it("does not carry a send-timeout streak across a new socket", async () => {
+      await connectOpen();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+
+      // A real reconnect through the close path, not a hand-cleared counter:
+      // creating the socket is what bumps the generation, so it is what has to
+      // take the streak along.
+      const baileysModule = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const socketsBefore = makeSocket.mock.calls.length;
+      await mockEventHandlers.get("connection.update")!({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: { output: { statusCode: 500, payload: {} }, message: "x" },
+        },
+      });
+      let stable = -1;
+      while (stable !== makeSocket.mock.calls.length) {
+        stable = makeSocket.mock.calls.length;
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(makeSocket.mock.calls.length).toBeGreaterThan(socketsBefore);
+      // The replacement comes with its own mock, at zero calls; wedge that one.
+      wedge();
+
+      // Three, all admitted: this socket has refused none of them yet.
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
+    });
+
+    // Which deadline fires first is decided by configuration, not by the failure:
+    // BAILEYS_TX_ACQUIRE_TIMEOUT_MS set below BAILEYS_SEND_TIMEOUT_MS makes the wedge
+    // report itself before our own deadline does. Counting only OperationTimeoutError
+    // would blind the detector in exactly the setup that detects a wedge fastest.
+    it("counts a keystore mutex timeout toward the breaker", async () => {
+      await connectOpen();
+      mockSocket.sendMessage.mockImplementation(() =>
+        Promise.reject(
+          Object.assign(new Error("keystore transaction timed out"), {
+            data: { key: "me@s.whatsapp.net", code: "E_TX_MUTEX_TIMEOUT" },
+          }),
+        ),
+      );
+      mockSocket.sendMessage.mockClear();
+
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+
+      expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
+    });
+
     // preprocessAudio runs up to two ffmpeg jobs for a PTT. A caller retrying into
     // a stalled connection would burn that CPU on every attempt only to be told 503
     // at the end, which is not what "fails immediately" means.

@@ -6,6 +6,7 @@ import {
   BaileysNotConnectedError,
   BaileysSendStalledError,
 } from "@/baileys/connection";
+import { isTxMutexTimeout } from "@/baileys/helpers/isTxMutexTimeout";
 import {
   InvalidNoiseCandidateError,
   mapSessionToCreds,
@@ -85,6 +86,26 @@ function sendPathErrorResponse(
       },
     });
   }
+  // The same verdict, reached one layer down and with a stronger guarantee. A
+  // waiter that gives up on the keystore mutex never entered the transaction: no
+  // context, no read, no write, no commit, and no node on the wire. So unlike the
+  // 504 above, this outcome is not unknown — the message was NOT sent — and the
+  // retry is safe whether or not an id was reserved, which is why `retrySafe`
+  // does not gate it. Without this branch the wedge the watchdog exists to catch
+  // leaves as a generic 500, which tells a caller nothing and marks the channel
+  // down on the Chatwoot side.
+  if (isTxMutexTimeout(error)) {
+    return new Response(
+      "Connection is not accepting sends (keystore transaction timed out); the message was not sent",
+      {
+        status: 503,
+        headers: {
+          "retry-after": "60",
+          "x-baileys-send-state": "stalled",
+        },
+      },
+    );
+  }
   return null;
 }
 
@@ -93,7 +114,7 @@ function sendPathErrorResponse(
 const SEND_PATH_RESPONSES = {
   503: {
     description:
-      "Connection is not accepting sends (send stall detected). Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down.",
+      "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down.",
   },
   504: {
     description:
