@@ -2076,6 +2076,53 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // A terminal `loggedOut` close lands while the strike is being written. It
+    // destroys the auth state, so rebuilding a socket afterwards would pair a
+    // fresh QR session conjured out of a logout -- and until close() marked
+    // itself, this connection still looked live enough to ask for one.
+    it("does not restart into a session that was just logged out", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+
+      const key = clusterKeys.sendStall("+5511999999999");
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      setMock.mockImplementationOnce(async (k: string, v: string) => {
+        await mockEventHandlers.get("connection.update")?.({
+          connection: "close" as const,
+          lastDisconnect: {
+            error: { output: { statusCode: 401, payload: {} }, message: "x" },
+          },
+        });
+        (
+          redis as unknown as { __stringData: Map<string, string> }
+        ).__stringData.set(k, v);
+        return "OK";
+      });
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(restarts.length).toBe(0);
+        // And the backoff goes with the session rather than being restored for
+        // whatever pairs on this number next.
+        expect(await redis.get(key)).toBe(null);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // Without this, the breaker stays open across an in-place reconnect (the
     // connection object survives a socket drop) and the connection answers 503
     // forever — worse than the original stall, which at least cleared itself

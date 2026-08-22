@@ -778,6 +778,14 @@ export class BaileysConnection {
   }
 
   private async close() {
+    // Inert from here on. close() is the terminal teardown -- logout, and a
+    // remote `loggedOut` -- and it is where the auth state is destroyed, but it
+    // was leaving isDiscarded false. Anything awaiting across it (the send-stall
+    // watchdog writing its strike is the one that bites) then read a connection
+    // that still looked live and asked the handler to rebuild a socket for a
+    // session that no longer has credentials: a fresh QR pairing conjured out of
+    // a logout. Every other teardown path marks itself; this one has to as well.
+    this.isDiscarded = true;
     this.stopGroupActivityFlush();
     if (this.clearOnlinePresenceTimeout) {
       clearTimeout(this.clearOnlinePresenceTimeout);
