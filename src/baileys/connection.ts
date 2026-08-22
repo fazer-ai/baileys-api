@@ -901,13 +901,34 @@ export class BaileysConnection {
     void this.handleSendStall(Date.now() - this.sendStallStreakStartedAt);
   }
 
+  // True while the episode this handler was launched for is still the live one.
+  // Every await below is a window in which WhatsApp can drop and remake the socket
+  // on its own: the replacement gets a fresh keystore and clears the breaker, and
+  // acting on the old verdict afterwards means reporting a stall on a healthy
+  // connection and asking the handler to discard it.
+  private isStallEpisodeCurrent(generation: number): boolean {
+    return (
+      !this.isDiscarded &&
+      this.isCurrentGeneration(generation) &&
+      this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD
+    );
+  }
+
   private async handleSendStall(streakMs: number) {
+    const generation = this.socketGeneration;
     let action: "restart" | "suppressed" = "suppressed";
     let until: string | undefined;
 
     if (config.baileys.sendStallRestartEnabled) {
       try {
-        if (await canRestartAfterStall(this.phoneNumber)) {
+        const mayRestart = await canRestartAfterStall(this.phoneNumber);
+        if (!this.isStallEpisodeCurrent(generation)) {
+          // Recovered while Redis was answering. Lower the silence so a fresh
+          // episode on the new socket can report itself.
+          this.sendStallSilentUntil = 0;
+          return;
+        }
+        if (mayRestart) {
           if (!BaileysConnection.claimStallRestartSlot()) {
             // Process-wide cooldown: another connection restarted moments ago.
             // That is a scheduling delay, not a verdict, so this episode is
@@ -920,6 +941,10 @@ export class BaileysConnection {
           action = "restart";
         } else {
           const allowedAt = await nextRestartAllowedAt(this.phoneNumber);
+          if (!this.isStallEpisodeCurrent(generation)) {
+            this.sendStallSilentUntil = 0;
+            return;
+          }
           until = allowedAt ? new Date(allowedAt).toISOString() : undefined;
           // Reconsider once the backoff we just advertised as `until` expires.
           // Staying silent past it would make that timestamp a lie: the breaker
@@ -979,6 +1004,13 @@ export class BaileysConnection {
         this.phoneNumber,
         errorToString(error),
       );
+    }
+    // Last gate before the socket is actually discarded, and the one that matters
+    // most: the webhook above only reports, this destroys a live connection.
+    if (!this.isStallEpisodeCurrent(generation)) {
+      this.restartRequested = false;
+      this.sendStallSilentUntil = 0;
+      return;
     }
     // Through the handler, never inline: the replacement socket has to
     // participate in the handler's per-number inFlightOps lock. See

@@ -687,12 +687,13 @@ export class ClusterCoordinator {
   // until the TTL expires; releasing lets a retry land anywhere.
   private async runUnderExplicitLease<T>(
     phoneNumber: string,
+    epoch: number,
     work: () => Promise<T>,
   ): Promise<T> {
     try {
       return await work();
     } catch (error) {
-      await this.abandonExplicitLease(phoneNumber);
+      await this.abandonExplicitLease(phoneNumber, epoch);
       throw error;
     }
   }
@@ -700,8 +701,20 @@ export class ClusterCoordinator {
   // Gives back a lease we acquired but are not going to use. Same reasoning as the
   // catch above: an explicit lease with no socket behind it routes 421s here until
   // the TTL expires, so every path that acquires one and then bails has to unwind it.
-  private async abandonExplicitLease(phoneNumber: string) {
-    await this.releaseHeldLease(phoneNumber).catch(() => {});
+  //
+  // Fenced on the epoch THIS operation acquired, not on whatever heldLeaseEpochs
+  // currently holds. Those stop being the same the moment a concurrent explicit
+  // operation force-acquires its own lease while we are awaiting: unwinding by the
+  // current value would hand away that operation's lease instead of ours and leave
+  // its live socket unowned, free for any claim loop to take.
+  private async abandonExplicitLease(phoneNumber: string, epoch: number) {
+    if (this.heldLeaseEpochs.get(phoneNumber) === epoch) {
+      this.heldLeaseEpochs.delete(phoneNumber);
+      this.claimedAt.delete(phoneNumber);
+    }
+    // Epoch-fenced server-side too, so a stale epoch here is a no-op rather than a
+    // release of someone else's lease.
+    await leaseStore.releaseLease(phoneNumber, epoch).catch(() => {});
     void registry.publishOwnershipChanged(phoneNumber);
   }
 
@@ -730,7 +743,7 @@ export class ClusterCoordinator {
   ) {
     const acquired = await this.acquireExplicitLease(phoneNumber);
     await this.clearQuarantineForExplicitIntent(phoneNumber);
-    await this.runUnderExplicitLease(phoneNumber, () =>
+    await this.runUnderExplicitLease(phoneNumber, acquired.epoch, () =>
       this.handler.connect(phoneNumber, {
         ...options,
         leaseEpoch: acquired.epoch,
@@ -753,7 +766,7 @@ export class ClusterCoordinator {
   ) {
     const acquired = await this.acquireExplicitLease(phoneNumber);
     await this.clearQuarantineForExplicitIntent(phoneNumber);
-    await this.runUnderExplicitLease(phoneNumber, async () => {
+    await this.runUnderExplicitLease(phoneNumber, acquired.epoch, async () => {
       // Creds and the candidate cursor are written together (single fenced
       // write), so an import never lands with one persisted but not the other.
       // A fenced-off write means another instance grabbed the lease between
@@ -814,11 +827,11 @@ export class ClusterCoordinator {
         !metadata?.webhookUrl ||
         !(await isRedisAuthStatePaired(phoneNumber))
       ) {
-        await this.abandonExplicitLease(phoneNumber);
+        await this.abandonExplicitLease(phoneNumber, acquired.epoch);
         return false;
       }
     } catch (error) {
-      await this.abandonExplicitLease(phoneNumber);
+      await this.abandonExplicitLease(phoneNumber, acquired.epoch);
       throw error;
     }
     await this.clearQuarantineForExplicitIntent(phoneNumber);
@@ -827,13 +840,24 @@ export class ClusterCoordinator {
       phoneNumber,
       reason ?? "unspecified",
     );
-    await this.runUnderExplicitLease(phoneNumber, () =>
-      this.handler.connect(phoneNumber, {
-        ...metadata,
-        isReconnect: true,
-        leaseEpoch: acquired.epoch,
-        forceRestart: true,
-      }),
+    // Re-checked after every drain inside connect(), because the checks above were
+    // made before we queued behind the handler's per-phone lock. A DELETE holding
+    // that lock clears the auth state and takes its own lease on the way in, so a
+    // restart that proceeded on the metadata it read earlier would create fresh
+    // unpaired credentials and answer 202 — resurrecting as a QR socket the phone
+    // the operator just removed. The lease epoch is the signal, and it covers every
+    // explicit operation rather than only logout: whoever ran took a newer one.
+    await this.runUnderExplicitLease(phoneNumber, acquired.epoch, () =>
+      this.handler.connect(
+        phoneNumber,
+        {
+          ...metadata,
+          isReconnect: true,
+          leaseEpoch: acquired.epoch,
+          forceRestart: true,
+        },
+        () => this.heldLeaseEpochs.get(phoneNumber) === acquired.epoch,
+      ),
     );
     return true;
   }

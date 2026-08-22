@@ -1489,6 +1489,53 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // Every await inside handleSendStall is a window in which WhatsApp can drop and
+    // remake the socket on its own. The replacement gets a fresh keystore and clears
+    // the breaker, so acting on the verdict afterwards means reporting a stall on a
+    // healthy connection and asking the handler to throw it away.
+    it("abandons the episode when the socket is replaced while the backoff is read", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const canRestart = spyOn(sendStallStore, "canRestart").mockImplementation(
+        async () => {
+          // WhatsApp remade the socket while Redis was answering.
+          (
+            connection as unknown as { socketGeneration: number }
+          ).socketGeneration += 1;
+          (
+            connection as unknown as { _consecutiveSendTimeouts: number }
+          )._consecutiveSendTimeouts = 0;
+          return true;
+        },
+      );
+      const start = Date.now();
+
+      try {
+        await connection.connect();
+        wedge();
+        fetchCalls.length = 0;
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        expect(
+          fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+            .length,
+        ).toBe(0);
+        expect(restarts.length).toBe(0);
+      } finally {
+        canRestart.mockRestore();
+        setSystemTime();
+      }
+    });
+
     // The one that made the watchdog defeat itself in production. `isOnline` is
     // a presence echo on the socket we already have — sendPresenceUpdate emits
     // it, and POST /connections calls exactly that when it reuses a live

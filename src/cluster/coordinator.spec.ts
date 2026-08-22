@@ -868,12 +868,70 @@ describe("ClusterCoordinator", () => {
 
       expect(restarted).toBe(true);
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
-      expect(handler.connect).toHaveBeenCalledWith("+5511999", {
-        ...storedMetadata,
-        isReconnect: true,
-        leaseEpoch: 1,
-        forceRestart: true,
-      });
+      expect(handler.connect).toHaveBeenCalledWith(
+        "+5511999",
+        {
+          ...storedMetadata,
+          isReconnect: true,
+          leaseEpoch: 1,
+          forceRestart: true,
+        },
+        expect.any(Function),
+      );
+    });
+
+    // The checks above ran before this restart queued behind the handler's per-phone
+    // lock. A DELETE holding that lock clears the auth state and takes its own lease on
+    // the way in, so proceeding on the metadata read earlier would create fresh unpaired
+    // credentials and answer 202 for the phone the operator just removed.
+    it("stops before the socket is rebuilt when another operation took the lease", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      await coordinator.restartWithLease("+5511999", "stall");
+
+      const shouldProceed = (
+        handler.connect.mock.calls[0] as unknown as [
+          string,
+          Record<string, unknown>,
+          () => boolean,
+        ]
+      )[2];
+      expect(shouldProceed()).toBe(true);
+
+      // Whatever ran while we were parked force-acquired its own lease.
+      (
+        coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+      ).heldLeaseEpochs.set("+5511999", 2);
+      expect(shouldProceed()).toBe(false);
+    });
+
+    // heldLeaseEpochs is where releaseHeldLease reads the epoch from, and it stops
+    // describing THIS operation the moment a concurrent explicit one force-acquires its
+    // own. Unwinding by the current value hands away that operation's lease and leaves
+    // its live socket unowned, free for any claim loop to take.
+    it("releases only the epoch it acquired when it unwinds", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockImplementation((async () => {
+        // Another explicit operation took over while we were reading.
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.set("+5511999", 2);
+        return null;
+      }) as typeof redisAuthState.getRedisAuthMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe(false);
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+      expect(releaseLease).not.toHaveBeenCalledWith("+5511999", 2);
+      expect(
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.get("+5511999"),
+      ).toBe(2);
     });
 
     // Taking options from the request would let a restart overwrite good
@@ -892,6 +950,7 @@ describe("ClusterCoordinator", () => {
           webhookUrl: storedMetadata.webhookUrl,
           webhookVerifyToken: storedMetadata.webhookVerifyToken,
         }),
+        expect.any(Function),
       );
     });
 
