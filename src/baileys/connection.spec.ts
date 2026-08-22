@@ -1592,7 +1592,17 @@ describe("BaileysConnection", () => {
       const restarts: string[] = [];
       connection = new BaileysConnection("+5511999999999", {
         ...defaultOptions,
-        requestRestart: (reason: string) => restarts.push(reason),
+        requestRestart: (reason: string) => {
+          restarts.push(reason);
+          // What the real handler does. connectionsHandler.connect runs
+          // synchronously up to its first await when the per-number slot is
+          // free, and discard() is inside that stretch -- so anything this
+          // connection does AFTER calling requestRestart sees itself discarded.
+          // A double that skips this hid exactly that, and the strike below
+          // stopped being recorded at all.
+          (connection as unknown as { isDiscarded: boolean }).isDiscarded =
+            true;
+        },
       });
       config.baileys.sendStallRestartEnabled = true;
       await connectOpen();
@@ -1630,31 +1640,48 @@ describe("BaileysConnection", () => {
       const restarts: string[] = [];
       connection = new BaileysConnection("+5511999999999", {
         ...defaultOptions,
-        requestRestart: () => {
-          restarts.push("asked");
-          // Stands in for logout landing while the strike is being written:
-          // logout() sets this before its first await.
-          (connection as unknown as { isDiscarded: boolean }).isDiscarded =
-            true;
-        },
+        requestRestart: (reason: string) => restarts.push(reason),
       });
       config.baileys.sendStallRestartEnabled = true;
       await connectOpen();
       wedge();
-      const start = Date.now();
 
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
-      setSystemTime(new Date(start + 120_000));
-      await expect(send()).rejects.toThrow(OperationTimeoutError);
-      await asyncSleep(0);
+      // Logout landing inside the write, which is the only window the pre-check
+      // cannot see: it sets isDiscarded before its first await, and the
+      // coordinator DELs this key in its finally.
+      const key = clusterKeys.sendStall("+5511999999999");
+      // The preload's redis.set is itself a mock, and laying a spyOn over one is
+      // the pattern that leaks across spec files here. Use its own one-shot API
+      // and write straight into the fake's store.
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      const setKeys: string[] = [];
+      setMock.mockImplementationOnce(async (k: string, v: string) => {
+        setKeys.push(k);
+        (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
+        (
+          redis as unknown as { __stringData: Map<string, string> }
+        ).__stringData.set(k, v);
+        return "OK";
+      });
 
-      expect(restarts.length).toBe(1);
-      expect(await redis.get(clusterKeys.sendStall("+5511999999999"))).toBe(
-        null,
-      );
-      setSystemTime();
-      await redis.del(clusterKeys.sendStall("+5511999999999"));
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await asyncSleep(0);
+
+        // Guards the stub itself: if some other write came first, the fence was
+        // never exercised and the rest of this example would prove nothing.
+        expect(setKeys).toEqual([key]);
+        expect(await redis.get(key)).toBe(null);
+        // And the restart is abandoned with it: the session is going away.
+        expect(restarts.length).toBe(0);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
     });
 
     // Without this, the breaker stays open across an in-place reconnect (the

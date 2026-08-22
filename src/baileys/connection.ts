@@ -1248,41 +1248,45 @@ export class BaileysConnection {
       return;
     }
     this.restartRequested = true;
+    // BEFORE requesting the restart, not after. requestRestart hands off to
+    // connectionsHandler.connect, which runs synchronously up to its first await
+    // when the per-number slot is free -- and that stretch includes discard().
+    // So by the time the call returns, this connection is already discarded, and
+    // recording afterwards under an isDiscarded guard would record nothing at
+    // all: a phone that stalls repeatedly would bypass its own backoff and
+    // recreate its socket without limit. The final gate is above, so a strike
+    // here still implies a restart that was actually asked for.
+    //
+    // The guard stays, for the case it was written for: logout sets isDiscarded
+    // before its first await, and the coordinator DELs the backoff key in its
+    // finally. The store is a plain read-modify-write, so a strike straddling
+    // that DEL recreates it, and the next session paired on this number inherits
+    // an escalating suppression from a socket that no longer exists.
+    if (!this.isDiscarded) {
+      try {
+        await recordStallRestart(this.phoneNumber);
+        // Re-read after the write: the DEL can land inside it, which the check
+        // above cannot see. Undoing is the only way back, since nothing in the
+        // store fences a write against a session that has already ended.
+        if (this.isDiscarded) {
+          await clearSendStall(this.phoneNumber);
+          return;
+        }
+      } catch (error) {
+        logger.error(
+          "[%s] [sendStall] failed to record restart: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+      }
+    }
+
     // Through the handler, never inline: the replacement socket has to
     // participate in the handler's per-number inFlightOps lock. See
     // connectionsHandler.spawnConnection.
     this.requestRestart?.(
       `send stall: ${this._consecutiveSendTimeouts} consecutive timeouts over ${streakMs}ms`,
     );
-    // The strike lands only once the restart has actually been asked for. Recorded
-    // before the final gate, a restart cancelled by a connection that recovered
-    // while Redis answered still counted: the backoff store then suppressed the
-    // next genuine stall for five minutes and handed it an inflated interval, on
-    // the strength of a restart that never happened.
-    // Not while this connection is being torn down. logout() sets isDiscarded
-    // before its first await, and the coordinator DELs the send-stall backoff in
-    // its finally; the store is a plain read-modify-write, so a strike written
-    // across that DEL recreates the state it just removed. The NEXT session
-    // paired on this number then inherits an escalating restart suppression --
-    // up to 24h of it -- on the strength of a socket that no longer exists.
-    if (this.isDiscarded) {
-      return;
-    }
-    try {
-      await recordStallRestart(this.phoneNumber);
-      // Re-read after the write, because the DEL can land during it and the
-      // check above cannot see that. Undoing is the only way back: nothing in
-      // the store fences a write against a session that has already ended.
-      if (this.isDiscarded) {
-        await clearSendStall(this.phoneNumber);
-      }
-    } catch (error) {
-      logger.error(
-        "[%s] [sendStall] failed to record restart: %s",
-        this.phoneNumber,
-        errorToString(error),
-      );
-    }
   }
 
   // Process-wide, not per-connection: the point is to keep a fleet-wide stall
