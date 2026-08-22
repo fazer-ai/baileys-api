@@ -282,7 +282,28 @@ export class BaileysConnectionsHandler {
         },
       });
       this.connections[phoneNumber] = connection;
-      await connection.connect();
+      try {
+        await connection.connect();
+      } catch (error) {
+        // A registered connection that never connected is worse than no entry at
+        // all: hasConnection() reads true, so claim cycles skip this number while
+        // renew cycles keep its lease alive, and its socket is null with nothing
+        // scheduled to retry. The number stays offline, owned by us, until a human
+        // sends another request -- which is the silent outage this whole change
+        // exists to end, reintroduced by its own recovery path. Cheap to reach now
+        // that the watchdog restarts sockets unattended: a Redis blip inside
+        // useRedisAuthState is enough, and the only thing downstream of that
+        // rejection is a logger.error.
+        if (this.connections[phoneNumber] === connection) {
+          delete this.connections[phoneNumber];
+        }
+        connection.discard();
+        // Same drain accounting as discardConnection, for the same reason.
+        if (connection.inFlightWebhooks > 0) {
+          this.drainingWebhooks.add(connection);
+        }
+        throw error;
+      }
     });
   }
 

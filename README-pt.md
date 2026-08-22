@@ -189,7 +189,7 @@ Exemplo: um proxy no host A (`WORKER_BASE_URL` não usado), workers nos hosts B 
 | `BAILEYS_HTTP_TIMEOUT_MS`             | Prazo para os downloads HTTP da própria biblioteca Baileys. Impede que um download travado prenda os envios da conexão. | `120000`                 |
 | `BAILEYS_TX_ACQUIRE_TIMEOUT_MS`       | Falha após esperar esse tempo pelo mutex de transação do keystore. `0` desativa. Veja "Conexões mudas" abaixo.          | `300000`                 |
 | `BAILEYS_TX_HOLD_WARN_MS`             | Reporta uma transação que ainda segura o mutex após esse tempo. Deve ser menor que o timeout de aquisição. `0` desativa. | `30000`                 |
-| `BAILEYS_SEND_TIMEOUT_MS`             | Prazo de um envio. Deve ser menor que `PROXY_REQUEST_TIMEOUT_MS`.                                                      | `45000`                  |
+| `BAILEYS_SEND_TIMEOUT_MS`             | Prazo de um envio. Somado ao orçamento fixo de 20s do pré-processamento de áudio, deve ser menor que `PROXY_REQUEST_TIMEOUT_MS`.                                                      | `45000`                  |
 | `BAILEYS_SEND_STALL_RESTART_ENABLED`  | Permite que uma conexão cujos envios travam recrie o próprio socket. A detecção e os webhooks funcionam de todo jeito.  | `false`                  |
 | `REDIS_URL`                           | A URL de conexão para sua instância Redis.                                                                              | `redis://localhost:6379` |
 | `REDIS_PASSWORD`                      | A senha para sua instância Redis (se houver).                                                                           |                          |

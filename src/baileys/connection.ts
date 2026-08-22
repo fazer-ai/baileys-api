@@ -741,14 +741,29 @@ export class BaileysConnection {
       if ("audio" in messageContent && Buffer.isBuffer(messageContent.audio)) {
         const originalAudio = messageContent.audio;
         // NOTE: Due to limitations in internal Baileys logic used to generate waveform, we use a wav proxy.
-        [messageContent.audio, waveformProxy] = await Promise.all([
-          preprocessAudio(
-            originalAudio,
-            // NOTE: Use lower quality for ptt messages for more realistic quality.
-            messageContent.ptt ? "ogg-low" : "mp3-high",
-          ),
-          messageContent.ptt ? preprocessAudio(originalAudio, "wav") : null,
-        ]);
+        //
+        // Bounded, and deliberately NOT by the send deadline. This work is local
+        // and legitimately slow, so charging it to the send budget would open the
+        // breaker and recreate a socket that never refused anything. But it runs
+        // BEFORE that deadline is armed, so unbounded it defeats the guarantee
+        // sendTimeoutMs < PROXY_REQUEST_TIMEOUT_MS exists to give: the proxy would
+        // cut first and answer its own generic 504, and the worker would never
+        // reach the code that releases the idempotency lock or counts the stall.
+        // On expiry the catch below sends the original buffer, which is exactly
+        // what already happens when ffmpeg is missing.
+        [messageContent.audio, waveformProxy] = await withTimeout(
+          "preprocessAudio",
+          config.baileys.audioPreprocessTimeoutMs,
+          () =>
+            Promise.all([
+              preprocessAudio(
+                originalAudio,
+                // NOTE: Use lower quality for ptt messages for more realistic quality.
+                messageContent.ptt ? "ogg-low" : "mp3-high",
+              ),
+              messageContent.ptt ? preprocessAudio(originalAudio, "wav") : null,
+            ]),
+        );
         messageContent.mimetype = messageContent.ptt
           ? "audio/ogg; codecs=opus"
           : "audio/mpeg";

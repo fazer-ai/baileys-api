@@ -188,7 +188,7 @@ Example: a proxy on host A (`WORKER_BASE_URL` unused), workers on hosts B and C 
 | `BAILEYS_HTTP_TIMEOUT_MS`             | Deadline for the Baileys library's own HTTP downloads. Guards against a parked download wedging a connection's sends.   | `120000`                 |
 | `BAILEYS_TX_ACQUIRE_TIMEOUT_MS`       | Reject after waiting this long for the keystore transaction mutex. `0` disables. See "Silent send stalls" below.        | `300000`                 |
 | `BAILEYS_TX_HOLD_WARN_MS`             | Report a transaction still holding the keystore mutex after this long. Must be lower than the acquire timeout. `0` disables. | `30000`             |
-| `BAILEYS_SEND_TIMEOUT_MS`             | Deadline on a single send. Must be lower than `PROXY_REQUEST_TIMEOUT_MS`.                                              | `45000`                  |
+| `BAILEYS_SEND_TIMEOUT_MS`             | Deadline on a single send. Plus the fixed 20s audio-preprocessing budget, must be lower than `PROXY_REQUEST_TIMEOUT_MS`.                                              | `45000`                  |
 | `BAILEYS_SEND_STALL_RESTART_ENABLED`  | Allow a connection whose sends keep timing out to recreate its own socket. Detection and webhooks run either way.       | `false`                  |
 | `REDIS_URL`                           | The connection URL for your Redis instance.                                                                | `redis://localhost:6379` |
 | `REDIS_PASSWORD`                      | The password for your Redis instance (if any).                                                             |                          |

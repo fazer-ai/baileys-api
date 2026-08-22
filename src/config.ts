@@ -86,6 +86,14 @@ function boolFromEnv(
   return raw === "true";
 }
 
+// How long the two ffmpeg jobs behind an audio/PTT send may take before we give
+// up converting and send the original buffer instead -- the same degradation
+// the code already applies when ffmpeg is missing. Not configurable: its only
+// job is to make the worker's total wall time bounded and checkable against
+// PROXY_REQUEST_TIMEOUT_MS, and an env var would let that check be defeated by
+// the same operator it protects.
+const AUDIO_PREPROCESS_TIMEOUT_MS = 20_000;
+
 const config = {
   packageInfo: {
     name: packageInfo.name,
@@ -134,6 +142,14 @@ const config = {
       30_000,
       { min: 0 },
     ),
+    // Deadline on the local ffmpeg work that runs BEFORE the send deadline is
+    // armed. Deliberately outside it: ffmpeg is local and slow for honest
+    // reasons, so counting it as a send timeout would open the breaker and
+    // recreate healthy sockets. But it still spends the request's budget, and
+    // the worker's wall time is this plus sendTimeoutMs -- which is what the
+    // invariant at the bottom of this file checks against the proxy deadline.
+    // Fixed rather than env-driven precisely so that sum stays checkable.
+    audioPreprocessTimeoutMs: AUDIO_PREPROCESS_TIMEOUT_MS,
     // Deadline on the socket's own sendMessage. Must stay below
     // PROXY_REQUEST_TIMEOUT_MS, otherwise the proxy cuts first and the worker
     // never gets to release the idempotency lock or count the stall.
@@ -378,10 +394,16 @@ if (
 }
 // A send that outlives the proxy's deadline is answered by the proxy's generic
 // 504, so the worker's own 504/503 -- and the lock release that goes with it --
-// never reach the caller.
-if (config.baileys.sendTimeoutMs >= config.proxy.requestTimeoutMs) {
+// never reach the caller. The audio budget is part of the sum because it is
+// spent BEFORE the send deadline is armed: for a PTT the worker's wall time is
+// both, and comparing the send deadline alone would state a guarantee the
+// worker cannot keep.
+if (
+  config.baileys.sendTimeoutMs + config.baileys.audioPreprocessTimeoutMs >=
+  config.proxy.requestTimeoutMs
+) {
   throw new Error(
-    "BAILEYS_SEND_TIMEOUT_MS must be lower than PROXY_REQUEST_TIMEOUT_MS",
+    `BAILEYS_SEND_TIMEOUT_MS plus the ${AUDIO_PREPROCESS_TIMEOUT_MS}ms audio-preprocessing budget must be lower than PROXY_REQUEST_TIMEOUT_MS`,
   );
 }
 

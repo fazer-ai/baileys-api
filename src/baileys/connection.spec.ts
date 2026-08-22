@@ -1133,6 +1133,7 @@ describe("BaileysConnection", () => {
 
     afterEach(() => {
       config.baileys.sendTimeoutMs = 45_000;
+      config.baileys.audioPreprocessTimeoutMs = 20_000;
       config.baileys.sendStallRestartEnabled = false;
       mockSocket.sendMessage.mockImplementation(async () => ({
         key: { id: "msg-id" },
@@ -1229,6 +1230,38 @@ describe("BaileysConnection", () => {
       await expect(send()).rejects.toThrow(BaileysSendStalledError);
 
       expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
+    });
+
+    // The audio work is deliberately OUTSIDE the send deadline: ffmpeg is local
+    // and legitimately slow, so charging it to the send budget would open the
+    // breaker and recreate a socket that refused nothing. But it runs BEFORE that
+    // deadline is armed, so leaving it unbounded defeats the guarantee
+    // sendTimeoutMs < PROXY_REQUEST_TIMEOUT_MS exists to give: the proxy cuts
+    // first, answers its own generic 504, and the worker never reaches the code
+    // that releases the idempotency lock or counts the stall.
+    it("bounds the audio preprocessing that precedes the send deadline", async () => {
+      await connectOpen();
+      config.baileys.audioPreprocessTimeoutMs = 10;
+      // mockImplementationOnce, twice (a PTT runs two jobs), so nothing leaks into
+      // the spec that exercises the real preprocessAudio.
+      const preprocess = preprocessAudio as unknown as ReturnType<typeof mock>;
+      preprocess.mockImplementationOnce(() => new Promise(() => {}));
+      preprocess.mockImplementationOnce(() => new Promise(() => {}));
+
+      // Raced rather than awaited: without the deadline this send never settles,
+      // and a hung example is a worse CI failure than a failed assertion.
+      const outcome = await Promise.race([
+        connection
+          .sendMessage("jid@s.whatsapp.net", {
+            audio: Buffer.from("audio"),
+            ptt: true,
+          } as never)
+          .then(() => "sent"),
+        new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+      ]);
+
+      expect(outcome).toBe("sent");
+      expect(mockSocket.sendMessage).toHaveBeenCalled();
     });
 
     // preprocessAudio runs up to two ffmpeg jobs for a PTT. A caller retrying into

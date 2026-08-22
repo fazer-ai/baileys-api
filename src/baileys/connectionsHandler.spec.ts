@@ -207,6 +207,25 @@ describe("BaileysConnectionsHandler", () => {
       expect(mockDiscard).not.toHaveBeenCalled();
     });
 
+    // A connection registered but never connected is worse than no entry: the
+    // registry answers "we own this number" to the claim and renew cycles while
+    // the socket is null, so the phone stays offline, leased to us, with nothing
+    // scheduled to retry. Reachable unattended now that the watchdog restarts
+    // sockets on its own, where the only thing downstream of the rejection is a
+    // log line.
+    it("does not leave a connection registered when its connect fails", async () => {
+      mockConnect.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      await expect(handler.connect("+5511999", defaultOptions)).rejects.toThrow(
+        "redis down",
+      );
+
+      expect(handler.hasConnection("+5511999")).toBe(false);
+      expect(mockDiscard).toHaveBeenCalled();
+    });
+
     it("keeps in-flight webhooks of a discarded connection visible until they drain", async () => {
       // The shutdown drain waits on inFlightWebhookCount() AFTER discarding
       // each phone — a discarded connection with a retrying webhook must
