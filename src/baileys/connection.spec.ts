@@ -1312,6 +1312,40 @@ describe("BaileysConnection", () => {
       await expect(send()).rejects.toThrow(BaileysSendStalledError);
     });
 
+    // `isOnline` is a presence echo on the socket we already have, not a
+    // handshake result: sendPresenceUpdate("available") emits one, and POST
+    // /connections calls exactly that when it reuses a live connection -- which
+    // is the Chatwoot health check, every five minutes. Taken as connectivity it
+    // flips isOpen mid-handshake, which is the gate deciding whether a run of
+    // timeouts is an ordinary reconnect outage or a send stall.
+    it("does not treat a presence echo as the socket being open", async () => {
+      // Deliberately no `open`: the handshake has not finished.
+      await connection.connect();
+      expect(connection.isOpen).toBe(false);
+
+      await mockEventHandlers.get("connection.update")?.({ isOnline: true });
+
+      expect(connection.isOpen).toBe(false);
+      // The rewrite itself stays: clients are still told `open`, which is the
+      // contract this echo has always had.
+      expect(
+        fetchCalls.some(
+          (call) =>
+            call.body.includes('"isOnline":true') &&
+            call.body.includes('"connection":"open"'),
+        ),
+      ).toBe(true);
+
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+
+      // An ordinary outage, not a stall: the socket never opened.
+      await expect(send()).rejects.toThrow(BaileysNotConnectedError);
+      expect(connection.sendState).not.toBe("stalled");
+    });
+
     // The mirror of the reconnect finding: maybeReportSendStall already refuses to
     // call this a stall while the socket is not open, and the REFUSAL has to agree.
     // The stall-specific 503 tells the caller the connection is up and must not be

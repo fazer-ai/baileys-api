@@ -1785,9 +1785,16 @@ export class BaileysConnection {
       Object.assign(data, { connection: "open" });
     }
 
-    if (data.connection) {
-      this.connectionState = data.connection;
-    }
+    // Deliberately NOT re-derived from data.connection here. The two rewrites
+    // above describe what the CLIENT is told, not what the socket is doing:
+    // `isOnline` is a presence echo on the socket we already have, emitted by
+    // sendPresenceUpdate("available") -- which POST /connections calls whenever
+    // it reuses a live connection, i.e. every five minutes from the Chatwoot
+    // health check. Taking it as connectivity makes a socket still finishing its
+    // handshake report `connected: true` on /health, and makes isOpen true, which
+    // is the gate that decides whether a run of send timeouts is an ordinary
+    // reconnect outage or a send stall. The real field was already applied at the
+    // top of this method, before any of the early returns.
 
     if (data.connection === "open") {
       this.reconnectCount = 0;
