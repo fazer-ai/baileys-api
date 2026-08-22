@@ -329,12 +329,12 @@ describe("connectionsController send-message", () => {
     }
   });
 
-  // The way out the 409 body advertises, and it has to actually work: a resend
-  // carrying a reserved messageId lands on the same WhatsApp key, so it cannot
-  // produce a second message. Without this the marker is a dead end for a full
-  // day — including for the caller that reserved an id precisely so its send
-  // could be safely repeated.
-  it("lets a resend with a reserved messageId past an indeterminate marker", async () => {
+  // A marker is only ever written for a send that had NO reserved id, so the
+  // WhatsApp key that attempt used is unknown to us. A retry supplying a freshly
+  // reserved id lands on a DIFFERENT key, which is a second message rather than a
+  // deduplicated one — so the id that makes a FIRST send safe does not make this
+  // retry safe, and the marker holds.
+  it("refuses a resend with a reserved messageId past an indeterminate marker", async () => {
     const stringData = (redis as any).__stringData as Map<string, string>;
     stringData.clear();
     const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
@@ -360,7 +360,10 @@ describe("connectionsController send-message", () => {
         }),
       );
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
+      expect(res.headers.get("x-baileys-idempotency-state")).toBe(
+        "indeterminate",
+      );
     } finally {
       spy.mockRestore();
       stringData.clear();
@@ -596,7 +599,9 @@ describe("connectionsController restart", () => {
     });
 
   it("answers 202 once the restart is accepted", async () => {
-    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(true);
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(
+      "restarted",
+    );
 
     try {
       const app = new Elysia().use(connectionsController);
@@ -610,7 +615,9 @@ describe("connectionsController restart", () => {
   });
 
   it("passes the caller's reason through to the coordinator", async () => {
-    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(true);
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(
+      "restarted",
+    );
 
     try {
       const app = new Elysia().use(connectionsController);
@@ -629,8 +636,28 @@ describe("connectionsController restart", () => {
     }
   });
 
+  // A newer explicit operation ran first, which usually leaves a perfectly good
+  // session behind. 404 would send the caller off to re-pair what somebody else
+  // just rebuilt.
+  it("answers 409 when another operation superseded the restart", async () => {
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(
+      "superseded",
+    );
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(restartRequest("+551234567890"));
+
+      expect(res.status).toBe(409);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("answers 404 when there is no stored session to restart", async () => {
-    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(false);
+    const spy = spyOn(coordinator, "restartWithLease").mockResolvedValue(
+      "not-found",
+    );
 
     try {
       const app = new Elysia().use(connectionsController);

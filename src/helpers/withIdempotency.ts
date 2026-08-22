@@ -12,6 +12,16 @@ const IDEMPOTENCY_TTL = 600;
 // the human who has to reconcile it. At 600s a send that finally landed 11 minutes late
 // would find its marker gone and let a retry duplicate the message, which is the one
 // outcome the marker exists to prevent.
+//
+// 24h is a bound, not a proof. What actually ends the danger is the socket dying,
+// since a parked send cannot reach WhatsApp once its socket is gone; the longest
+// wedge observed in production was 6h08, and the mutex-acquire timeout shortens
+// the wait further whenever it is enabled. It is NOT bounded with the
+// BAILEYS_TX_ACQUIRE_TIMEOUT_MS=0 kill switch thrown, so a socket wedged past a
+// full day under that setting could see a retry go out beside a send that later
+// lands. The alternative is a marker with no expiry, which trades a documented,
+// bounded risk for unbounded key growth; this is the deliberate side of that
+// trade, and the kill switch carries the caveat.
 const INDETERMINATE_TTL = 86_400;
 const PROCESSING_PREFIX = "processing:";
 // Marks work that threw in a way that leaves the outcome unknowable — a send
@@ -64,13 +74,6 @@ export interface IdempotencyOptions {
   // Predicate for "the work threw, but it may still take effect". Returning
   // true records the indeterminate marker instead of releasing the lock.
   isIndeterminate?: (error: unknown) => boolean;
-  // Proceed even when a previous attempt left an indeterminate marker. Only for
-  // callers whose retry cannot produce a second message — a caller-reserved
-  // WhatsApp id, which the server dedupes on. Without this the marker is a dead
-  // end: it outlives the retries by design, so every later attempt is refused
-  // for as long as it stands, including the one that reserved an id precisely
-  // so it could be safely repeated.
-  overrideIndeterminate?: boolean;
 }
 
 export async function withIdempotency<T>(
@@ -85,7 +88,7 @@ export async function withIdempotency<T>(
       : { status: "failed" };
   }
 
-  const outcome = await acquireOrSteal<T>(key, options?.overrideIndeterminate);
+  const outcome = await acquireOrSteal<T>(key);
   if (outcome.status === "cached") {
     return { status: "cached", value: outcome.value };
   }
@@ -122,10 +125,7 @@ type AcquireOutcome<T> =
   | { status: "processing" }
   | { status: "indeterminate" };
 
-async function acquireOrSteal<T>(
-  key: string,
-  overrideIndeterminate?: boolean,
-): Promise<AcquireOutcome<T>> {
+async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
   if (await acquireLock(key)) {
     return { status: "owned" };
   }
@@ -155,19 +155,15 @@ async function acquireOrSteal<T>(
     return { status: "processing" };
   }
 
-  // An unknown outcome stays unknown for anyone who could duplicate by retrying:
-  // deliberately no steal-on-dead-holder path here, since a dead holder tells us
-  // nothing about whether its send reached WhatsApp. The one caller allowed past
-  // is the one whose retry cannot produce a second message, and for it the marker
-  // is not information worth keeping — it is the thing standing between a stuck
-  // message and the safe resend that clears it.
+  // An unknown outcome stays unknown, for everyone. No steal-on-dead-holder path,
+  // since a dead holder tells us nothing about whether its send reached WhatsApp
+  // — and no caller override either: a marker is only ever written for a send
+  // that had NO reserved id (see isIndeterminate at the send route), so the
+  // WhatsApp key that attempt used is unknown to us. A retry supplying a freshly
+  // reserved id lands on a DIFFERENT key, which is a second message, not a
+  // deduplicated one.
   if (current.startsWith(INDETERMINATE_PREFIX)) {
-    if (!overrideIndeterminate) {
-      return { status: "indeterminate" };
-    }
-    return (await stealLock(key, current))
-      ? { status: "owned" }
-      : { status: "processing" };
+    return { status: "indeterminate" };
   }
 
   const holder = parseHolder(current);

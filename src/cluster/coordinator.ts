@@ -20,6 +20,10 @@ import { errorToString } from "@/helpers/errorToString";
 import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 
+// What POST /connections/:phone/restart actually did, because the three answer
+// different HTTP statuses and only one of them is a failure of the phone itself.
+export type RestartOutcome = "restarted" | "not-found" | "superseded";
+
 type StoredMetadata = Omit<
   BaileysConnectionOptions,
   "phoneNumber" | "onConnectionClose"
@@ -805,8 +809,12 @@ export class ClusterCoordinator {
   // explicit field list rather than a spread, so it cannot be persisted and
   // come back on every future reconnect. Keep all three properties intact.
   //
-  // Returns false when there is no stored session — nothing to restart.
-  async restartWithLease(phoneNumber: string, reason?: string) {
+  // Reports which of the three it was, because the caller answers a different
+  // status for each and "false" conflated two of them.
+  async restartWithLease(
+    phoneNumber: string,
+    reason?: string,
+  ): Promise<RestartOutcome> {
     // Fence BEFORE reading. Both checks below describe the stored session, and until
     // the lease moves the previous owner is still entitled to rewrite it: an options
     // update replaces the webhook metadata, a logout deletes the auth state. Reading
@@ -834,15 +842,18 @@ export class ClusterCoordinator {
         // builds a competing socket on the same identity. Keep ownership instead,
         // and hand the socket the epoch that now holds it or its webhooks are
         // discarded by the client as stale.
-        if (this.handler.hasConnection(phoneNumber)) {
-          await this.handler.updateLeaseEpoch(phoneNumber, acquired.epoch);
-          return false;
-        }
-        await this.abandonExplicitLease(phoneNumber, acquired.epoch);
-        return false;
+        await this.unwindRestartLease(phoneNumber, acquired.epoch);
+        return "not-found";
       }
     } catch (error) {
-      await this.abandonExplicitLease(phoneNumber, acquired.epoch);
+      // Same unwind as the branch above, and for the same reason: a Redis blip
+      // while inspecting the session must not strand a socket that is still
+      // serving. Abandoning here would stop the renewals under a live
+      // connection, which is the one outcome an inspection failure has no
+      // business causing.
+      await this.unwindRestartLease(phoneNumber, acquired.epoch).catch(
+        () => {},
+      );
       throw error;
     }
     await this.clearQuarantineForExplicitIntent(phoneNumber);
@@ -862,18 +873,41 @@ export class ClusterCoordinator {
     // Returned rather than assumed: a veto by that guard means nothing was
     // rebuilt, and reporting it as success hands the client a 202 for a session
     // that was deleted while this restart queued.
-    return await this.runUnderExplicitLease(phoneNumber, acquired.epoch, () =>
-      this.handler.connect(
-        phoneNumber,
-        {
-          ...metadata,
-          isReconnect: true,
-          leaseEpoch: acquired.epoch,
-          forceRestart: true,
-        },
-        () => this.heldLeaseEpochs.get(phoneNumber) === acquired.epoch,
-      ),
+    const proceeded = await this.runUnderExplicitLease(
+      phoneNumber,
+      acquired.epoch,
+      () =>
+        this.handler.connect(
+          phoneNumber,
+          {
+            ...metadata,
+            isReconnect: true,
+            leaseEpoch: acquired.epoch,
+            forceRestart: true,
+          },
+          () => this.heldLeaseEpochs.get(phoneNumber) === acquired.epoch,
+        ),
     );
+    // "superseded", not "not-found": the guard only vetoes when a newer explicit
+    // operation took the lease, which usually leaves a perfectly good session
+    // behind. Answering 404 would tell the caller the phone has nothing stored
+    // and send them off to re-pair a connection somebody else just rebuilt.
+    return proceeded ? "restarted" : "superseded";
+  }
+
+  // Gives back a lease this restart took and will not use — unless a live local
+  // socket is serving the phone, which is what an unpaired QR flow in progress
+  // looks like from here. Releasing then leaves that socket running with no
+  // lease: the coordinator stops renewing ownership, the proxy stops routing to
+  // it, and the next claim cycle builds a competing socket on the same identity.
+  // Keeping ownership means handing the socket the epoch that now holds it, or
+  // the client discards its webhooks as stale.
+  private async unwindRestartLease(phoneNumber: string, epoch: number) {
+    if (this.handler.hasConnection(phoneNumber)) {
+      await this.handler.updateLeaseEpoch(phoneNumber, epoch);
+      return;
+    }
+    await this.abandonExplicitLease(phoneNumber, epoch);
   }
 
   get isDraining(): boolean {

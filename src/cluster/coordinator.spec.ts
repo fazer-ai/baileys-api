@@ -871,7 +871,7 @@ describe("ClusterCoordinator", () => {
 
       const restarted = await coordinator.restartWithLease("+5511999", "stall");
 
-      expect(restarted).toBe(true);
+      expect(restarted).toBe("restarted");
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
       expect(handler.connect).toHaveBeenCalledWith(
         "+5511999",
@@ -929,7 +929,7 @@ describe("ClusterCoordinator", () => {
 
       const restarted = await coordinator.restartWithLease("+5511999");
 
-      expect(restarted).toBe(false);
+      expect(restarted).toBe("not-found");
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
       expect(releaseLease).not.toHaveBeenCalledWith("+5511999", 2);
       expect(
@@ -952,10 +952,28 @@ describe("ClusterCoordinator", () => {
 
       const restarted = await coordinator.restartWithLease("+5511999");
 
-      expect(restarted).toBe(false);
+      expect(restarted).toBe("not-found");
       expect(releaseLease).not.toHaveBeenCalled();
       // And the socket is told which epoch owns it now, or its webhooks are
       // discarded by the client as stale.
+      expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 1);
+    });
+
+    // A Redis blip while inspecting the session must not strand a socket that is
+    // still serving: abandoning the lease stops the renewals under a live
+    // connection, which is the one outcome an inspection failure has no business
+    // causing.
+    it("keeps the lease when the inspection itself fails under a live socket", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connections.add("+5511999");
+      getRedisAuthMetadata.mockRejectedValue(new Error("redis down"));
+
+      await expect(coordinator.restartWithLease("+5511999")).rejects.toThrow(
+        "redis down",
+      );
+
+      expect(releaseLease).not.toHaveBeenCalled();
       expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 1);
     });
 
@@ -969,7 +987,9 @@ describe("ClusterCoordinator", () => {
 
       const restarted = await coordinator.restartWithLease("+5511999");
 
-      expect(restarted).toBe(false);
+      // Not "not-found": the phone usually still has a perfectly good session,
+      // and 404 would send the caller off to re-pair what somebody else rebuilt.
+      expect(restarted).toBe("superseded");
     });
 
     // Taking options from the request would let a restart overwrite good
@@ -1004,7 +1024,7 @@ describe("ClusterCoordinator", () => {
 
       const restarted = await coordinator.restartWithLease("+5511999");
 
-      expect(restarted).toBe(false);
+      expect(restarted).toBe("not-found");
       expect(forceAcquireLease).toHaveBeenCalled();
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
       expect(handler.connect).not.toHaveBeenCalled();
@@ -1022,7 +1042,7 @@ describe("ClusterCoordinator", () => {
 
       const restarted = await coordinator.restartWithLease("+5511999");
 
-      expect(restarted).toBe(false);
+      expect(restarted).toBe("not-found");
       expect(forceAcquireLease).toHaveBeenCalled();
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
       expect(handler.connect).not.toHaveBeenCalled();

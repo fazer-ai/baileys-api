@@ -115,7 +115,10 @@ const config = {
     // conservative rollout value -- high enough to be diagnosis-only, since
     // `resyncAppState` is the longest legitimate holder -- so a deploy that
     // sets nothing cannot start failing real transactions. Lower to 90_000
-    // once the stall reports name the culprit. 0 disables.
+    // once the stall reports name the culprit. 0 disables — and disabling gives up
+    // the only bound on how long an abandoned send stays queued on the mutex,
+    // which the 24h indeterminate marker in withIdempotency assumes is shorter
+    // than a day. Off is a kill switch, not a steady state.
     txAcquireTimeoutMs: intFromEnv(
       "BAILEYS_TX_ACQUIRE_TIMEOUT_MS",
       BAILEYS_TX_ACQUIRE_TIMEOUT_MS,

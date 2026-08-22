@@ -307,15 +307,28 @@ const connectionsController = new Elysia({
     async ({ params, body, set }) => {
       const { phoneNumber } = params;
       try {
-        const restarted = await coordinator.restartWithLease(
+        const outcome = await coordinator.restartWithLease(
           phoneNumber,
           body?.reason,
         );
-        if (!restarted) {
+        if (outcome === "not-found") {
           set.status = 404;
           return {
             error: "Not Found",
             message: "No stored session for this phone number",
+          };
+        }
+        // A newer explicit operation (connect, import, another restart, a
+        // logout) took the lease while this one queued behind the handler's
+        // per-phone lock, so nothing was rebuilt. 409 rather than 404: the
+        // phone usually still has a perfectly good session, and 404 would send
+        // the caller off to re-pair a connection somebody else just rebuilt.
+        if (outcome === "superseded") {
+          set.status = 409;
+          return {
+            error: "Conflict",
+            message:
+              "Another connection operation for this phone number ran first",
           };
         }
       } catch (e) {
@@ -546,12 +559,6 @@ const connectionsController = new Elysia({
             // reconcile rather than resend blindly.
             isIndeterminate: (e) =>
               e instanceof OperationTimeoutError && !messageId,
-            // The other half of the same rule. A reserved id makes the resend
-            // land on the same WhatsApp key, so it cannot duplicate — and it is
-            // exactly the caller that must be able to get past a marker an
-            // earlier id-less attempt left behind, which otherwise stands for a
-            // full day and refuses every attempt to resolve it.
-            overrideIndeterminate: Boolean(messageId),
           },
         );
       } catch (e) {
@@ -605,7 +612,7 @@ const connectionsController = new Elysia({
         // named in the body instead, and it works: a resend carrying a reserved
         // messageId is admitted, because it cannot produce a second message.
         return new Response(
-          "Previous send timed out; outcome unknown. Reconcile before resending, or resend with a reserved messageId.",
+          "Previous send timed out; outcome unknown. Check the conversation on WhatsApp and, if the message is not there, resend it under a new chatwootMessageId.",
           {
             status: 409,
             headers: { "x-baileys-idempotency-state": "indeterminate" },
