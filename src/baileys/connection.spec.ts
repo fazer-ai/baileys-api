@@ -1382,6 +1382,99 @@ describe("BaileysConnection", () => {
       expect(connection.sendState).not.toBe("stalled");
     });
 
+    // The holder can let go between the acquisition giving up and the Boom
+    // reaching the breaker. handleTxEvent sees that release while nothing is
+    // armed yet and rightly ignores it -- and it is the only one that key will
+    // ever emit, so arming afterwards waits for a second release that never
+    // comes. With automatic restart off, that is 503 for the life of a socket
+    // whose mutex is free: the round 16 latch, through a narrower door.
+    it("does not arm on a key that released while its timeout propagated", async () => {
+      await connectOpen();
+      const baileysModule = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const emit = (event: Record<string, unknown>) =>
+        makeSocket.mock.calls
+          .at(-1)![0]
+          .transactionOpts.onTransactionEvent(event);
+      const wedgeError = () =>
+        Promise.reject(
+          Object.assign(new Error("keystore transaction timed out"), {
+            data: { key: "me@s.whatsapp.net", code: "E_TX_MUTEX_TIMEOUT" },
+          }),
+        );
+
+      // Once, and only once: the patch emits `timeout` and throws in the same
+      // breath, and the holder's release lands while that Boom is still
+      // travelling up the send path. That release is the only one this key will
+      // ever emit -- the holder is gone.
+      mockSocket.sendMessage.mockImplementationOnce(() => {
+        emit({ phase: "timeout", key: "me@s.whatsapp.net", waitedMs: 90_000 });
+        emit({
+          phase: "released",
+          key: "me@s.whatsapp.net",
+          waitedMs: 0,
+          heldMs: 90_001,
+        });
+        return wedgeError();
+      });
+      mockSocket.sendMessage.mockImplementation(wedgeError);
+
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+
+      // That first failure did not count towards a wedge, because the wedge had
+      // already cleared. Two strikes, not three, so the socket is still reachable.
+      mockSocket.sendMessage.mockClear();
+      await expect(send()).rejects.toThrow("keystore transaction timed out");
+      expect(mockSocket.sendMessage).toHaveBeenCalled();
+    });
+
+    // The audio work can await for the whole preprocessing budget, and a
+    // reconnect inside that window clears the id history with the socket that
+    // owned it. The send then leaves on the replacement carrying a reserved id
+    // the history no longer holds, so every ack for it is rejected as not ours
+    // and lastOutgoingAckAt -- the only evidence that does not come from us --
+    // stays null for a send that went through perfectly.
+    it("re-registers a reserved id when the socket changed during preprocessing", async () => {
+      await connectOpen();
+      const baileysModule = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+
+      const preprocess = preprocessAudio as unknown as ReturnType<typeof mock>;
+      const reconnectDuringPreprocessing = async () => {
+        await mockEventHandlers.get("connection.update")!({
+          connection: "close" as const,
+          lastDisconnect: {
+            error: { output: { statusCode: 500, payload: {} }, message: "x" },
+          },
+        });
+        let stable = -1;
+        while (stable !== makeSocket.mock.calls.length) {
+          stable = makeSocket.mock.calls.length;
+          await new Promise((r) => setImmediate(r));
+        }
+        await mockEventHandlers.get("connection.update")?.({
+          connection: "open",
+        });
+        return Buffer.from("converted");
+      };
+      preprocess.mockImplementationOnce(reconnectDuringPreprocessing);
+      preprocess.mockImplementationOnce(async () => Buffer.from("wav"));
+
+      await connection.sendMessage(
+        "jid@s.whatsapp.net",
+        { audio: Buffer.from("audio"), ptt: true } as never,
+        { messageId: "3EB0RESERVED" },
+      );
+
+      mockEventHandlers.get("messages.update")?.([
+        { key: { fromMe: true, id: "3EB0RESERVED" }, update: { status: 2 } },
+      ]);
+
+      expect(connection.lastOutgoingAckAt).not.toBeNull();
+    });
+
     // The mirror of the reconnect finding: maybeReportSendStall already refuses to
     // call this a stall while the socket is not open, and the REFUSAL has to agree.
     // The stall-specific 503 tells the caller the connection is up and must not be

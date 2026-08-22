@@ -237,6 +237,12 @@ export class BaileysConnection {
   // is the only proof the mutex freed itself that arrives while the breaker is
   // open and nothing can reach the socket.
   private wedgedTxKey: string | null = null;
+  // When each keystore key last gave up acquiring, and when it last released.
+  // Both are needed to tell "the wedge is still there" from "it let go while the
+  // failure was still on its way to us". Keyed by the handful of distinct
+  // keystore keys a socket ever uses, and reset with the socket.
+  private txTimeoutAt = new Map<string, number>();
+  private txReleasedAt = new Map<string, number>();
   // Send-stall watchdog state. Deliberately in memory and never in Redis: a
   // restart gives a new socket, hence a new keystore and a new mutex map, so
   // the count must die with the socket. Persisted state would survive the
@@ -400,6 +406,10 @@ export class BaileysConnection {
       return;
     }
     if (event.phase === "released") {
+      // Recorded for every key, armed or not: the release that matters most is
+      // the one that arrives BEFORE we know which key to watch, while the
+      // acquisition's Boom is still travelling up the send path.
+      this.txReleasedAt.set(event.key, Date.now());
       // The one signal that can close the breaker without a new socket once the
       // wedge starts reporting itself through mutex timeouts. Every abandoned
       // send then rejects with E_TX_MUTEX_TIMEOUT, which recordLateSettle
@@ -425,6 +435,9 @@ export class BaileysConnection {
         this.clearSendStallState();
       }
       return;
+    }
+    if (event.phase === "timeout") {
+      this.txTimeoutAt.set(event.key, Date.now());
     }
     // Deliberately NOT the source of wedgedTxKey. `stalled` fires for whatever
     // key happens to be held past BAILEYS_TX_HOLD_WARN_MS, which is regularly an
@@ -618,6 +631,9 @@ export class BaileysConnection {
       // lastOutgoingAckAt now, presenting end-to-end evidence about a
       // replacement that may itself be wedged and has sent nothing.
       this.submittedMessageIds.clear();
+      // Both belong to the keystore that just went away.
+      this.txTimeoutAt.clear();
+      this.txReleasedAt.clear();
       // And the evidence itself, for the same reason and with more force: any
       // non-null value makes sendState read `ok`, so a replacement that has
       // never sent anything would inherit the previous socket's health report
@@ -871,6 +887,16 @@ export class BaileysConnection {
     // Spread it only when set: Baileys spreads our options over its own
     // `messageId: generateMessageIDV2(user)` default, so an explicit
     // `undefined` would downgrade that default to the user-less fallback.
+    // Again, here, and not only at the top of this method. The audio work above
+    // can await for up to the preprocessing budget, and a reconnect inside that
+    // window clears submittedMessageIds along with the socket that owned them --
+    // so this send would go out on the replacement carrying a reserved id the
+    // history no longer holds, and every ack for it would be rejected as not
+    // ours. Registering it against the socket that is about to carry it is what
+    // makes the history mean what it says.
+    if (options?.messageId) {
+      this.trackSubmittedId(options.messageId);
+    }
     const sent = await this.relayWithTimeout("sendMessage", () =>
       this.safeSocket().sendMessage(jid, messageContent, {
         waveformProxy,
@@ -974,9 +1000,27 @@ export class BaileysConnection {
   // breaker on its own.
   private noteMutexWedge(error: unknown) {
     const key = txMutexTimeoutKey(error);
-    if (key !== null) {
-      this.wedgedTxKey = key;
+    if (key === null) {
+      return;
     }
+    // The holder can let go in the gap between the acquisition giving up and the
+    // Boom reaching here -- a few awaits up the send path. handleTxEvent saw that
+    // release while wedgedTxKey was still null and rightly ignored it, and it was
+    // the ONLY one that key will ever emit. Arming on it now would wait forever
+    // for a second release, and with automatic restart off (the default) nothing
+    // else closes the breaker: 503 for the life of a socket whose mutex is free.
+    const releasedAt = this.txReleasedAt.get(key) ?? 0;
+    const timedOutAt = this.txTimeoutAt.get(key) ?? 0;
+    if (releasedAt >= timedOutAt && releasedAt > 0) {
+      logger.warn(
+        "[%s] [keystoreTx] key=%s released while its timeout was propagating; not arming",
+        this.phoneNumber,
+        key,
+      );
+      this.clearSendStallState();
+      return;
+    }
+    this.wedgedTxKey = key;
   }
 
   private isCurrentGeneration(generation: number): boolean {
