@@ -265,6 +265,13 @@ export class BaileysConnection {
   private inFlightSends = 0;
   // The backoff state as it was before this episode's strike, so a restart
   // cancelled after the fact can undo exactly its own increment.
+  // "The session stopped existing", as opposed to "this socket was replaced".
+  // isDiscarded conflates the two -- discard() sets it for an ordinary
+  // replacement (a forceRestart connect, the lease fence, a respawn) just as
+  // logout and close do for a teardown -- and the send-stall rollback has to
+  // tell them apart: a destroyed session's backoff key must go, a replaced
+  // socket's must keep whatever history the phone genuinely earned.
+  private sessionEnded = false;
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
   private stallStrikeRollback:
@@ -790,6 +797,8 @@ export class BaileysConnection {
     // session that no longer has credentials: a fresh QR pairing conjured out of
     // a logout. Every other teardown path marks itself; this one has to as well.
     this.isDiscarded = true;
+    // Reached without logout() too, on a remote `loggedOut`.
+    this.sessionEnded = true;
     this.stopGroupActivityFlush();
     if (this.clearOnlinePresenceTimeout) {
       clearTimeout(this.clearOnlinePresenceTimeout);
@@ -817,6 +826,10 @@ export class BaileysConnection {
   }
 
   async logout() {
+    // Terminal for the SESSION, not just for this socket: close() below destroys
+    // the auth state. Marked before the first await so anything crossing it (the
+    // send-stall rollback is the one that bites) sees a session that is ending.
+    this.sessionEnded = true;
     // Mark as discarded up front so any close event the socket emits during
     // the logout flow (e.g. a connectionReplaced from another device while
     // we're awaiting the WhatsApp logout RPC) is treated as terminal by
@@ -1465,10 +1478,13 @@ export class BaileysConnection {
         // Three ways this write can be obsolete by the time it lands, and they
         // undo differently.
         //
-        // isDiscarded: logout began and the coordinator DELs this key in its
-        // finally, so restoring the previous episode's value would resurrect a
+        // sessionEnded: a logout began, and close() DELs this key on its way
+        // out, so restoring the previous episode's value would resurrect a
         // backoff for a session that no longer exists and hand it to whatever is
-        // paired on this number next. Clear instead.
+        // paired on this number next. Clear instead. Not isDiscarded, which a
+        // concurrent POST /restart also sets: that one replaces the socket and
+        // keeps the session, so wiping the phone's history there would hand it a
+        // clean slate an earlier genuine stall already spent.
         //
         // ownedElsewhere: another instance force-acquired the phone. Its socket
         // is the legitimate one, so ours is a duplicate that is still receiving
@@ -1482,9 +1498,16 @@ export class BaileysConnection {
         // and a strike that outlives the restart it stands for suppresses the
         // NEXT genuine stall on the strength of a recovery. The connection is
         // still ours, so only THIS episode's increment is wrong.
-        if (this.isDiscarded) {
+        if (this.sessionEnded) {
           this.stallStrikeRollback = undefined;
           await clearSendStall(this.phoneNumber).catch(() => {});
+          return;
+        }
+        if (this.isDiscarded) {
+          // Replaced, not ended: something else took this socket over while the
+          // strike was landing (a forceRestart connect, the lease fence). The
+          // restart is off, so only THIS episode's increment is wrong.
+          await this.rollBackStallStrike();
           return;
         }
         if (ownedElsewhere) {
@@ -1504,6 +1527,23 @@ export class BaileysConnection {
           this.phoneNumber,
           errorToString(error),
         );
+        // Suppressed, not restarted anyway. The strike is what turns "restarting
+        // is not curing this" into "give up and let the operator see it", so
+        // without one a phone that keeps stalling gets a restart every episode
+        // for as long as Redis is unreachable -- and a Redis outage is fleet-wide
+        // by nature, so that is every stalled inbox reconnecting on a loop while
+        // the system is already degraded. The READ side of the same outage
+        // already suppresses (the backoff-lookup catch above); a failed write is
+        // no different, and answering the same way keeps one outage from having
+        // two behaviours depending on which call it hit.
+        this.restartRequested = false;
+        // Re-armed on the cooldown rather than 0, for the same reason as the
+        // lookup catch: a Redis outage must not turn every rejected send into
+        // its own webhook, and leaving the silence at Infinity would mute this
+        // socket for its lifetime.
+        this.sendStallSilentUntil = Date.now() + SEND_STALL_RESTART_COOLDOWN_MS;
+        this.reportSendStall(streakMs, "suppressed", undefined);
+        return;
       }
     }
 
@@ -1549,10 +1589,23 @@ export class BaileysConnection {
     // reading this whole feature exists to prevent. The wait is bounded by the
     // retry policy, and a retraction arriving late in the right order beats one
     // arriving on time in the wrong one.
+    //
+    // The reservation is taken HERE, synchronously, and not left to
+    // sendToWebhook: the chain does not enter it until a microtask, while
+    // requestRestart discards this connection synchronously on the way out. The
+    // handler reads inFlightWebhooks at exactly that moment to decide whether to
+    // keep the old connection in drainingWebhooks, so a queued verdict that has
+    // not started yet reads as nothing pending -- and a graceful shutdown landing
+    // mid-restart exits without ever delivering the message that says recovery is
+    // underway.
+    this._inFlightWebhooks += 1;
     this.stallReportChain = this.stallReportChain
       .catch(() => {})
       .then(() => this.sendToWebhook(payload))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        this._inFlightWebhooks -= 1;
+      });
   }
 
   // The handler drains its per-number slot before re-checking whether the
@@ -1588,13 +1641,18 @@ export class BaileysConnection {
       // reason: the two ways a restart gets called off undo differently. The
       // veto that lands here is issued by the handler AFTER it drains the
       // per-number slot, so an explicit logout queued ahead of the restart is
-      // exactly what produces it -- and by then the auth state is gone and the
-      // coordinator has DELed this key in its finally. Restoring a previous
-      // episode's value would recreate it for a session that no longer exists
-      // and hand it to whatever is paired on this number next, its watchdog
-      // suppressed on the strength of a socket nobody can reach. Only a
-      // connection that is still ours has an increment worth taking back.
-      if (this.isDiscarded) {
+      // exactly what produces it -- and by then the auth state is gone and
+      // close() has DELed this key. Restoring a previous episode's value would
+      // recreate it for a session that no longer exists and hand it to whatever
+      // is paired on this number next, its watchdog suppressed on the strength
+      // of a socket nobody can reach.
+      //
+      // sessionEnded, not isDiscarded: a concurrent POST /restart produces this
+      // same veto and also sets isDiscarded, but it replaced the socket and kept
+      // the session. Clearing there would hand the phone a clean backoff slate
+      // that an earlier genuine stall already spent, so only this episode's
+      // increment comes back.
+      if (this.sessionEnded) {
         await clearSendStall(this.phoneNumber);
         return;
       }

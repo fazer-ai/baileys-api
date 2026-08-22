@@ -2051,6 +2051,149 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // isDiscarded is set by an ordinary replacement too -- a POST /restart, the
+    // lease fence, a respawn -- and those keep the session. Treating them like a
+    // logout wipes the phone's whole 24h history and hands it a clean backoff
+    // slate that an earlier genuine stall already spent.
+    it("keeps the earlier history when the socket is merely replaced", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const key = clusterKeys.sendStall("+5511999999999");
+      await redis.set(
+        key,
+        JSON.stringify({ restarts: 1, nextRestartAllowedAt: Date.now() - 1 }),
+      );
+
+      await connectOpen();
+      wedge();
+
+      const setMock = redis.set as unknown as ReturnType<typeof mock>;
+      setMock.mockImplementationOnce(async (k: string, v: string) => {
+        // A concurrent POST /restart discards this socket and spawns its
+        // replacement. The session lives on; only this socket is gone.
+        (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
+        (
+          redis as unknown as { __stringData: Map<string, string> }
+        ).__stringData.set(k, v);
+        return "OK";
+      });
+
+      try {
+        const start = Date.now();
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 5));
+
+        expect(restarts.length).toBe(0);
+        // Our increment is taken back; the phone's earlier strike stays.
+        expect(JSON.parse((await redis.get(key)) ?? "{}").restarts).toBe(1);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
+    // The strike is what turns "restarting is not curing this" into "give up and
+    // let the operator see it". Restarting anyway when it cannot be written means
+    // a phone that keeps stalling restarts on every episode for as long as Redis
+    // is unreachable -- and a Redis outage is fleet-wide, so that is every
+    // stalled inbox looping while the system is already degraded.
+    it("suppresses the restart when the strike cannot be written", async () => {
+      const restarts: string[] = [];
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const record = spyOn(sendStallStore, "recordRestart").mockRejectedValue(
+        new Error("redis down"),
+      );
+
+      try {
+        await connectOpen();
+        wedge();
+        const start = Date.now();
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        fetchCalls.length = 0;
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 5));
+
+        expect(record).toHaveBeenCalledTimes(1);
+        expect(restarts.length).toBe(0);
+        const verdicts = fetchCalls
+          .filter((call) => call.body.includes("send_stall_detected"))
+          .map((call) => JSON.parse(call.body).data.sendStall.action);
+        expect(verdicts).toEqual(["suppressed"]);
+
+        // Re-armed on the cooldown, so the connection is due for review again
+        // rather than muted for the life of the socket. The process-wide restart
+        // slot is separate state on the class and runs on performance.now(),
+        // which setSystemTime does not move, so it has to be released by hand or
+        // the second episode is merely deferred instead of re-evaluated.
+        (
+          BaileysConnection as unknown as { lastStallRestartAt: number }
+        ).lastStallRestartAt = Number.NEGATIVE_INFINITY;
+        setSystemTime(new Date(start + 200_000));
+        await expect(send()).rejects.toThrow(BaileysSendStalledError);
+        await new Promise((r) => setTimeout(r, 5));
+        expect(
+          fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
+            .length,
+        ).toBe(2);
+      } finally {
+        record.mockRestore();
+        setSystemTime();
+        await redis.del(clusterKeys.sendStall("+5511999999999"));
+      }
+    });
+
+    // The verdicts are chained, so the delivery starts a microtask later --
+    // while requestRestart discards this connection synchronously. The handler
+    // reads inFlightWebhooks at exactly that moment to decide whether to hold the
+    // old connection open for a graceful shutdown, so the queued verdict has to
+    // be counted before the chain runs, not when it does.
+    it("counts a queued verdict as in flight before the discard sees it", async () => {
+      let inFlightAtRestart = -1;
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: () => {
+          // The handler's forceRestart branch, at the line that decides whether
+          // this connection joins drainingWebhooks.
+          inFlightAtRestart = connection.inFlightWebhooks;
+        },
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const key = clusterKeys.sendStall("+5511999999999");
+
+      try {
+        await connectOpen();
+        wedge();
+        const start = Date.now();
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 5));
+
+        expect(inFlightAtRestart).toBeGreaterThan(0);
+        // And it comes back down, or a graceful shutdown would wait forever.
+        expect(connection.inFlightWebhooks).toBe(0);
+      } finally {
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // The backoff key is per phone number and outlives the session by up to 24h,
     // so a strike written while this session is being torn down is inherited by
     // whatever is paired on that number next -- its watchdog suppressed on the
@@ -2191,8 +2334,11 @@ describe("BaileysConnection", () => {
         expect(JSON.parse(stringData.get(key) ?? "{}").restarts).toBe(2);
 
         // The logout that was holding the handler's slot runs: it ends the
-        // session, and the coordinator DELs this key on the way out.
-        (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
+        // session, and close() DELs this key on the way out.
+        Object.assign(connection as unknown as Record<string, unknown>, {
+          isDiscarded: true,
+          sessionEnded: true,
+        });
         stringData.delete(key);
 
         // The handler drains, sees the connection is no longer registered, and
@@ -2297,9 +2443,12 @@ describe("BaileysConnection", () => {
 
       const setMock = redis.set as unknown as ReturnType<typeof mock>;
       setMock.mockImplementationOnce(async (k: string, v: string) => {
-        // Logout landing inside the write: it sets isDiscarded before its first
-        // await, and the coordinator DELs this key in its finally.
-        (connection as unknown as { isDiscarded: boolean }).isDiscarded = true;
+        // Logout landing inside the write: it marks the session ended and
+        // discards before its first await, and close() DELs this key.
+        Object.assign(connection as unknown as Record<string, unknown>, {
+          isDiscarded: true,
+          sessionEnded: true,
+        });
         (
           redis as unknown as { __stringData: Map<string, string> }
         ).__stringData.set(k, v);
