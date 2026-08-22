@@ -1281,6 +1281,18 @@ export class BaileysConnection {
 
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
 
+    // Recorded here, before the branches below — several of which return early
+    // (reconnect, wrong number, lease yield) and never reach the assignment near
+    // the bottom of this method. Leaving it to that one means a socket that just
+    // closed keeps reporting `open`, and since the reconnect path creates a
+    // replacement socket on its way out, `isOpen` (and the health endpoint built
+    // on it) would answer `connected: true` for the whole handshake. The
+    // assignment below still runs: it applies the qr/isOnline rewrites, which
+    // describe what the client is told, not what the socket is doing.
+    if (connection) {
+      this.connectionState = connection;
+    }
+
     // WhatsApp's authoritative reach-out time-lock state (the restriction
     // behind error 463). It rides on connection.update — sometimes standalone
     // (no `connection` field), e.g. when emitted by fetchAccountReachoutTimelock

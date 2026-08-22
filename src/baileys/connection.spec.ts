@@ -1046,6 +1046,44 @@ describe("BaileysConnection", () => {
       });
       expect(connection.isOpen).toBe(false);
     });
+
+    // The reconnect branch returns before the assignment at the bottom of
+    // handleConnectionUpdate, and on its way out it creates the replacement
+    // socket — so a state recorded only there would leave `open` standing while
+    // `socket !== null` came back, and the health endpoint would report
+    // `connected: true` for the whole handshake.
+    it("stops reporting open the moment an established socket closes", async () => {
+      await connection.connect();
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "open",
+      });
+      expect(connection.isOpen).toBe(true);
+
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: {
+              statusCode: 500,
+              payload: {
+                statusCode: 500,
+                error: "Unknown",
+                message: "Stream Errored",
+              },
+            },
+            message: "Stream Errored",
+          },
+        },
+      });
+
+      // The reconnect leaves `socket` null only until connect() finishes, and
+      // isOpen would answer false for that reason alone. Stand a socket back up
+      // directly instead of racing the async reconnect, so what is asserted is
+      // the recorded state and not the gap.
+      (connection as unknown as { socket: unknown }).socket = {};
+
+      expect(connection.isOpen).toBe(false);
+    });
   });
 
   // A later POST /connections reuses a live connection and mutates its options
