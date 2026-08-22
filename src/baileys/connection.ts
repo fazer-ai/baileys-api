@@ -226,6 +226,13 @@ export class BaileysConnection {
   // long after its deadlines stopped mattering. Every read and write of the
   // fields below is stamped with the generation it describes.
   private socketGeneration = 0;
+  // Identifies the keystore of the live socket, so events from a replaced one
+  // are ignored. Set only once makeWASocket has returned.
+  private currentTxToken: object | null = null;
+  // Which keystore key the patched transaction reported as wedged. Its release
+  // is the only proof the mutex freed itself that arrives while the breaker is
+  // open and nothing can reach the socket.
+  private wedgedTxKey: string | null = null;
   // Send-stall watchdog state. Deliberately in memory and never in Redis: a
   // restart gives a new socket, hence a new keystore and a new mutex map, so
   // the count must die with the socket. Persisted state would survive the
@@ -337,7 +344,11 @@ export class BaileysConnection {
   // writes to can be wedged for hours and still look perfect, and reporting it
   // as healthy is worse than admitting we have not observed a send.
   get sendState(): "unknown" | "ok" | "degraded" | "stalled" {
-    if (this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD) {
+    // Same gate as assertCanSend, and for the same reason: "stalled" is what
+    // stalledConnectionCount and the operator read as "up but mute". A socket
+    // that is not open yet is an ordinary outage, and its failing sends are
+    // honestly reported as `degraded` rather than as the fault they are not.
+    if (this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD && this.isOpen) {
       return "stalled";
     }
     if (this._consecutiveSendTimeouts > 0) {
@@ -356,17 +367,59 @@ export class BaileysConnection {
   // inside the patch because the logger the lib holds is baileysLogger, whose
   // level is BAILEYS_LOG_LEVEL (often `error` in production) — a warn from
   // inside the patch would be invisible exactly where it matters.
-  private handleTxEvent(event: {
-    phase: "acquired" | "released" | "stalled" | "timeout";
-    key: string;
-    waitedMs: number;
-    heldMs?: number;
-    originStack?: string;
-    stillLocked?: boolean;
-  }) {
-    if (event.phase === "acquired" || event.phase === "released") {
+  private handleTxEvent(
+    token: object,
+    event: {
+      phase: "acquired" | "released" | "stalled" | "timeout";
+      key: string;
+      waitedMs: number;
+      heldMs?: number;
+      originStack?: string;
+      stillLocked?: boolean;
+    },
+  ) {
+    // Each socket's keystore closes over its own token. A socket we replaced can
+    // still emit here -- its wedged transaction releases whenever the download it
+    // was waiting on finally dies -- and reading that as news about the live
+    // socket is the same mistake the generation stamp exists to prevent.
+    if (token !== this.currentTxToken) {
       return;
     }
+    if (event.phase === "acquired") {
+      return;
+    }
+    if (event.phase === "released") {
+      // The one signal that can close the breaker without a new socket once the
+      // wedge starts reporting itself through mutex timeouts. Every abandoned
+      // send then rejects with E_TX_MUTEX_TIMEOUT, which recordLateSettle
+      // deliberately refuses to read as recovery, and an open breaker means no
+      // send reaches the socket again -- so the ordinary success path that would
+      // clear it can never run. With BAILEYS_SEND_STALL_RESTART_ENABLED off (the
+      // default, and the whole of the diagnostic rollout) nothing else clears it
+      // either, and the connection answers 503 for the life of a socket whose
+      // mutex has been free for hours.
+      //
+      // Keyed, because a release on any other key proves nothing about the one
+      // that is wedged: the mutexes live in a per-key map.
+      if (this.wedgedTxKey !== null && event.key === this.wedgedTxKey) {
+        if (this._consecutiveSendTimeouts > 0) {
+          logger.warn(
+            "[%s] [keystoreTx] wedged key released, closing the breaker key=%s heldMs=%s afterTimeouts=%d",
+            this.phoneNumber,
+            event.key,
+            event.heldMs ?? "-",
+            this._consecutiveSendTimeouts,
+          );
+        }
+        this.clearSendStallState();
+      }
+      return;
+    }
+    // stalled | timeout: this key is the one holding everything up, and knowing
+    // WHICH key is what lets the release above count as evidence. Recorded from
+    // both phases because either can be the only one that fires: `timeout` needs
+    // BAILEYS_TX_ACQUIRE_TIMEOUT_MS enabled, `stalled` needs BAILEYS_TX_HOLD_WARN_MS.
+    this.wedgedTxKey = event.key;
     logger.warn(
       "[%s] [keystoreTx] %s key=%s waitedMs=%d heldMs=%s stillLocked=%s stack=%s",
       this.phoneNumber,
@@ -496,6 +549,11 @@ export class BaileysConnection {
       },
     };
 
+    // Identity for the keystore this socket is about to be built on, so a
+    // transaction event can be told from one emitted by a socket we replaced.
+    // A token rather than the generation counter because the counter is bumped
+    // only after makeWASocket succeeds, and this closure has to exist before it.
+    const txToken = {};
     const socketOptions: UserFacingSocketConfig = {
       auth: {
         creds: state.creds,
@@ -519,12 +577,13 @@ export class BaileysConnection {
         delayBetweenTriesMs: 3000,
         acquireTimeoutMs: config.baileys.txAcquireTimeoutMs,
         holdWarnMs: config.baileys.txHoldWarnMs,
-        onTransactionEvent: (event) => this.handleTxEvent(event),
+        onTransactionEvent: (event) => this.handleTxEvent(txToken, event),
       },
     };
 
     try {
       this.socket = makeWASocket(socketOptions);
+      this.currentTxToken = txToken;
       // The new socket carries a new keystore and a new mutex map. Bumping here
       // (and only here) is what makes every stamped watchdog reading below
       // mean "observed on the socket that is live right now".
@@ -811,6 +870,15 @@ export class BaileysConnection {
     if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
       return;
     }
+    // A stall is a claim about a socket that is UP, and maybeReportSendStall
+    // already refuses to report one otherwise. The refusal has to agree: the
+    // stall-specific 503 tells the caller the connection is up and must NOT be
+    // marked down, which is precisely wrong for a socket still handshaking, and
+    // it would cost the caller the reconnect it needed. Three concurrent sends
+    // expiring during a slow handshake is all it takes to reach the threshold.
+    if (!this.isOpen) {
+      throw new BaileysNotConnectedError();
+    }
     this.maybeReportSendStall();
     throw new BaileysSendStalledError();
   }
@@ -870,6 +938,7 @@ export class BaileysConnection {
   // so it must not touch the health timestamps.
   private clearSendStallState() {
     this._consecutiveSendTimeouts = 0;
+    this.wedgedTxKey = null;
     this.sendStallStreakStartedAt = null;
     this.sendStallSilentUntil = 0;
     // Also the restart request: a send going through proves the socket works, so a
@@ -909,6 +978,23 @@ export class BaileysConnection {
     if (this.isDiscarded || !this.isCurrentGeneration(generation)) {
       return;
     }
+    // And it does not free a queue slot either, which is the other half of why
+    // this branch exists. async-mutex@0.5's withTimeout rejects the wrapper on
+    // expiry but leaves the underlying acquire in the semaphore queue; it only
+    // releases the ticket once the holder finally unlocks (withTimeout.js, the
+    // `if (isTimeout) release()` path). So a timed-out waiter is still queued,
+    // and treating its rejection as "the queue emptied" would be false.
+    //
+    // Deliberately not worked around. Removing the waiter means replacing that
+    // acquisition with a cancellable queue of our own, inside the patch, which
+    // trades a bounded cost for a much larger patch to rebase on every bump. The
+    // cost is bounded: the retained waiters are a promise each, the breaker caps
+    // the send-side ones at three, and draining them is an acquire-then-release
+    // apiece with no work in between. It also buys something -- every drained
+    // ticket releases instead of sending, so an acquire timeout is precisely what
+    // stops a freed mutex from firing hours of queued sends at a real customer.
+    // That burst is the failure this whole file is shaped around, and it is
+    // BAILEYS_TX_ACQUIRE_TIMEOUT_MS=0 that reopens it.
     if (error !== undefined && isTxMutexTimeout(error)) {
       logger.warn(
         "[%s] [sendStall] late tx-mutex timeout operation=%s afterTimeouts=%d (breaker stays open)",

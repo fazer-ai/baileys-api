@@ -1170,6 +1170,63 @@ describe("BaileysConnection", () => {
       expect(mockSocket.sendMessage.mock.calls.length).toBe(3);
     });
 
+    // Once the wedge starts reporting itself through mutex timeouts, every
+    // abandoned send rejects with E_TX_MUTEX_TIMEOUT, which recordLateSettle
+    // refuses to read as recovery. An open breaker means no send reaches the
+    // socket, so the ordinary success path that would close it can never run --
+    // and with restart disabled (the default) the connection would answer 503 for
+    // the life of a socket whose mutex freed itself hours ago.
+    it("closes the breaker when the wedged keystore key is released", async () => {
+      await connectOpen();
+      const baileysModule = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysModule.default as ReturnType<typeof mock>;
+      const emit = (event: Record<string, unknown>) =>
+        makeSocket.mock.calls
+          .at(-1)![0]
+          .transactionOpts.onTransactionEvent(event);
+
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+
+      // The wedge names its own key.
+      emit({ phase: "stalled", key: "me@s.whatsapp.net", waitedMs: 0 });
+
+      // A release on a DIFFERENT key proves nothing: the mutexes live in a
+      // per-key map, and this one was never the problem.
+      emit({ phase: "released", key: "lid-mapping", waitedMs: 0, heldMs: 5 });
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+
+      emit({
+        phase: "released",
+        key: "me@s.whatsapp.net",
+        waitedMs: 0,
+        heldMs: 120_000,
+      });
+
+      mockSocket.sendMessage.mockClear();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(mockSocket.sendMessage).toHaveBeenCalled();
+    });
+
+    // The mirror of the reconnect finding: maybeReportSendStall already refuses to
+    // call this a stall while the socket is not open, and the REFUSAL has to agree.
+    // The stall-specific 503 tells the caller the connection is up and must not be
+    // marked down, which would cost a handshaking socket the reconnect it needed.
+    it("refuses as not-connected, not as stalled, while the socket is not open", async () => {
+      // Deliberately no `open`: the socket object exists, the handshake does not.
+      await connection.connect();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+
+      await expect(send()).rejects.toThrow(BaileysNotConnectedError);
+      expect(connection.sendState).not.toBe("stalled");
+    });
+
     // The breaker counts refusals by ONE socket's keystore mutex, and a replacement
     // brings a new one. A streak that survives the swap accuses the wrong socket:
     // two stale timeouts plus one during the new handshake (safeSocket only needs a
