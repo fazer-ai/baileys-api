@@ -21,25 +21,36 @@ export class OperationTimeoutError extends Error {
 // timer is always cleared, so a 45s handle does not sit on the event loop for
 // every single send.
 //
-// `onLateResolve` is how a caller learns the abandoned operation eventually
-// succeeded. Without it a circuit breaker built on these timeouts can only ever
-// open: the success that would close it is precisely the one this function has
+// `onLateSettle` is how a caller learns the abandoned operation eventually
+// finished. Without it a circuit breaker built on these timeouts can only ever
+// open: the outcome that would close it is precisely the one this function has
 // already stopped reporting.
+//
+// It fires on rejection too, with the error, and that half is not decoration:
+// an operation that fails slowly (a stalled media upload, say) leaves the queue
+// exactly like one that succeeds slowly. Reporting only successes latches a
+// breaker on a connection where nothing is parked at all. The error is passed
+// through rather than swallowed so the caller can tell an ordinary failure from
+// one that reports the resource is still wedged.
 export function withTimeout<T>(
   operation: string,
   timeoutMs: number,
   fn: () => Promise<T>,
-  onLateResolve?: () => void,
+  onLateSettle?: (error?: unknown) => void,
 ): Promise<T> {
   let timedOut = false;
   const underlying = fn();
   underlying.then(
     () => {
       if (timedOut) {
-        onLateResolve?.();
+        onLateSettle?.();
       }
     },
-    () => {},
+    (error: unknown) => {
+      if (timedOut) {
+        onLateSettle?.(error ?? new Error(`${operation} failed`));
+      }
+    },
   );
 
   let timer: ReturnType<typeof setTimeout> | undefined;

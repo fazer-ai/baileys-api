@@ -229,6 +229,34 @@ describe("proxy router", () => {
       expect(response.headers.get("retry-after")).toBe("5");
     });
 
+    // Owner loss is the state /restart was added for, so it is the one state
+    // where 503ing it is self-defeating: the worker it lands on force-acquires
+    // a dead owner's lease immediately, while a 503 leaves the caller waiting
+    // out the lease TTL with no way to act.
+    it.each(["", "/import-session", "/restart"])(
+      "places a POST %s on a live worker when the recorded owner is dead",
+      async (suffix) => {
+        getLease.mockResolvedValue({ owner: "worker-dead", epoch: 1 });
+        getInstance.mockResolvedValue(null);
+        listLiveInstances.mockResolvedValue([
+          instanceInfo("worker-1", { connectionCount: 10 }),
+          instanceInfo("worker-2", { connectionCount: 3 }),
+        ]);
+
+        const response = await forwardByPhone(
+          PHONE,
+          makeRequest(
+            `/connections/${encodeURIComponent(PHONE)}${suffix}`,
+            "POST",
+            "{}",
+          ),
+        );
+
+        expect(response.status).toBe(200);
+        expect(fetchCalls[0].url.startsWith("http://worker-2:3025")).toBe(true);
+      },
+    );
+
     it("re-routes once when the worker answers 421 with the real owner", async () => {
       getLease.mockResolvedValue({ owner: "worker-1", epoch: 1 });
       getInstance.mockImplementation(async (id: string) =>

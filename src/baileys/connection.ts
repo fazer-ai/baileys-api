@@ -22,6 +22,7 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
+import { isTxMutexTimeout } from "@/baileys/helpers/isTxMutexTimeout";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
@@ -212,6 +213,15 @@ export class BaileysConnection {
   // a 463 (see handleMessagesUpdate / fetchReachoutTimelockOn463).
   private reachoutTimelockFetchInFlight = false;
   private lastReachoutTimelockFetchAt = 0;
+  // Identifies the socket the watchdog state below belongs to. Incremented once
+  // per makeWASocket, which is the ONLY event that gives a fresh keystore and a
+  // fresh mutex map — the two things the watchdog actually reasons about. It
+  // exists because neither side of that state can be trusted without it: an
+  // `isOnline` presence echo arrives as `connection: "open"` on the SAME wedged
+  // socket, and a timeout from a socket that has since been replaced settles
+  // long after its deadlines stopped mattering. Every read and write of the
+  // fields below is stamped with the generation it describes.
+  private socketGeneration = 0;
   // Send-stall watchdog state. Deliberately in memory and never in Redis: a
   // restart gives a new socket, hence a new keystore and a new mutex map, so
   // the count must die with the socket. Persisted state would survive the
@@ -496,6 +506,10 @@ export class BaileysConnection {
 
     try {
       this.socket = makeWASocket(socketOptions);
+      // The new socket carries a new keystore and a new mutex map. Bumping here
+      // (and only here) is what makes every stamped watchdog reading below
+      // mean "observed on the socket that is live right now".
+      this.socketGeneration += 1;
     } catch (error) {
       logger.error(
         "[%s] [BaileysConnection.connect] Failed to create socket: %s",
@@ -731,24 +745,41 @@ export class BaileysConnection {
       this.maybeReportSendStall();
       throw new BaileysSendStalledError();
     }
+    // Captured BEFORE the send starts, and carried into every callback below.
+    // A reconnect mid-send replaces the socket while these deadlines keep
+    // running against a keystore that no longer exists: unstamped, three of
+    // them expiring after the swap would open the breaker on a healthy
+    // replacement that had not refused a single send.
+    const generation = this.socketGeneration;
     try {
       const result = await withTimeout(
         operation,
         config.baileys.sendTimeoutMs,
         fn,
-        () => this.recordLateSend(operation),
+        (error) => this.recordLateSettle(operation, generation, error),
       );
-      this.recordSendSuccess();
+      this.recordSendSuccess(generation);
       return result;
     } catch (error) {
       if (error instanceof OperationTimeoutError) {
-        this.recordSendTimeout(operation);
+        this.recordSendTimeout(operation, generation);
       }
       throw error;
     }
   }
 
-  private recordSendSuccess() {
+  // True while the argument still describes the live socket. A settlement from
+  // an earlier generation is not wrong, it is about a keystore that has since
+  // been thrown away, and the watchdog's whole subject is the current one.
+  private isCurrentGeneration(generation: number): boolean {
+    return generation === this.socketGeneration;
+  }
+
+  // Clears the breaker without asserting anything about a send having landed.
+  // Split out because a late REJECTION proves the operation left the mutex
+  // queue (which is what the breaker counts) but proves nothing about delivery,
+  // so it must not touch the health timestamps.
+  private clearSendStallState() {
     this._consecutiveSendTimeouts = 0;
     this.sendStallStreakStartedAt = null;
     this.sendStallSilentUntil = 0;
@@ -757,30 +788,72 @@ export class BaileysConnection {
     // used to — if the restart never lands (the handler logs and gives up on a
     // failed connect), this connection could never report a stall again.
     this.restartRequested = false;
+  }
+
+  private recordSendSuccess(generation: number) {
+    if (!this.isCurrentGeneration(generation)) {
+      return;
+    }
+    this.clearSendStallState();
     this._lastSendCompletedAt = Date.now();
   }
 
-  // A send we already gave up on finally went through. This is the ONLY signal
-  // that can close the breaker without a new socket: once it is open no send
-  // reaches the socket, so the ordinary success path can never run again. It is
-  // also what keeps a slow-but-healthy connection out of a permanent 503 —
-  // media generation and upload happen inside socket.sendMessage BEFORE the
-  // keystore mutex, so three slow uploads can open the breaker with the mutex
-  // perfectly free, and this is what closes it when they land.
-  private recordLateSend(operation: string) {
-    if (this.isDiscarded) {
+  // A send we already gave up on finally settled. This is the ONLY signal that
+  // can close the breaker without a new socket: once it is open no send reaches
+  // the socket, so the ordinary success path can never run again. It is also
+  // what keeps a slow-but-healthy connection out of a permanent 503 — media
+  // generation and upload happen inside socket.sendMessage BEFORE the keystore
+  // mutex, so three slow uploads can open the breaker with the mutex perfectly
+  // free, and this is what closes it when they land.
+  //
+  // `error` present means the abandoned operation rejected. That still empties
+  // the mutex queue, so it still closes the breaker — with one exception, and
+  // it is the exception that matters: a rejection that IS the transaction-mutex
+  // timeout reports a wedged mutex, not a freed one. Closing the breaker on it
+  // would send the next batch straight back into the queue we are trying to
+  // keep bounded.
+  private recordLateSettle(
+    operation: string,
+    generation: number,
+    error?: unknown,
+  ) {
+    if (this.isDiscarded || !this.isCurrentGeneration(generation)) {
+      return;
+    }
+    if (error !== undefined && isTxMutexTimeout(error)) {
+      logger.warn(
+        "[%s] [sendStall] late tx-mutex timeout operation=%s afterTimeouts=%d (breaker stays open)",
+        this.phoneNumber,
+        operation,
+        this._consecutiveSendTimeouts,
+      );
       return;
     }
     logger.warn(
-      "[%s] [sendStall] late completion operation=%s afterTimeouts=%d",
+      "[%s] [sendStall] late %s operation=%s afterTimeouts=%d",
       this.phoneNumber,
+      error === undefined ? "completion" : "failure",
       operation,
       this._consecutiveSendTimeouts,
     );
-    this.recordSendSuccess();
+    if (error === undefined) {
+      this.recordSendSuccess(generation);
+      return;
+    }
+    this.clearSendStallState();
   }
 
-  private recordSendTimeout(operation: string) {
+  private recordSendTimeout(operation: string, generation: number) {
+    if (!this.isCurrentGeneration(generation)) {
+      logger.warn(
+        "[%s] [sendStall] ignoring timeout from a replaced socket operation=%s generation=%d current=%d",
+        this.phoneNumber,
+        operation,
+        generation,
+        this.socketGeneration,
+      );
+      return;
+    }
     this._consecutiveSendTimeouts += 1;
     this.sendStallStreakStartedAt ??= Date.now();
     const streakMs = Date.now() - this.sendStallStreakStartedAt;
@@ -1375,10 +1448,18 @@ export class BaileysConnection {
       // survives a socket drop) and the connection would answer 503 forever —
       // worse than the stall it was built to contain, since the original bug
       // at least cleared itself when WhatsApp dropped the socket.
-      this._consecutiveSendTimeouts = 0;
-      this.sendStallStreakStartedAt = null;
-      this.sendStallSilentUntil = 0;
-      this.restartRequested = false;
+      //
+      // Gated on the ORIGINAL event, not on `data.connection`: `isOnline` was
+      // rewritten into `data` a few lines above, and `isOnline` is a presence
+      // echo on the socket we already have. `sendPresenceUpdate("available")`
+      // emits one, and POST /connections calls exactly that when it reuses a
+      // live connection — which is what the Chatwoot health check does every
+      // five minutes. Resetting on that would hand a still-wedged socket a
+      // clean breaker on a timer, and every reset lets another batch of sends
+      // queue behind the same stuck mutex.
+      if (connection === "open") {
+        this.clearSendStallState();
+      }
       // Any healthy open wipes the quarantine strike history — the backoff
       // must reflect CONSECUTIVE failed cycles, not lifetime totals. Not
       // awaited (the open path must not block on it), rejection logged.

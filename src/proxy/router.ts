@@ -141,7 +141,22 @@ export async function forwardByPhone(
 
   if (resolution.status === "owner-dead") {
     invalidateTarget(phoneNumber);
-    return serviceUnavailable();
+    // A placement POST is the one request that can repair this state, so it is
+    // the one request that must not be refused here: the worker it lands on
+    // force-acquires a dead owner's lease immediately (acquireExplicitLease
+    // skips the live-owner guard once the registry says the owner stopped
+    // heartbeating). A 503 keeps the only route out of owner loss shut until
+    // the lease expires on its own — and /restart joined this list precisely
+    // for owner loss, so it would be refused in the exact state it exists for.
+    if (!isConnectPost) {
+      return serviceUnavailable();
+    }
+    logger.info(
+      "[proxy] owner %s for %s is dead; placing %s on a live worker",
+      resolution.ownerInstanceId,
+      phoneNumber,
+      path,
+    );
   }
 
   let target: RouteTarget | null = null;

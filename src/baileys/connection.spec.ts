@@ -1401,6 +1401,129 @@ describe("BaileysConnection", () => {
       await redis.del(clusterKeys.sendStall("+5511999999999"));
     });
 
+    // The one that made the watchdog defeat itself in production. `isOnline` is
+    // a presence echo on the socket we already have — sendPresenceUpdate emits
+    // it, and POST /connections calls exactly that when it reuses a live
+    // connection, which is what the Chatwoot health check does every five
+    // minutes. Treating it as an open would hand a still-wedged socket a clean
+    // breaker on a timer, and every reset lets another batch of sends queue
+    // behind the same stuck mutex.
+    it("does not reopen the circuit for a presence echo on the same socket", async () => {
+      await connection.connect();
+      wedge();
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(connection.sendState).toBe("stalled");
+
+      await mockEventHandlers.get("connection.update")?.({ isOnline: true });
+
+      expect(connection.consecutiveSendTimeouts).toBe(3);
+      expect(connection.sendState).toBe("stalled");
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+    });
+
+    // The mirror image: `withTimeout` cannot cancel, so deadlines armed against
+    // the old socket keep running after it is replaced. Unstamped, three of
+    // them expiring after the swap open the breaker on a replacement that never
+    // refused a send.
+    it("ignores timeouts left over from a socket that has been replaced", async () => {
+      await connection.connect();
+      wedge();
+
+      // Three sends parked on the socket that is about to be thrown away.
+      const parked = [send(), send(), send()].map((promise) =>
+        promise.catch((error) => error),
+      );
+
+      await mockEventHandlers.get("connection.update")?.({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: {
+              statusCode: 500,
+              payload: {
+                statusCode: 500,
+                error: "Unknown",
+                message: "Stream Errored",
+              },
+            },
+            message: "Stream Errored",
+          },
+        },
+      });
+      // The replacement socket is healthy.
+      mockSocket.sendMessage.mockImplementation(async () => ({
+        key: { id: "msg-id" },
+      }));
+
+      const settled = await Promise.all(parked);
+      expect(
+        settled.every((error) => error instanceof OperationTimeoutError),
+      ).toBe(true);
+
+      expect(connection.consecutiveSendTimeouts).toBe(0);
+      await expect(send()).resolves.toBeDefined();
+    });
+
+    // A slow FAILING upload empties the mutex queue exactly like a slow
+    // succeeding one. Reporting only late successes latches the breaker on a
+    // connection where nothing is parked at all, and every later plain-text
+    // send answers 503 until the socket is recreated.
+    it("reopens the circuit when an abandoned send finally fails", async () => {
+      await connection.connect();
+      let reject: ((error: unknown) => void) | undefined;
+      mockSocket.sendMessage.mockImplementation(
+        () =>
+          new Promise<never>((_, rej) => {
+            reject = rej;
+          }),
+      );
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      expect(connection.sendState).toBe("stalled");
+
+      reject?.(new Error("upload failed"));
+      await asyncSleep(0);
+
+      expect(connection.consecutiveSendTimeouts).toBe(0);
+      // The failure says the queue drained, NOT that a message went out, so the
+      // health timestamp must stay untouched.
+      expect(connection.lastSendCompletedAt).toBeNull();
+      expect(connection.sendState).toBe("unknown");
+    });
+
+    // The exception that makes the rule safe: a rejection that IS the
+    // transaction-mutex timeout reports a wedged mutex, not a freed one.
+    // Closing the breaker on it sends the next batch straight back into the
+    // queue the breaker exists to keep bounded.
+    it("keeps the circuit open when an abandoned send fails on the transaction mutex", async () => {
+      await connection.connect();
+      let reject: ((error: unknown) => void) | undefined;
+      mockSocket.sendMessage.mockImplementation(
+        () =>
+          new Promise<never>((_, rej) => {
+            reject = rej;
+          }),
+      );
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+
+      reject?.(
+        Object.assign(new Error("keystore transaction timed out"), {
+          data: { key: "+5511999999999", code: "E_TX_MUTEX_TIMEOUT" },
+        }),
+      );
+      await asyncSleep(0);
+
+      expect(connection.consecutiveSendTimeouts).toBe(3);
+      await expect(send()).rejects.toThrow(BaileysSendStalledError);
+    });
+
     it("reports sendState unknown until a send has actually been observed", async () => {
       await connection.connect();
       expect(connection.sendState).toBe("unknown");
