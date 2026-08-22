@@ -265,6 +265,8 @@ export class BaileysConnection {
   private inFlightSends = 0;
   // The backoff state as it was before this episode's strike, so a restart
   // cancelled after the fact can undo exactly its own increment.
+  // Serializes the send-stall verdicts against each other. See reportSendStall.
+  private stallReportChain: Promise<unknown> = Promise.resolve();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null }
     | undefined;
@@ -1526,7 +1528,7 @@ export class BaileysConnection {
       streakMs,
       action,
     );
-    this.sendToWebhook({
+    const payload: BaileysConnectionWebhookPayload = {
       event: "connection.update",
       data: {
         error: "send_stall_detected",
@@ -1537,7 +1539,20 @@ export class BaileysConnection {
           ...(until && { until }),
         },
       },
-    });
+    };
+    // Chained, not fired independently. These verdicts contradict each other --
+    // `failed` and `cancelled` exist to retract a `restart` already announced --
+    // and sendToWebhook offers no ordering: every payload runs its own retry loop
+    // with backoff, so a `restart` that needed two attempts lands AFTER a
+    // `failed` that went out on the first, and the consumer is left reading
+    // recovery as underway on a connection that never came back. That is the one
+    // reading this whole feature exists to prevent. The wait is bounded by the
+    // retry policy, and a retraction arriving late in the right order beats one
+    // arriving on time in the wrong one.
+    this.stallReportChain = this.stallReportChain
+      .catch(() => {})
+      .then(() => this.sendToWebhook(payload))
+      .catch(() => {});
   }
 
   // The handler drains its per-number slot before re-checking whether the

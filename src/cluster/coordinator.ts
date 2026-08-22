@@ -656,6 +656,23 @@ export class ClusterCoordinator {
           const lease = await leaseStore.acquireLease(phone);
           if (lease) {
             this.heldLeaseEpochs.set(phone, lease.epoch);
+            // The socket has to learn the new epoch too, not just this map. It
+            // stamps its connection.update webhooks with the epoch it holds, and
+            // it is what onSpawnFailed hands back to abandonExplicitLease when a
+            // background reconnect gives up -- and that release is epoch-fenced
+            // on both sides, so a stale epoch there is a silent no-op that leaves
+            // the lease we just re-acquired held with no socket behind it until
+            // the TTL runs out. Same call unwindRestartLease makes for the same
+            // reason.
+            await this.handler
+              .updateLeaseEpoch(phone, lease.epoch)
+              .catch((error) => {
+                logger.warn(
+                  "[coordinator] could not propagate re-acquired epoch for %s: %s",
+                  phone,
+                  errorToString(error),
+                );
+              });
             this.redisDegraded = false;
             continue;
           }

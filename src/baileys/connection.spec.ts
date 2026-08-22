@@ -1988,6 +1988,69 @@ describe("BaileysConnection", () => {
       }
     });
 
+    // `failed` and `cancelled` exist to retract a `restart` already announced, and
+    // sendToWebhook gives no ordering: each payload runs its own retry loop, so a
+    // `restart` that needed a second attempt lands after a `failed` that went out
+    // on the first. A consumer reading them in that order concludes recovery is
+    // underway on a connection that never came back, which is the exact reading
+    // this feature exists to prevent.
+    it("delivers the restart verdict before the failure that retracts it", async () => {
+      const delivered: string[] = [];
+      const outerFetch = globalThis.fetch;
+      const outerRetries = config.webhook.retryPolicy.maxRetries;
+      // One retry, so the restart verdict's first attempt can fail while the
+      // failure verdict's first attempt succeeds.
+      config.webhook.retryPolicy.maxRetries = 1;
+      let restartAttempts = 0;
+      globalThis.fetch = mock(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          const body = (init?.body as string) ?? "";
+          if (body.includes('"action":"restart"')) {
+            restartAttempts += 1;
+            if (restartAttempts === 1) {
+              return new Response("nope", { status: 500 });
+            }
+            delivered.push("restart");
+            return new Response("ok", { status: 200 });
+          }
+          if (body.includes('"action":"failed"')) {
+            delivered.push("failed");
+          }
+          return new Response("ok", { status: 200 });
+        },
+      ) as unknown as typeof globalThis.fetch;
+
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: () => {
+          // What the handler does when the replacement cannot be built: the
+          // connect rejects and it retracts the verdict it already announced.
+          connection.reportFailedStallRestart();
+        },
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      const key = clusterKeys.sendStall("+5511999999999");
+
+      try {
+        await connectOpen();
+        wedge();
+        const start = Date.now();
+
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        setSystemTime(new Date(start + 120_000));
+        await expect(send()).rejects.toThrow(OperationTimeoutError);
+        await new Promise((r) => setTimeout(r, 20));
+
+        expect(delivered).toEqual(["restart", "failed"]);
+      } finally {
+        globalThis.fetch = outerFetch;
+        config.webhook.retryPolicy.maxRetries = outerRetries;
+        setSystemTime();
+        await redis.del(key);
+      }
+    });
+
     // The backoff key is per phone number and outlives the session by up to 24h,
     // so a strike written while this session is being torn down is inherited by
     // whatever is paired on that number next -- its watchdog suppressed on the
@@ -2443,11 +2506,15 @@ describe("BaileysConnection", () => {
         await connectOpen();
         wedge();
 
+        // Real timers, not asyncSleep(0): the verdicts are chained, so a second
+        // one is not even dispatched until the first delivery settles.
+        const settle = () => new Promise((r) => setTimeout(r, 5));
+
         await expect(send()).rejects.toThrow(OperationTimeoutError);
         await expect(send()).rejects.toThrow(OperationTimeoutError);
         setSystemTime(new Date(start + 120_000));
         await expect(send()).rejects.toThrow(OperationTimeoutError);
-        await asyncSleep(0);
+        await settle();
 
         const stallCalls = () =>
           fetchCalls.filter((call) => call.body.includes("send_stall_detected"))
@@ -2457,13 +2524,13 @@ describe("BaileysConnection", () => {
         // Inside the cooldown the failure does not become a webhook per send.
         setSystemTime(new Date(start + 130_000));
         await expect(send()).rejects.toThrow(BaileysSendStalledError);
-        await asyncSleep(0);
+        await settle();
         expect(stallCalls()).toBe(1);
 
         // Past it, the connection is due for review again.
         setSystemTime(new Date(start + 200_000));
         await expect(send()).rejects.toThrow(BaileysSendStalledError);
-        await asyncSleep(0);
+        await settle();
         expect(stallCalls()).toBe(2);
       } finally {
         canRestart.mockRestore();

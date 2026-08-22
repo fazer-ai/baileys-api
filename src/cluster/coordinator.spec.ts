@@ -706,6 +706,45 @@ describe("ClusterCoordinator", () => {
       expect(handler.discardConnection).not.toHaveBeenCalled();
     });
 
+    // heldLeaseEpochs is not the only holder of the epoch. The socket stamps its
+    // connection.update webhooks with the one it was given, and it is what
+    // onSpawnFailed hands to abandonExplicitLease when a background reconnect
+    // gives up. That release is epoch-fenced on both sides, so leaving the socket
+    // on the pre-re-acquire epoch turns the release into a silent no-op and the
+    // lease we just took back sits held with no socket behind it until its TTL.
+    it("hands the re-acquired epoch to the socket, not just to its own map", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      renewLease.mockResolvedValue("missing");
+      acquireLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+
+      await coordinator.runRenewCycle();
+
+      expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 7);
+    });
+
+    // A metadata write that fails is not evidence that Redis is down -- the renew
+    // and the re-acquire both just succeeded through it. Letting it reach the
+    // outer catch would pause every claim in the cluster over a write that only
+    // affects one socket's epoch stamp.
+    it("keeps going when the epoch cannot be propagated", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      renewLease.mockResolvedValue("missing");
+      acquireLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+      handler.updateLeaseEpoch.mockRejectedValueOnce(new Error("redis down"));
+
+      await coordinator.runRenewCycle();
+
+      expect(handler.discardConnection).not.toHaveBeenCalled();
+      // Not degraded: claims keep running.
+      getRedisSavedAuthStateIds.mockClear();
+      await coordinator.runClaimCycle();
+      expect(getRedisSavedAuthStateIds).toHaveBeenCalled();
+    });
+
     it("fences when the missing lease was already taken by someone else", async () => {
       const handler = makeHandlerMock();
       handler.connections.add("+5511999");
