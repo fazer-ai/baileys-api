@@ -1859,6 +1859,63 @@ describe("BaileysConnection", () => {
       await redis.del(clusterKeys.sendStall("+5511999999999"));
     });
 
+    // The distributed fence, and this was the one socket-creating path without
+    // it: the claim cycle acquires, the explicit paths force-acquire behind a
+    // live-owner guard, and the connectionReplaced kick yields on the same
+    // lease read. The watchdog decided on local state alone, so a phone
+    // force-taken over while this handler awaited Redis would be rebuilt here
+    // under a lease that is no longer ours -- two sockets fighting for one
+    // identity until the next renew cycle noticed.
+    it("yields instead of restarting when the lease moved to another instance", async () => {
+      const restarts: string[] = [];
+      let closed = 0;
+      connection = new BaileysConnection("+5511999999999", {
+        ...defaultOptions,
+        requestRestart: (reason: string) => restarts.push(reason),
+        onConnectionClose: () => {
+          closed += 1;
+        },
+      });
+      config.baileys.sendStallRestartEnabled = true;
+      await connectOpen();
+      wedge();
+      const start = Date.now();
+
+      // Another instance force-acquired this phone -- our registry entry went
+      // stale for a beat and it took us for dead.
+      (redis as any).__stringData.set(
+        "@baileys-api:cluster:lease:+5511999999999",
+        JSON.stringify({ owner: "other-instance", epoch: 9 }),
+      );
+      fetchCalls.length = 0;
+
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      setSystemTime(new Date(start + 120_000));
+      await expect(send()).rejects.toThrow(OperationTimeoutError);
+      await new Promise((r) => setTimeout(r, 5));
+
+      // No socket rebuilt under a lease that is not ours.
+      expect(restarts.length).toBe(0);
+      // And no strike spent. The backoff key is per phone number and
+      // cluster-wide, so charging one here would suppress the watchdog of the
+      // instance that legitimately owns the number.
+      expect(
+        await redis.get(clusterKeys.sendStall("+5511999999999")),
+      ).toBeNull();
+      // Nothing narrated either: the new owner speaks for this number now, and
+      // our webhook would carry the older epoch.
+      expect(
+        fetchCalls.some((call) => call.body.includes("send_stall_detected")),
+      ).toBe(false);
+      // Aborted, not merely skipped -- a socket for a phone somebody else owns
+      // is a duplicate that is still receiving.
+      expect(closed).toBe(1);
+      expect(connection.isOpen).toBe(false);
+
+      setSystemTime();
+    });
+
     // The backoff key is per phone number and outlives the session by up to 24h,
     // so a strike written while this session is being torn down is inherited by
     // whatever is paired on that number next -- its watchdog suppressed on the

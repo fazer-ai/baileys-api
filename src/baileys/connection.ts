@@ -1329,11 +1329,35 @@ export class BaileysConnection {
 
     if (config.baileys.sendStallRestartEnabled) {
       try {
-        const mayRestart = await canRestartAfterStall(this.phoneNumber);
+        // Both reads together, resolved by ONE currency check. Chaining them
+        // would put a second window between the checks in which the socket can
+        // be replaced, and every await on this path has cost us that once.
+        const [mayRestart, ownedElsewhere] = await Promise.all([
+          canRestartAfterStall(this.phoneNumber),
+          this.shouldYieldToLeaseOwner(),
+        ]);
         if (!this.isStallEpisodeCurrent(generation)) {
           // Recovered while Redis was answering. Lower the silence so a fresh
           // episode on the new socket can report itself.
           this.sendStallSilentUntil = 0;
+          return;
+        }
+        // The distributed fence, and this was the one socket-creating path
+        // without it. Every other one consults the lease: the claim cycle
+        // acquires, the explicit paths force-acquire behind a live-owner guard,
+        // and the connectionReplaced kick yields through this same call. The
+        // watchdog decided purely on local state, so a phone force-taken over
+        // while this handler awaited Redis -- another instance acting on a
+        // registry that briefly reported us dead -- would be rebuilt here under
+        // a lease that is no longer ours, fighting the legitimate owner for the
+        // identity until the next renew cycle noticed.
+        //
+        // abort() rather than a bare skip, and for the same reason the renew
+        // cycle discards on this evidence: a socket for a phone somebody else
+        // owns is a duplicate that is still receiving. It preserves the auth
+        // state, so the owner keeps serving the identity.
+        if (ownedElsewhere) {
+          this.abort();
           return;
         }
         if (mayRestart) {
