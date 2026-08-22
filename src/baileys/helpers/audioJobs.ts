@@ -18,6 +18,13 @@ const running = new Map<number, KillableJob>();
 // cancellation there lets the process start afterwards and run unbounded, which
 // is the exact outcome the deadline exists to prevent.
 const cancelled = new Set<number>();
+// The tombstone only has to outlive fluent-ffmpeg's preparation, which is
+// milliseconds. It is expired rather than left in place because a cancel can
+// also lose the race to a job that already completed -- the worker finished and
+// posted, the caller's deadline fired before that message was handled -- and
+// nothing would ever clear THAT id. One narrow race per audio send is enough to
+// grow this set without bound over the life of a worker.
+const CANCEL_TOMBSTONE_MS = 60_000;
 
 export function registerAudioJob(id: number, job: KillableJob): void {
   running.set(id, job);
@@ -42,6 +49,8 @@ export function completeAudioJob(id: number): void {
 // worker's own finally still removes the temp file.
 export function cancelAudioJob(id: number): boolean {
   cancelled.add(id);
+  const expiry = setTimeout(() => cancelled.delete(id), CANCEL_TOMBSTONE_MS);
+  expiry.unref?.();
   const job = running.get(id);
   if (!job) {
     return false;

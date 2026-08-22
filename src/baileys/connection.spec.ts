@@ -990,6 +990,25 @@ describe("BaileysConnection", () => {
     });
   });
 
+  describe("#connect failure", () => {
+    // Resolving here reports a connect that built nothing as success:
+    // spawnConnection's cleanup never runs, so its registry entry is gone while
+    // the caller is told all is well; an automatic restart never reports the
+    // failure, so the lease is held for a phone with no socket; and POST
+    // /restart answers 202 for a replacement that does not exist.
+    it("propagates a socket that could not be created", async () => {
+      const baileysMod = (await import("@whiskeysockets/baileys")) as any;
+      const makeSocket = baileysMod.default as ReturnType<typeof mock>;
+      makeSocket.mockImplementationOnce(() => {
+        throw new Error("socket construction failed");
+      });
+
+      await expect(connection.connect()).rejects.toThrow(
+        "socket construction failed",
+      );
+    });
+  });
+
   describe("#sendMessage", () => {
     it("throws BaileysNotConnectedError if not connected", async () => {
       await expect(

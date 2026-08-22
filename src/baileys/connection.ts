@@ -632,7 +632,13 @@ export class BaileysConnection {
         errorToString(error),
       );
       this.onConnectionClose?.();
-      return;
+      // Rethrown, not swallowed. Resolving here reports a connect that built
+      // nothing as success: spawnConnection's cleanup never runs, an automatic
+      // restart never reports the failure so the lease is never released, and
+      // POST /restart answers 202 for a socket that does not exist. Every caller
+      // above already handles a rejection -- the claim cycle releases its lease
+      // on one, and the handler removes the entry it had just registered.
+      throw error;
     }
 
     this.addEventListeners({ saveCreds });

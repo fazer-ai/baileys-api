@@ -1244,10 +1244,13 @@ describe("BaileysConnectionsHandler", () => {
     // fails to rebuild leaves the number dark until the TTL and the unclaimed
     // grace elapse, with every request routed here answering 404.
     it("reports a restart that could not rebuild its socket", async () => {
-      await handler.connect("+5511999999999", defaultOptions);
-      const failures: string[] = [];
-      handler.onSpawnFailed = (phone: string) => {
-        failures.push(phone);
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 7,
+      });
+      const failures: Array<[string, number | null]> = [];
+      handler.onSpawnFailed = (phone: string, epoch: number | null) => {
+        failures.push([phone, epoch]);
       };
       mockConnect.mockImplementationOnce(async () => {
         throw new Error("redis down");
@@ -1259,7 +1262,11 @@ describe("BaileysConnectionsHandler", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
 
-      expect(failures).toEqual(["+5511999999999"]);
+      // The epoch travels with it: releasing by whatever the coordinator
+      // currently holds would hand away a lease a concurrent explicit operation
+      // force-acquired while this restart was failing, leaving its live socket
+      // unowned.
+      expect(failures).toEqual([["+5511999999999", 7]]);
       expect(handler.hasConnection("+5511999999999")).toBe(false);
       handler.onSpawnFailed = null;
     });

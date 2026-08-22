@@ -41,7 +41,13 @@ export class BaileysConnectionsHandler {
   // and the unclaimed grace expire, and every request routed here 404s. The
   // claim cycle's own reconnect failure already handles this the same way:
   // do not sit on a lease we cannot service.
-  onSpawnFailed: ((phoneNumber: string) => void | Promise<void>) | null = null;
+  // The epoch travels with it: by the time this fires, a concurrent explicit
+  // connect or restart may have force-acquired its own lease, and releasing by
+  // "whatever we currently hold" would hand away that operation's lease and
+  // leave its live socket unowned.
+  onSpawnFailed:
+    | ((phoneNumber: string, leaseEpoch: number | null) => void | Promise<void>)
+    | null = null;
 
   constructor(createConnection?: ConnectionFactory) {
     this.createConnection =
@@ -298,7 +304,10 @@ export class BaileysConnectionsHandler {
             if (this.connections[phoneNumber]) {
               return;
             }
-            await this.onSpawnFailed?.(phoneNumber);
+            await this.onSpawnFailed?.(
+              phoneNumber,
+              connection.currentOptions.leaseEpoch ?? null,
+            );
           });
         },
       });

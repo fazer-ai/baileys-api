@@ -113,12 +113,26 @@ export class ClusterCoordinator {
     // would stay dark until the TTL and unclaimed grace elapse while requests
     // route here and 404. Same rule the claim cycle applies to its own failed
     // reconnects.
-    this.handler.onSpawnFailed = async (phoneNumber: string) => {
+    this.handler.onSpawnFailed = async (
+      phoneNumber: string,
+      leaseEpoch: number | null,
+    ) => {
       logger.error(
         "[coordinator] restart failed to rebuild %s, releasing lease",
         phoneNumber,
       );
-      await this.releaseHeldLease(phoneNumber).catch(() => {});
+      // Fenced on the epoch the failed attempt ran under. releaseHeldLease uses
+      // whatever heldLeaseEpochs currently holds, and those stop being the same
+      // the moment a concurrent explicit operation force-acquires its own lease
+      // while this restart was failing -- releasing that one would leave its
+      // live socket unowned and free for any claim loop to take.
+      if (leaseEpoch !== null) {
+        await this.abandonExplicitLease(phoneNumber, leaseEpoch).catch(
+          () => {},
+        );
+      } else {
+        await this.releaseHeldLease(phoneNumber).catch(() => {});
+      }
       void registry.publishOwnershipChanged(phoneNumber);
     };
     this.options = {
