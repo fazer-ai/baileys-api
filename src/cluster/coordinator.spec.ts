@@ -80,8 +80,12 @@ function makeHandlerMock() {
   const handler = {
     connections,
     activity,
+    // Returns true like the real connect: false means only "shouldProceed vetoed
+    // it", and a double that answered undefined would report every restart as
+    // skipped.
     connect: mock(async (phone: string) => {
       connections.add(phone);
+      return true;
     }),
     logout: mock(async (phone: string) => {
       connections.delete(phone);
@@ -94,6 +98,7 @@ function makeHandlerMock() {
     get size() {
       return connections.size;
     },
+    updateLeaseEpoch: mock(async (_phone: string, _epoch: number) => {}),
     inFlightWebhookCount: () => 0,
     connectionActivity: (phone: string) =>
       connections.has(phone)
@@ -932,6 +937,39 @@ describe("ClusterCoordinator", () => {
           coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
         ).heldLeaseEpochs.get("+5511999"),
       ).toBe(2);
+    });
+
+    // An unpaired QR flow in progress is exactly what gets here, and it has a live
+    // socket. Releasing the lease we just force-acquired would leave that socket
+    // running unowned: the proxy stops routing to it and the next claim cycle
+    // builds a competing socket on the same identity.
+    it("keeps the lease when a live socket is still serving the phone", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connections.add("+5511999");
+      isRedisAuthStatePaired.mockResolvedValue(false);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe(false);
+      expect(releaseLease).not.toHaveBeenCalled();
+      // And the socket is told which epoch owns it now, or its webhooks are
+      // discarded by the client as stale.
+      expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 1);
+    });
+
+    // A veto after the drain means nothing was rebuilt. Reporting it as success
+    // hands the client a 202 for a session that was deleted while it queued.
+    it("reports false when the guarded connect was skipped", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      handler.connect.mockImplementation(async () => false);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe(false);
     });
 
     // Taking options from the request would let a restart overwrite good

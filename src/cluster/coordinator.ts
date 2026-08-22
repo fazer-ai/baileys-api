@@ -827,6 +827,17 @@ export class ClusterCoordinator {
         !metadata?.webhookUrl ||
         !(await isRedisAuthStatePaired(phoneNumber))
       ) {
+        // Nothing to restart, so the lease goes back — UNLESS a live local socket
+        // is serving this phone, which is exactly what an unpaired QR flow in
+        // progress looks like from here. Releasing then leaves that socket running
+        // with no lease: the proxy stops routing to it and the next claim cycle
+        // builds a competing socket on the same identity. Keep ownership instead,
+        // and hand the socket the epoch that now holds it or its webhooks are
+        // discarded by the client as stale.
+        if (this.handler.hasConnection(phoneNumber)) {
+          await this.handler.updateLeaseEpoch(phoneNumber, acquired.epoch);
+          return false;
+        }
         await this.abandonExplicitLease(phoneNumber, acquired.epoch);
         return false;
       }
@@ -847,7 +858,11 @@ export class ClusterCoordinator {
     // unpaired credentials and answer 202 — resurrecting as a QR socket the phone
     // the operator just removed. The lease epoch is the signal, and it covers every
     // explicit operation rather than only logout: whoever ran took a newer one.
-    await this.runUnderExplicitLease(phoneNumber, acquired.epoch, () =>
+    //
+    // Returned rather than assumed: a veto by that guard means nothing was
+    // rebuilt, and reporting it as success hands the client a 202 for a session
+    // that was deleted while this restart queued.
+    return await this.runUnderExplicitLease(phoneNumber, acquired.epoch, () =>
       this.handler.connect(
         phoneNumber,
         {
@@ -859,7 +874,6 @@ export class ClusterCoordinator {
         () => this.heldLeaseEpochs.get(phoneNumber) === acquired.epoch,
       ),
     );
-    return true;
   }
 
   get isDraining(): boolean {

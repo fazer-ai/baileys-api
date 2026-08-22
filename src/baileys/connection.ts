@@ -534,6 +534,13 @@ export class BaileysConnection {
       // lastOutgoingAckAt now, presenting end-to-end evidence about a
       // replacement that may itself be wedged and has sent nothing.
       this.submittedMessageIds.clear();
+      // And the evidence itself, for the same reason and with more force: any
+      // non-null value makes sendState read `ok`, so a replacement that has
+      // never sent anything would inherit the previous socket's health report
+      // and hold it indefinitely. `unknown` is the true answer for a socket
+      // nobody has written through yet.
+      this._lastSendCompletedAt = null;
+      this._lastOutgoingAckAt = null;
     } catch (error) {
       logger.error(
         "[%s] [BaileysConnection.connect] Failed to create socket: %s",

@@ -546,6 +546,12 @@ const connectionsController = new Elysia({
             // reconcile rather than resend blindly.
             isIndeterminate: (e) =>
               e instanceof OperationTimeoutError && !messageId,
+            // The other half of the same rule. A reserved id makes the resend
+            // land on the same WhatsApp key, so it cannot duplicate — and it is
+            // exactly the caller that must be able to get past a marker an
+            // earlier id-less attempt left behind, which otherwise stands for a
+            // full day and refuses every attempt to resolve it.
+            overrideIndeterminate: Boolean(messageId),
           },
         );
       } catch (e) {
@@ -592,14 +598,17 @@ const connectionsController = new Elysia({
       }
 
       if (result.status === "indeterminate") {
+        // No retry-after: nothing clears this marker on a timer. It outlives the
+        // caller's retries on purpose, so advertising a 60-second wait would
+        // promise a state change that never comes and turn a message needing
+        // reconciliation into a job that retries for a day. The way forward is
+        // named in the body instead, and it works: a resend carrying a reserved
+        // messageId is admitted, because it cannot produce a second message.
         return new Response(
           "Previous send timed out; outcome unknown. Reconcile before resending, or resend with a reserved messageId.",
           {
             status: 409,
-            headers: {
-              "x-baileys-idempotency-state": "indeterminate",
-              "retry-after": "60",
-            },
+            headers: { "x-baileys-idempotency-state": "indeterminate" },
           },
         );
       }

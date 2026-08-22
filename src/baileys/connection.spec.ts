@@ -1779,6 +1779,22 @@ describe("BaileysConnection", () => {
       expect(connection.lastOutgoingAckAt).not.toBeNull();
     });
 
+    // Any non-null timestamp makes sendState read `ok`, so a replacement socket
+    // that has never sent anything would inherit the previous socket's health
+    // report and hold it indefinitely — including one that is itself wedged.
+    it("stops reporting healthy on the replaced socket's evidence", async () => {
+      await connection.connect();
+      await connection.sendMessage("jid@s.whatsapp.net", { text: "hi" });
+      expect(connection.sendState).toBe("ok");
+
+      (connection as unknown as { socket: unknown }).socket = null;
+      await connection.connect();
+
+      expect(connection.lastSendCompletedAt).toBeNull();
+      expect(connection.lastOutgoingAckAt).toBeNull();
+      expect(connection.sendState).toBe("unknown");
+    });
+
     // `fromMe` is true for everything the account sends, including from the phone
     // and from other linked devices — none of which went through this socket's
     // keystore mutex. Counting those would let a busy account keep a wedged

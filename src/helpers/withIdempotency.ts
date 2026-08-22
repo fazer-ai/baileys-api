@@ -64,6 +64,13 @@ export interface IdempotencyOptions {
   // Predicate for "the work threw, but it may still take effect". Returning
   // true records the indeterminate marker instead of releasing the lock.
   isIndeterminate?: (error: unknown) => boolean;
+  // Proceed even when a previous attempt left an indeterminate marker. Only for
+  // callers whose retry cannot produce a second message — a caller-reserved
+  // WhatsApp id, which the server dedupes on. Without this the marker is a dead
+  // end: it outlives the retries by design, so every later attempt is refused
+  // for as long as it stands, including the one that reserved an id precisely
+  // so it could be safely repeated.
+  overrideIndeterminate?: boolean;
 }
 
 export async function withIdempotency<T>(
@@ -78,7 +85,7 @@ export async function withIdempotency<T>(
       : { status: "failed" };
   }
 
-  const outcome = await acquireOrSteal<T>(key);
+  const outcome = await acquireOrSteal<T>(key, options?.overrideIndeterminate);
   if (outcome.status === "cached") {
     return { status: "cached", value: outcome.value };
   }
@@ -115,7 +122,10 @@ type AcquireOutcome<T> =
   | { status: "processing" }
   | { status: "indeterminate" };
 
-async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
+async function acquireOrSteal<T>(
+  key: string,
+  overrideIndeterminate?: boolean,
+): Promise<AcquireOutcome<T>> {
   if (await acquireLock(key)) {
     return { status: "owned" };
   }
@@ -145,10 +155,19 @@ async function acquireOrSteal<T>(key: string): Promise<AcquireOutcome<T>> {
     return { status: "processing" };
   }
 
-  // An unknown outcome stays unknown: deliberately no steal path here, since a
-  // dead holder tells us nothing about whether its send reached WhatsApp.
+  // An unknown outcome stays unknown for anyone who could duplicate by retrying:
+  // deliberately no steal-on-dead-holder path here, since a dead holder tells us
+  // nothing about whether its send reached WhatsApp. The one caller allowed past
+  // is the one whose retry cannot produce a second message, and for it the marker
+  // is not information worth keeping — it is the thing standing between a stuck
+  // message and the safe resend that clears it.
   if (current.startsWith(INDETERMINATE_PREFIX)) {
-    return { status: "indeterminate" };
+    if (!overrideIndeterminate) {
+      return { status: "indeterminate" };
+    }
+    return (await stealLock(key, current))
+      ? { status: "owned" }
+      : { status: "processing" };
   }
 
   const holder = parseHolder(current);

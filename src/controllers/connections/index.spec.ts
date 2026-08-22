@@ -318,6 +318,49 @@ describe("connectionsController send-message", () => {
       expect(res.headers.get("x-baileys-idempotency-state")).toBe(
         "indeterminate",
       );
+      // No retry-after: nothing clears this marker on a timer. It outlives the
+      // caller's retries by design, so a 60-second wait would promise a state
+      // change that never comes and turn a message needing reconciliation into
+      // a job that retries for a day.
+      expect(res.headers.get("retry-after")).toBeNull();
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
+    }
+  });
+
+  // The way out the 409 body advertises, and it has to actually work: a resend
+  // carrying a reserved messageId lands on the same WhatsApp key, so it cannot
+  // produce a second message. Without this the marker is a dead end for a full
+  // day — including for the caller that reserved an id precisely so its send
+  // could be safely repeated.
+  it("lets a resend with a reserved messageId past an indeterminate marker", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(async () => {
+      throw new OperationTimeoutError("sendMessage", 45_000);
+    });
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+      const key = "@baileys-api:idempotency:send-message:+551234567890:42";
+      expect(stringData.get(key)).toStartWith("indeterminate:");
+
+      spy.mockImplementation(async () => ({
+        key: { id: "3EB0RESERVED" },
+        messageTimestamp: 1,
+      }));
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", {
+          chatwootMessageId: "42",
+          messageId: "3EB0RESERVED",
+        }),
+      );
+
+      expect(res.status).toBe(200);
     } finally {
       spy.mockRestore();
       stringData.clear();

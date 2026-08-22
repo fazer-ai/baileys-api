@@ -293,11 +293,16 @@ export class BaileysConnectionsHandler {
   // no-op. Used by the send-stall restart, where proceeding anyway would
   // resurrect a phone an explicit DELETE had just logged out — as an unpaired
   // QR socket, with its metadata written back.
+  // Returns whether it actually did anything. `false` means only one thing —
+  // shouldProceed vetoed it after a drain — and callers that answer a client need
+  // it: a restart that silently skipped is otherwise indistinguishable from one
+  // that rebuilt the socket, and the client is told 202 for a session that was
+  // deleted while it queued.
   async connect(
     phoneNumber: string,
     options: BaileysConnectionOptions,
     shouldProceed?: () => boolean,
-  ) {
+  ): Promise<boolean> {
     // Loops because every decision must be re-validated after an await:
     //   1. Drain any in-flight connect for this number (multiple callers can
     //      have parked on the same slot).
@@ -317,7 +322,7 @@ export class BaileysConnectionsHandler {
       // Before reading `existing`, and after every drain: whatever ran while we
       // waited may have made this connect the wrong thing to do.
       if (shouldProceed && !shouldProceed()) {
-        return;
+        return false;
       }
 
       const existing = this.connections[phoneNumber];
@@ -336,19 +341,19 @@ export class BaileysConnectionsHandler {
           this.drainingWebhooks.add(existing);
         }
         await this.spawnConnection(phoneNumber, connectOptions);
-        return;
+        return true;
       }
 
       if (!existing) {
         await this.spawnConnection(phoneNumber, connectOptions);
-        return;
+        return true;
       }
 
       await existing.updateOptions(connectOptions);
       try {
         // NOTE: This triggers a `connection.update` event.
         await existing.sendPresenceUpdate("available");
-        return;
+        return true;
       } catch (error) {
         if (!(error instanceof BaileysNotConnectedError)) {
           throw error;
@@ -366,6 +371,22 @@ export class BaileysConnectionsHandler {
         );
       }
     }
+  }
+
+  // Hands a live connection the epoch of a lease that moved under it, without the
+  // reconnect dance connect() would run. For an explicit operation that
+  // force-acquires and then decides not to rebuild: the socket keeps serving, so
+  // its webhooks have to carry the epoch that now owns it or the client discards
+  // them as stale.
+  async updateLeaseEpoch(phoneNumber: string, leaseEpoch: number) {
+    const connection = this.connections[phoneNumber];
+    if (!connection) {
+      return;
+    }
+    await connection.updateOptions({
+      ...connection.currentOptions,
+      leaseEpoch,
+    });
   }
 
   async verifyConnectionAccess(phoneNumber: string, apiKeyHash: string | null) {
