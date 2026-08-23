@@ -42,9 +42,62 @@ The API exposes the following endpoints. Keep in mind this project is in early d
 - `POST /connections/:phoneNumber/send-message`: Sends a message through an active connection.
 - `POST /connections/:phoneNumber/read-messages`: Marks messages as read.
 - `DELETE /connections/:phoneNumber`: Logs out and disconnects a WhatsApp connection.
+- `POST /connections/:phoneNumber/restart`: Recreates the socket for a connection, keeping its session (no QR, no re-pairing).
+- `GET /connections/:phoneNumber/health`: Send-side health for a connection. See "Silent send stalls" below.
 
 > [!IMPORTANT]
 > The `phoneNumber` parameter in the URL should be in the format `+<country_code><phone_number>`, e.g. `+551234567890`.
+
+
+### Silent send stalls
+
+A connection can keep receiving messages and pass every health check while none
+of its outgoing messages actually go out. Six operations inside Baileys
+serialize on a single mutex per connection, keyed by that connection's own JID,
+and the mutex has no timeout: if one of them never returns, every send queues
+behind it, for minutes or for hours, with no error, no log and no disconnect.
+Receiving and IQ queries do not touch that mutex, which is why the connection
+looks perfectly healthy throughout.
+
+`POST /connections/:phoneNumber` does **not** recover this. For a connection
+that is already registered it only sends a presence update, which does not go
+through the keystore — so it succeeds against a wedged socket.
+
+What this API provides:
+
+- **Bounded sends.** A send that exceeds `BAILEYS_SEND_TIMEOUT_MS` answers
+  `504` instead of hanging. After three consecutive timeouts the connection
+  answers `503` immediately rather than queueing more work behind the stuck
+  mutex.
+- **Recovery without a QR.** `POST /connections/:phoneNumber/restart` tears
+  down the socket and rebuilds it from the stored session. The auth state is
+  untouched, so the phone does not need to scan anything.
+- **Detection.** `GET /connections/:phoneNumber/health` reports `sendState`
+  (`unknown`/`ok`/`degraded`/`stalled`), the age of the last completed send and
+  the age of the last WhatsApp acknowledgement of one of our messages — the only
+  end-to-end proof that sending works. `GET /cluster/health` carries
+  `stalledConnectionCount`. A `connection.update` webhook with
+  `data.error = "send_stall_detected"` is emitted when a stall is detected. Its
+  `sendStall.action` says what the provider did: `restart` (the socket was
+  recreated), `suppressed` (a backoff is holding it off until `until`), or
+  `cancelled` (the connection recovered before the restart ran), or `failed`
+  (the restart ran and could not rebuild the socket, which is where a human has
+  to step in).
+- **Automatic recovery.** With `BAILEYS_SEND_STALL_RESTART_ENABLED=true`, a
+  stalled connection restarts its own socket, rate-limited per process and
+  backed off per phone.
+
+> [!NOTE]
+> Use `stalledConnectionCount` for alerting, never for container liveness: a
+> failing health check restarts the process and takes every healthy connection
+> down with it.
+
+> [!TIP]
+> Reserve the WhatsApp message id via the `messageId` field on send-message. A
+> send that times out may still reach WhatsApp; with a reserved id a retry
+> reuses the same id and WhatsApp deduplicates it. Without one the API cannot
+> tell the caller it is safe to retry, and answers `409` with
+> `x-baileys-idempotency-state: indeterminate` instead.
 
 ### Admin
 
@@ -137,6 +190,11 @@ Example: a proxy on host A (`WORKER_BASE_URL` unused), workers on hosts B and C 
 | `LOG_LEVEL`                           | The general log level for the application.                                                                 | `info`                   |
 | `BAILEYS_LOG_LEVEL`                   | Specific log level for the Baileys library.                                                                | `warn`                   |
 | `BAILEYS_CLIENT_VERSION`              | The Baileys client version to use. Only change if you know what you're doing!                              | `default`                |
+| `BAILEYS_HTTP_TIMEOUT_MS`             | Deadline for the Baileys library's own HTTP downloads. Guards against a parked download wedging a connection's sends.   | `120000`                 |
+| `BAILEYS_TX_ACQUIRE_TIMEOUT_MS`       | Reject after waiting this long for the keystore transaction mutex. `0` disables. See "Silent send stalls" below.        | `300000`                 |
+| `BAILEYS_TX_HOLD_WARN_MS`             | Report a transaction still holding the keystore mutex after this long. Must be lower than the acquire timeout. `0` disables. | `30000`             |
+| `BAILEYS_SEND_TIMEOUT_MS`             | Deadline on a single send. Plus the fixed 20s audio-preprocessing budget, must be lower than `PROXY_REQUEST_TIMEOUT_MS`.                                              | `45000`                  |
+| `BAILEYS_SEND_STALL_RESTART_ENABLED`  | Allow a connection whose sends keep timing out to recreate its own socket. Detection and webhooks run either way.       | `false`                  |
 | `REDIS_URL`                           | The connection URL for your Redis instance.                                                                | `redis://localhost:6379` |
 | `REDIS_PASSWORD`                      | The password for your Redis instance (if any).                                                             |                          |
 | `WEBHOOK_RETRY_POLICY_MAX_RETRIES`    | Maximum number of retries for sending webhook events.                                                      | `3`                      |

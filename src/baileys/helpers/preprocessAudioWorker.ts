@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import {
+  cancelAudioJob,
+  completeAudioJob,
+  isAudioJobCancelled,
+  registerAudioJob,
+} from "@/baileys/helpers/audioJobs";
 import ffmpeg from "@/bindings/ffmpeg";
 
 declare var self: Worker;
@@ -15,6 +21,7 @@ function bufferToStream(buffer: Buffer) {
 }
 
 async function processAudio(
+  id: number,
   audio: Buffer,
   format: "ogg-low" | "mp3-high" | "wav",
 ): Promise<Buffer> {
@@ -24,6 +31,9 @@ async function processAudio(
   );
   try {
     const command = ffmpeg(bufferToStream(audio));
+    // Registered before any option is set, so a cancel arriving in the same tick
+    // as the job still finds something to kill.
+    registerAudioJob(id, command);
 
     if (format === "wav") {
       command
@@ -50,12 +60,21 @@ async function processAudio(
 
     await new Promise<void>((ffResolve, ffReject) =>
       command
+        // The only moment ffmpegProc is guaranteed to exist. A cancel decided
+        // while fluent-ffmpeg was still preparing found nothing to kill, so this
+        // is where that decision is finally carried out.
+        .on("start", () => {
+          if (isAudioJobCancelled(id)) {
+            command.kill("SIGKILL");
+          }
+        })
         .on("end", () => ffResolve())
         .on("error", (err) => ffReject(err))
         .save(tmpFilename),
     );
     return await fs.readFile(tmpFilename);
   } finally {
+    completeAudioJob(id);
     try {
       await fs.unlink(tmpFilename);
     } catch {
@@ -67,13 +86,23 @@ async function processAudio(
 self.onmessage = async (
   event: MessageEvent<{
     id: number;
-    audio: ArrayBuffer;
-    format: "ogg-low" | "mp3-high" | "wav";
+    audio?: ArrayBuffer;
+    format?: "ogg-low" | "mp3-high" | "wav";
+    cancel?: boolean;
   }>,
 ) => {
-  const { id, audio, format } = event.data;
+  const { id, audio, format, cancel } = event.data;
+  // The caller stopped waiting. Nothing is posted back: it already dropped its
+  // entry, and the reply handler discards ids it no longer recognises.
+  if (cancel) {
+    cancelAudioJob(id);
+    return;
+  }
+  if (!audio || !format) {
+    return;
+  }
   try {
-    const result = await processAudio(Buffer.from(audio), format);
+    const result = await processAudio(id, Buffer.from(audio), format);
     const arrayBuffer = new Uint8Array(result).buffer as ArrayBuffer;
     self.postMessage({ id, result: arrayBuffer }, [arrayBuffer]);
   } catch (error) {

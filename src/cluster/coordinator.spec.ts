@@ -13,6 +13,7 @@ import * as redisAuthState from "@/baileys/redisAuthState";
 import * as registry from "@/cluster/instanceRegistry";
 import * as leaseStore from "@/cluster/leaseStore";
 import * as quarantineStore from "@/cluster/quarantineStore";
+import * as sendStallStore from "@/cluster/sendStallStore";
 import config from "@/config";
 import {
   BaileysConnectionOwnedElsewhereError,
@@ -28,6 +29,7 @@ const getRedisSavedAuthStateIds = spyOn(
 const isRedisAuthStatePaired = spyOn(redisAuthState, "isRedisAuthStatePaired");
 const seedImportedSession = spyOn(redisAuthState, "seedImportedSession");
 const clearRedisAuthState = spyOn(redisAuthState, "clearRedisAuthState");
+const getRedisAuthMetadata = spyOn(redisAuthState, "getRedisAuthMetadata");
 const listLiveInstances = spyOn(registry, "listLiveInstances");
 const heartbeat = spyOn(registry, "heartbeat");
 const deregister = spyOn(registry, "deregister");
@@ -43,12 +45,14 @@ const setHandoffTarget = spyOn(leaseStore, "setHandoffTarget");
 const getHandoffTarget = spyOn(leaseStore, "getHandoffTarget");
 const isQuarantined = spyOn(quarantineStore, "isQuarantined");
 const clearQuarantine = spyOn(quarantineStore, "clearQuarantine");
+const clearSendStall = spyOn(sendStallStore, "clearSendStall");
 
 afterAll(() => {
   getRedisSavedAuthStateIds.mockRestore();
   isRedisAuthStatePaired.mockRestore();
   seedImportedSession.mockRestore();
   clearRedisAuthState.mockRestore();
+  getRedisAuthMetadata.mockRestore();
   listLiveInstances.mockRestore();
   heartbeat.mockRestore();
   deregister.mockRestore();
@@ -64,6 +68,7 @@ afterAll(() => {
   getHandoffTarget.mockRestore();
   isQuarantined.mockRestore();
   clearQuarantine.mockRestore();
+  clearSendStall.mockRestore();
 });
 
 function makeHandlerMock() {
@@ -72,11 +77,19 @@ function makeHandlerMock() {
     string,
     { inFlightWebhooks: number; lastTrafficAt: number | null }
   >();
+  // What a live connection currently answers for currentOptions -- which a POST
+  // /connections mutates in place, so it is not what the connection was spawned
+  // with and not necessarily what Redis holds.
+  const liveOptions = new Map<string, Record<string, unknown>>();
   const handler = {
     connections,
     activity,
-    connect: mock(async (phone: string) => {
+    // Returns true like the real connect: false means only "shouldProceed vetoed
+    // it", and a double that answered undefined would report every restart as
+    // skipped.
+    connect: mock(async (phone: string, _options?: unknown) => {
       connections.add(phone);
+      return true;
     }),
     logout: mock(async (phone: string) => {
       connections.delete(phone);
@@ -89,6 +102,10 @@ function makeHandlerMock() {
     get size() {
       return connections.size;
     },
+    updateLeaseEpoch: mock(async (_phone: string, _epoch: number) => {}),
+    liveOptions,
+    currentConnectionOptions: (phone: string) =>
+      connections.has(phone) ? (liveOptions.get(phone) ?? null) : null,
     inFlightWebhookCount: () => 0,
     connectionActivity: (phone: string) =>
       connections.has(phone)
@@ -143,7 +160,9 @@ describe("ClusterCoordinator", () => {
     getHandoffTarget.mockReset();
     isQuarantined.mockReset();
     clearQuarantine.mockReset();
+    clearSendStall.mockReset();
     clearRedisAuthState.mockReset();
+    getRedisAuthMetadata.mockReset();
 
     getRedisSavedAuthStateIds.mockResolvedValue([]);
     isRedisAuthStatePaired.mockResolvedValue(true);
@@ -166,7 +185,9 @@ describe("ClusterCoordinator", () => {
     getHandoffTarget.mockResolvedValue(null);
     isQuarantined.mockResolvedValue(false);
     clearQuarantine.mockResolvedValue(undefined);
+    clearSendStall.mockResolvedValue(undefined);
     clearRedisAuthState.mockResolvedValue(true);
+    getRedisAuthMetadata.mockResolvedValue(null);
   });
 
   describe("#runClaimCycle", () => {
@@ -371,6 +392,30 @@ describe("ClusterCoordinator", () => {
 
       // Released under the epoch acquired in this same cycle.
       expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+    });
+
+    // An explicit connect, import or restart can force-acquire its own lease
+    // while this spawn is awaiting. The pre-connect guard catches that race
+    // before the attempt, but nothing stops it landing during one -- and
+    // releasing by "whatever we hold now" would hand away that operation's lease,
+    // leaving its live socket with nobody renewing it and free for any claim loop
+    // to take.
+    it("releases the failed claim's own epoch, not a newer one", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connect.mockImplementationOnce(async () => {
+        // A concurrent explicit operation force-acquires while we are awaiting.
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.set("+5511999", 9);
+        throw new Error("boom");
+      });
+      getRedisSavedAuthStateIds.mockResolvedValue([savedEntry("+5511999")]);
+
+      await coordinator.runClaimCycle();
+
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+      expect(releaseLease).not.toHaveBeenCalledWith("+5511999", 9);
     });
   });
 
@@ -661,6 +706,45 @@ describe("ClusterCoordinator", () => {
       expect(handler.discardConnection).not.toHaveBeenCalled();
     });
 
+    // heldLeaseEpochs is not the only holder of the epoch. The socket stamps its
+    // connection.update webhooks with the one it was given, and it is what
+    // onSpawnFailed hands to abandonExplicitLease when a background reconnect
+    // gives up. That release is epoch-fenced on both sides, so leaving the socket
+    // on the pre-re-acquire epoch turns the release into a silent no-op and the
+    // lease we just took back sits held with no socket behind it until its TTL.
+    it("hands the re-acquired epoch to the socket, not just to its own map", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      renewLease.mockResolvedValue("missing");
+      acquireLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+
+      await coordinator.runRenewCycle();
+
+      expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 7);
+    });
+
+    // A metadata write that fails is not evidence that Redis is down -- the renew
+    // and the re-acquire both just succeeded through it. Letting it reach the
+    // outer catch would pause every claim in the cluster over a write that only
+    // affects one socket's epoch stamp.
+    it("keeps going when the epoch cannot be propagated", async () => {
+      const handler = makeHandlerMock();
+      handler.connections.add("+5511999");
+      const coordinator = makeCoordinator(handler);
+      renewLease.mockResolvedValue("missing");
+      acquireLease.mockResolvedValue({ owner: "test-instance", epoch: 7 });
+      handler.updateLeaseEpoch.mockRejectedValueOnce(new Error("redis down"));
+
+      await coordinator.runRenewCycle();
+
+      expect(handler.discardConnection).not.toHaveBeenCalled();
+      // Not degraded: claims keep running.
+      getRedisSavedAuthStateIds.mockClear();
+      await coordinator.runClaimCycle();
+      expect(getRedisSavedAuthStateIds).toHaveBeenCalled();
+    });
+
     it("fences when the missing lease was already taken by someone else", async () => {
       const handler = makeHandlerMock();
       handler.connections.add("+5511999");
@@ -840,6 +924,311 @@ describe("ClusterCoordinator", () => {
           expect(handler.connect).toHaveBeenCalled();
         });
       });
+    });
+  });
+
+  describe("#restartWithLease", () => {
+    // handler.connect now takes a resolver rather than a value: it is invoked
+    // after the drain, which is the point of it. Invoking it here is what the
+    // real connect does.
+    const spawnedWith = (handler: HandlerMock) => {
+      const resolve = handler.connect.mock
+        .calls[0]?.[1] as unknown as () => Record<string, unknown> | null;
+      expect(typeof resolve).toBe("function");
+      return resolve();
+    };
+
+    const storedMetadata = {
+      webhookUrl: "https://stored.example/hook",
+      webhookVerifyToken: "stored-token",
+      clientName: "Stored Client",
+    };
+
+    it("rebuilds the socket from the stored metadata", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999", "stall");
+
+      expect(restarted).toBe("restarted");
+      expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
+      expect(spawnedWith(handler)).toEqual({
+        ...storedMetadata,
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
+    });
+
+    // The lease fences other instances and nothing else. A POST /connections
+    // already running on THIS instance force-acquired an OLDER epoch, so the
+    // guard below does not veto this restart -- and its updateOptions writes the
+    // new webhook config into the live connection first, Redis after. Rebuilding
+    // from the snapshot read before that would hand the replacement the
+    // pre-update copy, and persistMetadata would write it back over the
+    // reconfiguration.
+    it("rebuilds from the live connection's options, not a superseded snapshot", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      // The reconfiguration lands in the window this restart spends on Redis.
+      clearQuarantine.mockImplementation(async () => {
+        handler.connections.add("+5511999");
+        handler.liveOptions.set("+5511999", {
+          webhookUrl: "https://reconfigured.example/hook",
+          webhookVerifyToken: "new-token",
+          clientName: "Stored Client",
+        });
+      });
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("restarted");
+      expect(spawnedWith(handler)).toEqual({
+        webhookUrl: "https://reconfigured.example/hook",
+        webhookVerifyToken: "new-token",
+        clientName: "Stored Client",
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
+    });
+
+    // The snapshot the restart takes before calling connect is not the last word:
+    // connect drains the per-phone slot first, and an explicit operation holding
+    // it can reconfigure the live connection in that window. Since it acquired an
+    // OLDER epoch, the lease guard does not veto this restart either -- so the
+    // options have to be read again on the other side of the drain.
+    it("re-reads the live options after the drain, not only before it", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      handler.connections.add("+5511999");
+      handler.liveOptions.set("+5511999", {
+        webhookUrl: "https://before-drain.example/hook",
+        webhookVerifyToken: "old-token",
+      });
+
+      await coordinator.restartWithLease("+5511999");
+
+      // The reconfiguration lands while this restart is parked on the slot.
+      handler.liveOptions.set("+5511999", {
+        webhookUrl: "https://after-drain.example/hook",
+        webhookVerifyToken: "new-token",
+      });
+
+      expect(spawnedWith(handler)).toEqual({
+        webhookUrl: "https://after-drain.example/hook",
+        webhookVerifyToken: "new-token",
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
+    });
+
+    // The checks above ran before this restart queued behind the handler's per-phone
+    // lock. A DELETE holding that lock clears the auth state and takes its own lease on
+    // the way in, so proceeding on the metadata read earlier would create fresh unpaired
+    // credentials and answer 202 for the phone the operator just removed.
+    it("stops before the socket is rebuilt when another operation took the lease", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      await coordinator.restartWithLease("+5511999", "stall");
+
+      expect(spawnedWith(handler)).not.toBeNull();
+
+      // Whatever ran while we were parked force-acquired its own lease.
+      (
+        coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+      ).heldLeaseEpochs.set("+5511999", 2);
+      expect(spawnedWith(handler)).toBeNull();
+    });
+
+    // heldLeaseEpochs stops describing THIS operation the moment a concurrent explicit
+    // one force-acquires its own. Unwinding by the current value would hand away that
+    // operation's lease and leave its live socket unowned, free for any claim loop to
+    // take; stamping our older epoch into its connection would leave every webhook it
+    // sends discarded by the client as stale.
+    it("releases only the epoch it acquired when it unwinds", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockImplementation((async () => {
+        // Another explicit operation took over while we were reading.
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.set("+5511999", 2);
+        return null;
+      }) as typeof redisAuthState.getRedisAuthMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("not-found");
+      // Nothing is given back and nothing is corrected: the lease is not ours to
+      // unwind, and its owner's socket already carries its own epoch.
+      expect(releaseLease).not.toHaveBeenCalled();
+      expect(
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.get("+5511999"),
+      ).toBe(2);
+    });
+
+    // An unpaired QR flow in progress is exactly what gets here, and it has a live
+    // socket. Releasing the lease we just force-acquired would leave that socket
+    // running unowned: the proxy stops routing to it and the next claim cycle
+    // builds a competing socket on the same identity.
+    it("keeps the lease when a live socket is still serving the phone", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connections.add("+5511999");
+      isRedisAuthStatePaired.mockResolvedValue(false);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("not-found");
+      expect(releaseLease).not.toHaveBeenCalled();
+      // And the socket is told which epoch owns it now, or its webhooks are
+      // discarded by the client as stale.
+      expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 1);
+    });
+
+    // A Redis blip while inspecting the session must not strand a socket that is
+    // still serving: abandoning the lease stops the renewals under a live
+    // connection, which is the one outcome an inspection failure has no business
+    // causing.
+    it("keeps the lease when the inspection itself fails under a live socket", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connections.add("+5511999");
+      getRedisAuthMetadata.mockRejectedValue(new Error("redis down"));
+
+      await expect(coordinator.restartWithLease("+5511999")).rejects.toThrow(
+        "redis down",
+      );
+
+      expect(releaseLease).not.toHaveBeenCalled();
+      expect(handler.updateLeaseEpoch).toHaveBeenCalledWith("+5511999", 1);
+    });
+
+    // Same rule, the other outcome: with a live socket under a lease that is no
+    // longer ours, the correction we would apply belongs to the newer operation and
+    // would stamp its webhooks with our older epoch.
+    it("leaves a newer operation's connection untouched when unwinding", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      handler.connections.add("+5511999");
+      isRedisAuthStatePaired.mockResolvedValue(false);
+      getRedisAuthMetadata.mockImplementation((async () => {
+        (
+          coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
+        ).heldLeaseEpochs.set("+5511999", 2);
+        return storedMetadata;
+      }) as typeof redisAuthState.getRedisAuthMetadata);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("not-found");
+      expect(handler.updateLeaseEpoch).not.toHaveBeenCalled();
+      expect(releaseLease).not.toHaveBeenCalled();
+    });
+
+    // A veto after the drain means nothing was rebuilt. Reporting it as success
+    // hands the client a 202 for a session that was deleted while it queued.
+    it("reports false when the guarded connect was skipped", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      handler.connect.mockImplementation(async () => false);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      // Not "not-found": the phone usually still has a perfectly good session,
+      // and 404 would send the caller off to re-pair what somebody else rebuilt.
+      expect(restarted).toBe("superseded");
+    });
+
+    // Taking options from the request would let a restart overwrite good
+    // webhook config with whatever the caller happened to send, which is why
+    // the route has no connection-options body at all.
+    it("takes no connection options from the caller", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      await coordinator.restartWithLease("+5511999");
+
+      expect(spawnedWith(handler)).toMatchObject({
+        webhookUrl: storedMetadata.webhookUrl,
+        webhookVerifyToken: storedMetadata.webhookVerifyToken,
+      });
+    });
+
+    // The lease is taken BEFORE the session is inspected, and given back when there
+    // turns out to be nothing to restart. Reading first would let a restart racing a
+    // logout or an options update rebuild from state the previous owner was still
+    // entitled to change; holding the lease afterwards would route 421s here until
+    // the TTL expires, for a phone this instance just declined to serve.
+    it("reports false when there is no stored session, releasing the lease it took", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(null);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("not-found");
+      expect(forceAcquireLease).toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+      expect(handler.connect).not.toHaveBeenCalled();
+    });
+
+    // Metadata is not a session: useRedisAuthState writes it when the socket
+    // starts, so an unscanned QR flow satisfies the metadata check. Restarting
+    // that would answer 202 and spawn another unpaired QR socket, which is the
+    // opposite of what a route promising "no QR, no re-pairing" should do.
+    it("reports false for a session that never finished pairing", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      isRedisAuthStatePaired.mockResolvedValue(false);
+
+      const restarted = await coordinator.restartWithLease("+5511999");
+
+      expect(restarted).toBe("not-found");
+      expect(forceAcquireLease).toHaveBeenCalled();
+      expect(releaseLease).toHaveBeenCalledWith("+5511999", 1);
+      expect(handler.connect).not.toHaveBeenCalled();
+    });
+
+    // The ordering, not just the outcome: until the lease moves, the previous owner
+    // may still rewrite the metadata (an options update) or delete the auth state (a
+    // logout). Reading first means a restart racing either one rebuilds from
+    // configuration that has since been superseded.
+    it("takes the lease before reading the stored session", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      let leaseHeldAtRead = false;
+      getRedisAuthMetadata.mockImplementation((async () => {
+        leaseHeldAtRead = forceAcquireLease.mock.calls.length > 0;
+        return storedMetadata;
+      }) as typeof redisAuthState.getRedisAuthMetadata);
+
+      await coordinator.restartWithLease("+5511999");
+
+      expect(leaseHeldAtRead).toBe(true);
+    });
+
+    it("clears quarantine — an operator asking for the phone wins now", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+
+      await coordinator.restartWithLease("+5511999");
+
+      expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
     });
   });
 
@@ -1053,6 +1442,18 @@ describe("ClusterCoordinator", () => {
       expect(clearRedisAuthState).toHaveBeenCalledWith("+5511999");
       expect(clearQuarantine).toHaveBeenCalledWith("+5511999");
       expect(releaseLease).toHaveBeenCalled();
+    });
+
+    // The send-stall backoff is keyed by phone number and outlives the session
+    // by up to 24h. Left behind, a re-paired number inherits the discarded
+    // session's backoff and has its stall watchdog suppressed.
+    it("clears the send-stall backoff along with the rest of the strike state", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+
+      await coordinator.logoutWithLease("+5511999");
+
+      expect(clearSendStall).toHaveBeenCalledWith("+5511999");
     });
 
     it("throws when the offline clear is fenced off", async () => {

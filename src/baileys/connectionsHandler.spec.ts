@@ -71,6 +71,23 @@ class MockBaileysConnection {
   _apiKeyHash: string | null;
   inFlightWebhooks = 0;
   lastTrafficAt: number | null = null;
+  isOpen = true;
+  lastSendCompletedAt: number | null = null;
+  lastOutgoingAckAt: number | null = null;
+  consecutiveSendTimeouts = 0;
+  sendState: "unknown" | "ok" | "degraded" | "stalled" = "unknown";
+  // True by default because that is the only state from which the real
+  // connection ever calls requestRestart: handleSendStall sets it immediately
+  // before. Examples flip it to false to model recovery arriving while the
+  // restart waited on the per-number slot.
+  restartPending = true;
+  reportedFailures = 0;
+
+  reportFailedStallRestart() {
+    this.reportedFailures += 1;
+  }
+
+  async withdrawStallRestart() {}
 
   constructor(phoneNumber: string, options: any) {
     this.phoneNumber = phoneNumber;
@@ -82,6 +99,12 @@ class MockBaileysConnection {
   get apiKeyHash() {
     return this._apiKeyHash;
   }
+  // Mirrors the real class: updateOptions mutates the live connection, so the
+  // options it reports are NOT the ones it was constructed with.
+  get currentOptions() {
+    return { ...this.options, ...this.updatedOptions };
+  }
+  updatedOptions: any = {};
   connect = mockConnect;
   logout = mockLogout;
   discard = mockDiscard;
@@ -94,7 +117,10 @@ class MockBaileysConnection {
   deleteMessage = mockDeleteMessage;
   editMessage = mockEditMessage;
   profilePictureUrl = mockProfilePictureUrl;
-  updateOptions = mockUpdateOptions;
+  updateOptions = (options: any) => {
+    this.updatedOptions = { ...this.updatedOptions, ...options };
+    return mockUpdateOptions(options);
+  };
   onWhatsApp = mockOnWhatsApp;
   getBusinessProfile = mockGetBusinessProfile;
   groupMetadata = mockGroupMetadata;
@@ -191,6 +217,25 @@ describe("BaileysConnectionsHandler", () => {
     it("is a no-op when the connection does not exist", async () => {
       await handler.discardConnection("+5511999");
       expect(mockDiscard).not.toHaveBeenCalled();
+    });
+
+    // A connection registered but never connected is worse than no entry: the
+    // registry answers "we own this number" to the claim and renew cycles while
+    // the socket is null, so the phone stays offline, leased to us, with nothing
+    // scheduled to retry. Reachable unattended now that the watchdog restarts
+    // sockets on its own, where the only thing downstream of the rejection is a
+    // log line.
+    it("does not leave a connection registered when its connect fails", async () => {
+      mockConnect.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      await expect(handler.connect("+5511999", defaultOptions)).rejects.toThrow(
+        "redis down",
+      );
+
+      expect(handler.hasConnection("+5511999")).toBe(false);
+      expect(mockDiscard).toHaveBeenCalled();
     });
 
     it("keeps in-flight webhooks of a discarded connection visible until they drain", async () => {
@@ -1172,6 +1217,312 @@ describe("BaileysConnectionsHandler", () => {
         "user1@s.whatsapp.net",
         "user2@s.whatsapp.net",
       ]);
+    });
+  });
+
+  describe("#requestRestart", () => {
+    const restartOf = (phone: string) =>
+      mockConnectionInstances.get(phone)?.options?.requestRestart as (
+        reason: string,
+      ) => void;
+
+    // The restart queues behind whatever holds the per-number slot, and connect()
+    // re-checks the guard only after draining it. A late send completion or the
+    // wedged key releasing in that window clears the stall, and killing the
+    // socket then costs a live connection and a backoff strike for nothing.
+    it("abandons a queued restart once the connection has recovered", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+      mockDiscard.mockClear();
+      mockConnect.mockClear();
+
+      // Recovery landed between asking for the restart and reaching the guard.
+      original.restartPending = false;
+      restartOf("+5511999999999")?.("send stall");
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(original);
+      expect(mockDiscard).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+    });
+
+    // The claim scan skips any phone that already has a lease, so a restart that
+    // fails to rebuild leaves the number dark until the TTL and the unclaimed
+    // grace elapse, with every request routed here answering 404.
+    it("reports a restart that could not rebuild its socket", async () => {
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 7,
+      });
+      // Captured before the restart: spawnConnection registers a replacement
+      // under the same phone, and it is the ORIGINAL that observed the stall and
+      // announced the restart, so it is the one that has to correct it.
+      const original = mockConnectionInstances.get("+5511999999999");
+      const failures: Array<[string, number | null]> = [];
+      handler.onSpawnFailed = (phone: string, epoch: number | null) => {
+        failures.push([phone, epoch]);
+      };
+      mockConnect.mockImplementationOnce(async () => {
+        throw new Error("redis down");
+      });
+
+      restartOf("+5511999999999")?.("send stall");
+
+      for (let i = 0; i < 50 && failures.length === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      // The epoch travels with it: releasing by whatever the coordinator
+      // currently holds would hand away a lease a concurrent explicit operation
+      // force-acquired while this restart was failing, leaving its live socket
+      // unowned.
+      expect(failures).toEqual([["+5511999999999", 7]]);
+      // And the consumers who were told the socket was being recreated hear
+      // that it was not. Nothing else would ever correct that verdict.
+      expect(original.reportedFailures).toBe(1);
+      expect(handler.hasConnection("+5511999999999")).toBe(false);
+      handler.onSpawnFailed = null;
+    });
+
+    // connect() drains the per-number slot before re-checking, so a recovery in
+    // that window vetoes a restart this connection had already committed to: a
+    // strike is written and consumers have been told the socket is being
+    // recreated. Both have to be taken back, or the next genuine stall is
+    // suppressed on the strength of a restart that never happened.
+    it("tells the connection to withdraw a restart that got vetoed", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+      const withdrawals: string[] = [];
+      connection.withdrawStallRestart = async () => {
+        withdrawals.push("withdrawn");
+      };
+      // Recovery lands after the commit but before connect() re-checks.
+      connection.restartPending = false;
+
+      restartOf("+5511999999999")?.("send stall");
+
+      for (let i = 0; i < 50 && withdrawals.length === 0; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(withdrawals).toEqual(["withdrawn"]);
+    });
+
+    // A background reconnect that gives up aborts, which evicts it from the
+    // handler -- but the lease is the coordinator's, and the claim scan skips any
+    // phone that still has one. Without this the number stays dark until the TTL
+    // and the unclaimed grace expire, with requests routing here and 404ing.
+    it("reports a background reconnect that gave up rebuilding", async () => {
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        leaseEpoch: 4,
+      });
+      const connection = mockConnectionInstances.get("+5511999999999");
+      const failures: Array<[string, number | null]> = [];
+      handler.onSpawnFailed = (phone: string, epoch: number | null) => {
+        failures.push([phone, epoch]);
+      };
+
+      connection.options.onUnrecoverable();
+
+      expect(failures).toEqual([["+5511999999999", 4]]);
+      handler.onSpawnFailed = null;
+    });
+
+    // Regression guard for a deadlock that is silent when it happens: the
+    // obvious implementation wraps this in withInFlightOp, and spawnConnection
+    // takes the SAME per-number slot, so it would wait forever on a slot the
+    // callback itself holds. The race makes that hang a failure instead of a
+    // suite that never finishes.
+    it("recreates the connection without deadlocking on the in-flight slot", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+      mockDiscard.mockClear();
+      mockConnect.mockClear();
+
+      restartOf("+5511999999999")?.("send stall");
+
+      await Promise.race([
+        (async () => {
+          while (mockConnectionInstances.get("+5511999999999") === original) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("requestRestart deadlocked")),
+            2000,
+          ),
+        ),
+      ]);
+
+      expect(mockDiscard).toHaveBeenCalled();
+      expect(mockConnect).toHaveBeenCalled();
+      expect(mockConnectionInstances.get("+5511999999999")).not.toBe(original);
+    });
+
+    it("carries the same options onto the replacement socket", async () => {
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        clientName: "My Client",
+      });
+      const original = mockConnectionInstances.get("+5511999999999");
+
+      restartOf("+5511999999999")?.("send stall");
+      await Promise.race([
+        (async () => {
+          while (mockConnectionInstances.get("+5511999999999") === original) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("requestRestart deadlocked")),
+            2000,
+          ),
+        ),
+      ]);
+
+      const replacement = mockConnectionInstances.get("+5511999999999");
+      expect(replacement.options.clientName).toBe("My Client");
+      expect(replacement.options.webhookUrl).toBe(defaultOptions.webhookUrl);
+    });
+
+    // A POST /connections on a live connection updates it in place, so the
+    // options captured when it was spawned are stale from then on. Restarting
+    // from the stale copy would persist it back to Redis and silently revert
+    // the reconfiguration.
+    it("restarts from the connection's current options, not the ones it was built with", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        webhookUrl: "http://example.com/reconfigured",
+        leaseEpoch: 9,
+      });
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(original);
+
+      restartOf("+5511999999999")?.("send stall");
+      await Promise.race([
+        (async () => {
+          while (mockConnectionInstances.get("+5511999999999") === original) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        })(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("requestRestart deadlocked")),
+            2000,
+          ),
+        ),
+      ]);
+
+      const replacement = mockConnectionInstances.get("+5511999999999");
+      expect(replacement.options.webhookUrl).toBe(
+        "http://example.com/reconfigured",
+      );
+      expect(replacement.options.leaseEpoch).toBe(9);
+    });
+
+    // The identity check the caller makes is not enough on its own: connect()
+    // drains the in-flight slot first, and logout() keeps its connection
+    // registered until its WhatsApp RPC returns. Proceeding anyway resurrects a
+    // phone an explicit DELETE just logged out — as an unpaired QR socket, with
+    // its metadata written back.
+    it("does not resurrect a connection an in-flight logout is removing", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const original = mockConnectionInstances.get("+5511999999999");
+
+      // A logout parked on the WhatsApp RPC: the connection is still registered.
+      let finishLogout: (() => void) | undefined;
+      mockLogout.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLogout = resolve;
+          }),
+      );
+      const logout = handler.logout("+5511999999999");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(original);
+
+      mockConnect.mockClear();
+      restartOf("+5511999999999")?.("send stall");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      finishLogout?.();
+      await logout;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(handler.hasConnection("+5511999999999")).toBe(false);
+      expect(mockConnect).not.toHaveBeenCalled();
+    });
+
+    // A replacement may already hold the slot by the time a stalled socket asks
+    // to be restarted; only the instance that stalled should act.
+    it("is a no-op once a replacement already holds the slot", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const staleRestart = restartOf("+5511999999999");
+      await handler.connect("+5511999999999", {
+        ...defaultOptions,
+        forceRestart: true,
+      });
+      const current = mockConnectionInstances.get("+5511999999999");
+      mockDiscard.mockClear();
+
+      staleRestart?.("send stall");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(mockDiscard).not.toHaveBeenCalled();
+      expect(mockConnectionInstances.get("+5511999999999")).toBe(current);
+    });
+  });
+
+  describe("#sendHealth", () => {
+    it("returns null for a phone with no connection", () => {
+      expect(handler.sendHealth("+5511000000000")).toBeNull();
+    });
+
+    it("reports ages, never raw timestamps", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+      connection.sendState = "degraded";
+      connection.consecutiveSendTimeouts = 2;
+      connection.lastSendCompletedAt = Date.now() - 5_000;
+
+      const health = handler.sendHealth("+5511999999999");
+
+      expect(health?.sendState).toBe("degraded");
+      expect(health?.consecutiveSendTimeouts).toBe(2);
+      expect(health?.lastSendCompletedAgoMs).toBeGreaterThanOrEqual(5_000);
+      expect(health?.lastOutgoingAckAgoMs).toBeNull();
+    });
+
+    // Being registered here is not connectivity: a connection is registered
+    // before it ever opens (QR pairing) and stays registered while its socket is
+    // closed and backing off — precisely when a health check must not claim it
+    // is connected.
+    it("reports the socket's own state, not the fact that we hold the object", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+
+      expect(handler.sendHealth("+5511999999999")?.connected).toBe(true);
+
+      connection.isOpen = false;
+      expect(handler.sendHealth("+5511999999999")?.connected).toBe(false);
+    });
+  });
+
+  describe("#stalledConnectionCount", () => {
+    it("counts only connections whose sends are wedged", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      await handler.connect("+5511888888888", defaultOptions);
+      expect(handler.stalledConnectionCount()).toBe(0);
+
+      mockConnectionInstances.get("+5511999999999").sendState = "stalled";
+      mockConnectionInstances.get("+5511888888888").sendState = "degraded";
+
+      expect(handler.stalledConnectionCount()).toBe(1);
     });
   });
 });

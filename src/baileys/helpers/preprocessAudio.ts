@@ -7,6 +7,13 @@ interface PendingRequest {
   reject: (error: Error) => void;
 }
 
+export class AudioPreprocessAbortedError extends Error {
+  constructor() {
+    super("audio preprocessing aborted");
+    this.name = "AudioPreprocessAbortedError";
+  }
+}
+
 const POOL_SIZE =
   typeof navigator !== "undefined" && navigator.hardwareConcurrency
     ? navigator.hardwareConcurrency
@@ -62,10 +69,25 @@ function getWorkerPool(): Worker[] {
   return workers;
 }
 
+// `signal` is how a caller that has stopped waiting says so. Without it a
+// abandoned conversion leaves its entry in pendingRequests and its promise
+// pending for as long as the worker takes -- forever if the job is wedged, which
+// is exactly the case a deadline exists for.
+//
+// It does not TERMINATE the worker, and does not need to: the pool is
+// round-robin, so several conversions share one worker and killing it to reclaim
+// a slot would take healthy jobs down with it. What the abort does instead is
+// tell that worker to kill the one job, which is the thing actually holding
+// resources -- the worker itself is idle between messages.
 export async function preprocessAudio(
   audio: Buffer,
   format: AudioFormat,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
+  if (signal?.aborted) {
+    throw new AudioPreprocessAbortedError();
+  }
+
   const pool = getWorkerPool();
   const worker = pool[nextWorkerIndex % pool.length];
   nextWorkerIndex++;
@@ -74,7 +96,30 @@ export async function preprocessAudio(
   const arrayBuffer = new Uint8Array(audio).buffer as ArrayBuffer;
 
   return new Promise<Buffer>((resolve, reject) => {
-    pendingRequests.set(id, { resolve, reject });
+    const onAbort = () => {
+      // Only if it is still ours: a reply that arrived first already removed it.
+      if (!pendingRequests.delete(id)) {
+        return;
+      }
+      // Dropping our callback is not enough. The worker's onmessage is async, so
+      // it started an ffmpeg CHILD PROCESS for this job and is already free to
+      // start another for the next one; abandoning it leaves that process, its
+      // temp file and its memory alive until it finishes on its own, which for
+      // the wedged job this deadline exists for is never.
+      worker.postMessage({ id, cancel: true });
+      reject(new AudioPreprocessAbortedError());
+    };
+    const settle = <T>(finish: (value: T) => void) => {
+      return (value: T) => {
+        signal?.removeEventListener("abort", onAbort);
+        finish(value);
+      };
+    };
+    pendingRequests.set(id, {
+      resolve: settle(resolve),
+      reject: settle(reject),
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
     worker.postMessage({ id, audio: arrayBuffer, format }, [arrayBuffer]);
   });
 }

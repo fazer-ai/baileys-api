@@ -30,6 +30,17 @@ export interface BaileysConnectionOptions {
   // inFlightOps lock instead of bypassing it. Wired by the handler, mirroring
   // onConnectionClose. See issue #313.
   requestLogout?: () => void;
+  // Invoked by the connection when its sends keep timing out and the socket has
+  // to be recreated. Goes through the handler for the same reason as
+  // requestLogout: the restart has to participate in the handler's inFlightOps
+  // lock rather than bypass it. See the send-stall watchdog in connection.ts.
+  requestRestart?: (reason: string) => void;
+  // Invoked when this connection gives up rebuilding its own socket and aborts.
+  // The handler has evicted it by then, but the LEASE is the coordinator's: the
+  // claim scan skips any phone that already has one, so without this the number
+  // stays dark until the TTL and the unclaimed grace expire while requests route
+  // here and 404.
+  onUnrecoverable?: () => void;
 }
 
 export interface BaileysConnectionWebhookPayload {
@@ -45,6 +56,17 @@ export interface BaileysConnectionWebhookPayload {
         // quarantine: consecutive failed reconnect cycles and when background
         // claims will retry. Explicit POST /connections retries immediately.
         quarantine?: { strikes: number; until: string };
+        // Present on send_stall_detected: the connection is receiving and
+        // answering health checks but every send times out. `action` says
+        // whether the socket was recreated or the restart was held back (by
+        // config or by backoff), and `until` when a held-back restart may
+        // next run.
+        sendStall?: {
+          consecutiveTimeouts: number;
+          stalledForMs: number;
+          action: "restart" | "suppressed" | "cancelled" | "failed";
+          until?: string;
+        };
       };
   extra?: unknown;
 }

@@ -42,9 +42,62 @@ A API expõe os seguintes endpoints. Tenha em mente que este projeto está em de
 - `POST /connections/:phoneNumber/send-message`: Envia uma mensagem através de uma conexão ativa.
 - `POST /connections/:phoneNumber/read-messages`: Marca mensagens como lidas.
 - `DELETE /connections/:phoneNumber`: Faz logout e desconecta uma conexão WhatsApp.
+- `POST /connections/:phoneNumber/restart`: Recria o socket de uma conexão, preservando a sessão (sem QR, sem re-pareamento).
+- `GET /connections/:phoneNumber/health`: Saúde do envio de uma conexão. Veja "Conexões mudas" abaixo.
 
 > [!IMPORTANT]
 > O parâmetro `phoneNumber` na URL deve estar no formato `+<codigo_do_pais><telefone>`, ex: `+551234567890`.
+
+
+### Conexões mudas
+
+Uma conexão pode continuar recebendo mensagens e passar em todas as verificações
+de saúde enquanto nenhuma mensagem enviada realmente sai. Seis operações dentro
+do Baileys são serializadas por um único mutex por conexão, cuja chave é o JID
+da própria conexão, e esse mutex não tem timeout: se uma delas não retorna, todo
+envio entra numa fila que não anda, por minutos ou por horas, sem erro, sem log
+e sem desconexão. Recepção e consultas IQ não passam por esse mutex, e é por
+isso que a conexão parece perfeitamente saudável o tempo todo.
+
+`POST /connections/:phoneNumber` **não** recupera esse estado. Para uma conexão
+já registrada ele apenas envia um presence update, que não passa pelo keystore
+— ou seja, tem sucesso mesmo com o socket travado.
+
+O que esta API oferece:
+
+- **Envios com prazo.** Um envio que passa de `BAILEYS_SEND_TIMEOUT_MS`
+  responde `504` em vez de pendurar. Após três timeouts consecutivos, a conexão
+  responde `503` na hora, em vez de enfileirar mais trabalho atrás do mutex
+  travado.
+- **Recuperação sem QR.** `POST /connections/:phoneNumber/restart` derruba o
+  socket e o reconstrói a partir da sessão armazenada. O authState não é tocado,
+  então o aparelho não precisa escanear nada.
+- **Detecção.** `GET /connections/:phoneNumber/health` reporta `sendState`
+  (`unknown`/`ok`/`degraded`/`stalled`), a idade do último envio concluído e a
+  idade do último reconhecimento do WhatsApp para uma mensagem nossa — a única
+  prova fim a fim de que o envio funciona. `GET /cluster/health` traz
+  `stalledConnectionCount`. Um webhook `connection.update` com
+  `data.error = "send_stall_detected"` é emitido quando um travamento é
+  detectado. O `sendStall.action` diz o que o provedor fez: `restart` (o socket
+  foi recriado), `suppressed` (um backoff está segurando até `until`) ou
+  `cancelled` (a conexão se recuperou antes de o restart rodar), ou `failed`
+  (o restart rodou e não conseguiu reconstruir o socket, que é onde alguém
+  precisa intervir).
+- **Recuperação automática.** Com `BAILEYS_SEND_STALL_RESTART_ENABLED=true`,
+  uma conexão travada reinicia o próprio socket, com limite de taxa por
+  processo e backoff por telefone.
+
+> [!NOTE]
+> Use `stalledConnectionCount` para alertas, nunca para liveness do container:
+> um health check reprovando reinicia o processo e derruba junto todas as
+> conexões saudáveis.
+
+> [!TIP]
+> Reserve o id da mensagem do WhatsApp pelo campo `messageId` do send-message.
+> Um envio que dá timeout ainda pode chegar ao WhatsApp; com um id reservado, a
+> retentativa reusa o mesmo id e o WhatsApp deduplica. Sem ele, a API não tem
+> como dizer ao caller que é seguro retentar, e responde `409` com
+> `x-baileys-idempotency-state: indeterminate`.
 
 ### Admin
 
@@ -137,6 +190,11 @@ Exemplo: um proxy no host A (`WORKER_BASE_URL` não usado), workers nos hosts B 
 | `LOG_LEVEL`                           | O nível geral de log para a aplicação.                                                                                  | `info`                   |
 | `BAILEYS_LOG_LEVEL`                   | Nível de log específico para a biblioteca Baileys.                                                                      | `warn`                   |
 | `BAILEYS_CLIENT_VERSION`              | A versão do cliente Baileys a ser utilizada. Só altere se você souber o que está fazendo!                               | `default`                |
+| `BAILEYS_HTTP_TIMEOUT_MS`             | Prazo para os downloads HTTP da própria biblioteca Baileys. Impede que um download travado prenda os envios da conexão. | `120000`                 |
+| `BAILEYS_TX_ACQUIRE_TIMEOUT_MS`       | Falha após esperar esse tempo pelo mutex de transação do keystore. `0` desativa. Veja "Conexões mudas" abaixo.          | `300000`                 |
+| `BAILEYS_TX_HOLD_WARN_MS`             | Reporta uma transação que ainda segura o mutex após esse tempo. Deve ser menor que o timeout de aquisição. `0` desativa. | `30000`                 |
+| `BAILEYS_SEND_TIMEOUT_MS`             | Prazo de um envio. Somado ao orçamento fixo de 20s do pré-processamento de áudio, deve ser menor que `PROXY_REQUEST_TIMEOUT_MS`.                                                      | `45000`                  |
+| `BAILEYS_SEND_STALL_RESTART_ENABLED`  | Permite que uma conexão cujos envios travam recrie o próprio socket. A detecção e os webhooks funcionam de todo jeito.  | `false`                  |
 | `REDIS_URL`                           | A URL de conexão para sua instância Redis.                                                                              | `redis://localhost:6379` |
 | `REDIS_PASSWORD`                      | A senha para sua instância Redis (se houver).                                                                           |                          |
 | `WEBHOOK_RETRY_POLICY_MAX_RETRIES`    | Número máximo de tentativas para enviar eventos de webhook.                                                             | `3`                      |

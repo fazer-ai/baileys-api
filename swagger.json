@@ -306,7 +306,7 @@
             }
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -503,7 +503,7 @@
             "description": "Owned by another live instance (worker role)"
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -561,7 +561,7 @@
             }
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -1147,6 +1147,211 @@
         }
       }
     },
+    "/connections/{phoneNumber}/restart": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "postConnectionsByPhoneNumberRestart",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Restart accepted; reconnecting"
+          },
+          "403": {
+            "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
+          },
+          "404": {
+            "description": "No stored session for this phone number"
+          },
+          "409": {
+            "description": "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header).",
+            "headers": {
+              "x-baileys-owner": {
+                "description": "Instance id of the connection owner",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
+            "headers": {
+              "x-baileys-owner": {
+                "description": "Instance id of the connection owner",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Recreate the socket, keeping the session",
+        "description": "Tears down the live socket and spawns a replacement using the stored session, without clearing auth state — no QR, no re-pairing. Recovers a connection that is receiving and passing health checks but whose sends are wedged.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "maxLength": 200,
+                    "description": "Free-text note recorded in the restart log line",
+                    "example": "send stall",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "maxLength": 200,
+                    "description": "Free-text note recorded in the restart log line",
+                    "example": "send stall",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "maxLength": 200,
+                    "description": "Free-text note recorded in the restart log line",
+                    "example": "send stall",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/connections/{phoneNumber}/health": {
+      "get": {
+        "parameters": [
+          {
+            "description": "Phone number for connection. Must have + prefix.",
+            "schema": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 16,
+              "pattern": "^\\+\\d{5,15}$",
+              "example": "+551234567890"
+            },
+            "in": "path",
+            "name": "phoneNumber",
+            "required": true
+          }
+        ],
+        "operationId": "getConnectionsByPhoneNumberHealth",
+        "tags": [
+          "Connections"
+        ],
+        "security": [
+          {
+            "xApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Send-side health snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "sendState": {
+                          "type": "string",
+                          "enum": [
+                            "unknown",
+                            "ok",
+                            "degraded",
+                            "stalled"
+                          ],
+                          "description": "'unknown' means no send has been observed on this connection yet",
+                          "example": "ok"
+                        },
+                        "consecutiveSendTimeouts": {
+                          "type": "integer"
+                        },
+                        "lastTrafficAgoMs": {
+                          "type": "integer",
+                          "nullable": true,
+                          "description": "Age of the last message-level traffic, inbound or outbound. Stays fresh on inbound traffic alone, so it does NOT prove sending works."
+                        },
+                        "lastSendCompletedAgoMs": {
+                          "type": "integer",
+                          "nullable": true,
+                          "description": "Age of the last send that completed, i.e. the keystore mutex was free"
+                        },
+                        "lastOutgoingAckAgoMs": {
+                          "type": "integer",
+                          "nullable": true,
+                          "description": "Age of the last WhatsApp acknowledgement of one of our messages — the only end-to-end proof that sending works"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
+          },
+          "404": {
+            "description": "Phone number not connected"
+          },
+          "421": {
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
+            "headers": {
+              "x-baileys-owner": {
+                "description": "Instance id of the connection owner",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Send-side health for this connection",
+        "description": "Whether this connection is actually able to send, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen."
+      }
+    },
     "/connections/{phoneNumber}/presence": {
       "patch": {
         "parameters": [
@@ -1181,7 +1386,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -1323,7 +1528,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -1492,10 +1697,10 @@
             "description": "Phone number not connected"
           },
           "409": {
-            "description": "Message is already being processed"
+            "description": "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`. `indeterminate` is not resolved by retrying, under any id or under a new `chatwootMessageId`, because the timed-out attempt reserved no WhatsApp message id and may still be delivered."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -1507,6 +1712,12 @@
           },
           "500": {
             "description": "Message not sent"
+          },
+          "503": {
+            "description": "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
+          },
+          "504": {
+            "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
           }
         },
         "requestBody": {
@@ -2681,7 +2892,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -2823,7 +3034,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -3068,7 +3279,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -3237,7 +3448,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -3380,7 +3591,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -3389,6 +3600,12 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
+          },
+          "504": {
+            "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
           }
         },
         "description": "Deletes a message for everyone in the chat. For group messages not sent by you, this requires admin privileges.",
@@ -3592,7 +3809,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -3604,6 +3821,12 @@
           },
           "500": {
             "description": "Message not edited"
+          },
+          "503": {
+            "description": "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down."
+          },
+          "504": {
+            "description": "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message."
           }
         },
         "description": "Edits a previously sent message. Only text messages (including captions) can be edited. The message must have been sent by you and must be within the editable time window (approximately 15 minutes).",
@@ -3901,7 +4124,7 @@
             "description": "Profile picture not found"
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -3981,7 +4204,7 @@
             "description": "Phone number not connected"
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4087,7 +4310,7 @@
             "description": "Phone number not connected"
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4161,7 +4384,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4368,7 +4591,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4568,7 +4791,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4615,7 +4838,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4767,7 +4990,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -4889,7 +5112,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5005,7 +5228,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5127,7 +5350,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5264,7 +5487,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5372,7 +5595,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5420,7 +5643,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5612,7 +5835,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5681,7 +5904,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5797,7 +6020,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -5912,7 +6135,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6028,7 +6251,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6220,7 +6443,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6268,7 +6491,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6387,7 +6610,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6521,7 +6744,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6649,7 +6872,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",
@@ -6777,7 +7000,7 @@
             "description": "Forbidden — the API key does not own this connection. Returned when a connection is bound to a different API key."
           },
           "421": {
-            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+            "description": "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
             "headers": {
               "x-baileys-owner": {
                 "description": "Instance id of the connection owner",

@@ -4,7 +4,9 @@ import baileys from "@/baileys";
 import {
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
+  BaileysSendStalledError,
 } from "@/baileys/connection";
+import { isTxMutexTimeout } from "@/baileys/helpers/isTxMutexTimeout";
 import {
   InvalidNoiseCandidateError,
   mapSessionToCreds,
@@ -16,7 +18,9 @@ import {
   buildEditableMessageContent,
   buildMessageContent,
 } from "@/controllers/connections/helpers";
-import { withIdempotency } from "@/helpers/withIdempotency";
+import { clearIndeterminate, withIdempotency } from "@/helpers/withIdempotency";
+import { OperationTimeoutError } from "@/helpers/withTimeout";
+import logger from "@/lib/logger";
 import { authMiddleware } from "@/middlewares/auth";
 import {
   anyJid,
@@ -32,6 +36,92 @@ import {
   userJid,
 } from "./types";
 
+// Routes exempt from the 421 misdirect: each resolves ownership itself in the
+// coordinator, which answers 409 when a live peer owns the phone.
+const TAKEOVER_SUFFIXES = ["", "/import-session", "/restart"] as const;
+
+// Every route that reaches the connection's send path shares these two failures,
+// because all of them take the same keystore transaction: send-message, and the
+// delete and edit endpoints that relay through socket.sendMessage. Answering 500
+// for either would present documented, expected behaviour as an internal error,
+// and the two mean different things to a caller — 504 is "this attempt's outcome
+// is unknown, you may retry it", 503 is "this connection is known not to be
+// sending, retrying only burns workers".
+// `retrySafe` is whether a retry of THIS request can be prevented from creating a
+// second WhatsApp message — either because the caller reserved a messageId (WhatsApp
+// dedupes on the key) or because an idempotency key exists, in which case the
+// indeterminate marker answers 409 instead of sending again. With neither, nothing
+// stands between a retry and a duplicate, so the response must not invite one:
+// `retry-after` is an instruction, and a 504 carrying it tells the caller to do the
+// one thing that cannot be undone.
+function sendPathErrorResponse(
+  error: unknown,
+  { retrySafe = true }: { retrySafe?: boolean } = {},
+): Response | null {
+  if (error instanceof OperationTimeoutError) {
+    if (!retrySafe) {
+      return new Response(
+        "Send timed out; outcome unknown and this request reserved no id, so a retry may duplicate the message. Reconcile, or resend with a reserved messageId.",
+        {
+          status: 504,
+          headers: { "x-baileys-idempotency-state": "unprotected" },
+        },
+      );
+    }
+    return new Response("Send timed out; outcome unknown", {
+      status: 504,
+      headers: { "retry-after": "60" },
+    });
+  }
+  if (error instanceof BaileysSendStalledError) {
+    return new Response("Connection is not accepting sends", {
+      status: 503,
+      headers: {
+        "retry-after": "60",
+        // The discriminator, and it has to be a header: an ordinary outage, a
+        // draining proxy and a wedged socket all answer 503, and only this one
+        // means "the connection is up, do not mark it down". A caller that
+        // treats every 503 as a stall skips the reconnect it needed.
+        "x-baileys-send-state": "stalled",
+      },
+    });
+  }
+  // The same verdict, reached one layer down and with a stronger guarantee. A
+  // waiter that gives up on the keystore mutex never entered the transaction: no
+  // context, no read, no write, no commit, and no node on the wire. So unlike the
+  // 504 above, this outcome is not unknown — the message was NOT sent — and the
+  // retry is safe whether or not an id was reserved, which is why `retrySafe`
+  // does not gate it. Without this branch the wedge the watchdog exists to catch
+  // leaves as a generic 500, which tells a caller nothing and marks the channel
+  // down on the Chatwoot side.
+  if (isTxMutexTimeout(error)) {
+    return new Response(
+      "Connection is not accepting sends (keystore transaction timed out); the message was not sent",
+      {
+        status: 503,
+        headers: {
+          "retry-after": "60",
+          "x-baileys-send-state": "stalled",
+        },
+      },
+    );
+  }
+  return null;
+}
+
+// The 503/504 half of a send-path route's OpenAPI responses, so the three cannot
+// document different things for the same two failures.
+const SEND_PATH_RESPONSES = {
+  503: {
+    description:
+      "Connection is not accepting sends. Returned when the circuit breaker is open (send stall detected) and when a keystore transaction gives up waiting for its mutex; in the second case the message was definitively not sent. Carries `x-baileys-send-state: stalled`, which is what tells this apart from an ordinary 503 (outage, draining proxy): the connection is up and must NOT be marked down.",
+  },
+  504: {
+    description:
+      "Send timed out; outcome unknown. Carries `retry-after` only when a retry cannot duplicate the message — i.e. a `messageId` or a `chatwootMessageId` was supplied. Otherwise it carries `x-baileys-idempotency-state: unprotected` and no `retry-after`: nothing would stop a retry from sending a second message.",
+  },
+} as const;
+
 // Responses every route under this controller can return, on top of its own.
 const SHARED_RESPONSES = {
   403: {
@@ -40,7 +130,7 @@ const SHARED_RESPONSES = {
   },
   421: {
     description:
-      "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for POST /connections/{phoneNumber} (explicit takeover).",
+      "Misdirected Request — in cluster mode, this instance does not own the connection. The owning instance id is in the x-baileys-owner header; a proxy re-routes the request there. Not returned for the explicit-takeover routes: POST /connections/{phoneNumber}, /import-session and /restart.",
     headers: {
       "x-baileys-owner": {
         description: "Instance id of the connection owner",
@@ -78,14 +168,18 @@ const connectionsController = new Elysia({
     // lease transition the local metadata (apiKeyHash) can lag the new
     // owner's writes, and answering 403 off that stale copy would mask the
     // misdirect the proxy knows how to recover from.
-    // POST /connections/:phone and .../import-session are exempt — both are
-    // explicit takeovers and resolve ownership in the coordinator (409 when the
-    // owner is alive).
+    // POST /connections/:phone, .../import-session and .../restart are exempt —
+    // all three are explicit takeovers and resolve ownership in the coordinator
+    // (409 when the owner is alive). Restart especially must bypass the 421: it
+    // exists for connections whose owner is registered but misbehaving, and
+    // bouncing the caller back to that owner is the one answer guaranteed not
+    // to help.
     const decodedPath = decodeURIComponent(path);
     const isConnectTakeover =
       request.method === "POST" &&
-      (decodedPath === `/connections/${phoneNumber}` ||
-        decodedPath === `/connections/${phoneNumber}/import-session`);
+      TAKEOVER_SUFFIXES.some(
+        (suffix) => decodedPath === `/connections/${phoneNumber}${suffix}`,
+      );
     if (!isConnectTakeover) {
       const owner = await resolveMisdirectedRequest(phoneNumber);
       if (owner) {
@@ -229,6 +323,150 @@ const connectionsController = new Elysia({
       },
     },
   )
+  .post(
+    "/:phoneNumber/restart",
+    async ({ params, body, set }) => {
+      const { phoneNumber } = params;
+      try {
+        const outcome = await coordinator.restartWithLease(
+          phoneNumber,
+          body?.reason,
+        );
+        if (outcome === "not-found") {
+          set.status = 404;
+          return {
+            error: "Not Found",
+            message: "No stored session for this phone number",
+          };
+        }
+        // A newer explicit operation (connect, import, another restart, a
+        // logout) took the lease while this one queued behind the handler's
+        // per-phone lock, so nothing was rebuilt. 409 rather than 404: the
+        // phone usually still has a perfectly good session, and 404 would send
+        // the caller off to re-pair a connection somebody else just rebuilt.
+        if (outcome === "superseded") {
+          set.status = 409;
+          return {
+            error: "Conflict",
+            message:
+              "Another connection operation for this phone number ran first",
+          };
+        }
+      } catch (e) {
+        if (e instanceof BaileysConnectionOwnedElsewhereError) {
+          set.status = 409;
+          set.headers["x-baileys-owner"] = e.ownerInstanceId;
+          return {
+            error: "Conflict",
+            message: "Connection is owned by another instance",
+          };
+        }
+        throw e;
+      }
+      set.status = 202;
+    },
+    {
+      params: phoneNumberParams,
+      // Takes no connection options on purpose: the socket is rebuilt from the
+      // stored metadata, so a restart cannot clobber good webhook config.
+      body: t.Optional(
+        t.Object({
+          reason: t.Optional(
+            t.String({
+              maxLength: 200,
+              description: "Free-text note recorded in the restart log line",
+              example: "send stall",
+            }),
+          ),
+        }),
+      ),
+      detail: {
+        summary: "Recreate the socket, keeping the session",
+        description:
+          "Tears down the live socket and spawns a replacement using the stored session, without clearing auth state — no QR, no re-pairing. Recovers a connection that is receiving and passing health checks but whose sends are wedged.",
+        responses: {
+          202: { description: "Restart accepted; reconnecting" },
+          404: { description: "No stored session for this phone number" },
+          409: {
+            description:
+              "Conflict — in cluster mode, the connection is owned by another live instance (id in the x-baileys-owner header).",
+            headers: {
+              "x-baileys-owner": {
+                description: "Instance id of the connection owner",
+                schema: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+  .get(
+    "/:phoneNumber/health",
+    ({ params, set }) => {
+      const health = baileys.sendHealth(params.phoneNumber);
+      if (!health) {
+        set.status = 404;
+        return { error: "Not Found", message: "Phone number not connected" };
+      }
+      return { data: health };
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        summary: "Send-side health for this connection",
+        description:
+          "Whether this connection is actually able to send, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen.",
+        responses: {
+          200: {
+            description: "Send-side health snapshot",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        connected: { type: "boolean" },
+                        sendState: {
+                          type: "string",
+                          enum: ["unknown", "ok", "degraded", "stalled"],
+                          description:
+                            "'unknown' means no send has been observed on this connection yet",
+                          example: "ok",
+                        },
+                        consecutiveSendTimeouts: { type: "integer" },
+                        lastTrafficAgoMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "Age of the last message-level traffic, inbound or outbound. Stays fresh on inbound traffic alone, so it does NOT prove sending works.",
+                        },
+                        lastSendCompletedAgoMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "Age of the last send that completed, i.e. the keystore mutex was free",
+                        },
+                        lastOutgoingAckAgoMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "Age of the last WhatsApp acknowledgement of one of our messages — the only end-to-end proof that sending works",
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Phone number not connected" },
+        },
+      },
+    },
+  )
   .patch(
     "/:phoneNumber/presence",
     async ({ params, body }) => {
@@ -309,26 +547,83 @@ const connectionsController = new Elysia({
           ? `@baileys-api:idempotency:send-message:${phoneNumber}:${String(chatwootMessageId)}`
           : null;
 
+      // The indeterminate marker that actually reached Redis, if any. Holding an
+      // idempotency key is not the same thing: withIdempotency fails open, so a
+      // Redis outage lets the send run with no lock and leaves no marker behind.
+      // The value, not a flag, because retracting it later has to prove the
+      // marker is still the one this attempt wrote.
+      let indeterminateMarker: string | null = null;
+      // Whether the parked send has been proved never to have reached WhatsApp.
+      // Kept as state rather than acted on inline because the two events race:
+      // markIndeterminate is a Redis round trip, and the parked send can reject
+      // inside it. A verdict that arrives first would otherwise find no marker,
+      // return, and leave the marker that lands a moment later standing for 24h
+      // over an outcome that is no longer unknown.
+      let knownNotSent = false;
+      const retractIndeterminate = () => {
+        if (!idempotencyKey || !knownNotSent || indeterminateMarker === null) {
+          return;
+        }
+        const marker = indeterminateMarker;
+        indeterminateMarker = null;
+        void clearIndeterminate(idempotencyKey, marker);
+      };
       let result: Awaited<ReturnType<typeof withIdempotency>>;
       try {
-        result = await withIdempotency(idempotencyKey, async () => {
-          const { messageContent: builtContent, quoted } =
-            buildMessageContent(messageContent);
+        result = await withIdempotency(
+          idempotencyKey,
+          async () => {
+            const { messageContent: builtContent, quoted } =
+              buildMessageContent(messageContent);
 
-          const response = await baileys.sendMessage(phoneNumber, {
-            jid,
-            messageContent: builtContent,
-            quoted,
-            messageId,
-          });
+            const response = await baileys.sendMessage(phoneNumber, {
+              jid,
+              messageContent: builtContent,
+              quoted,
+              messageId,
+              // Minutes after this request answered, the parked send can reject
+              // with a mutex-acquire timeout, which proves it never entered the
+              // transaction and so never reached WhatsApp. The 409 we left behind
+              // then says "outcome unknown" about an outcome that is now known,
+              // and it is what makes an operator's resend of this same message
+              // answer 409 for 24h. Retract it: with the send known not to have
+              // happened, that resend is exactly the right thing.
+              // Both sides call the same retraction, and it fires on whichever
+              // arrives second. Nothing is retracted while no marker of ours has
+              // landed -- deleting on that evidence would strip another attempt's
+              // marker off an outcome that is still unknown.
+              onLateDefinitiveFailure: idempotencyKey
+                ? () => {
+                    knownNotSent = true;
+                    retractIndeterminate();
+                  }
+                : undefined,
+            });
 
-          if (!response) return null;
+            if (!response) return null;
 
-          return {
-            key: response.key,
-            messageTimestamp: response.messageTimestamp,
-          };
-        });
+            return {
+              key: response.key,
+              messageTimestamp: response.messageTimestamp,
+            };
+          },
+          {
+            // A timed-out send is not cancelled — it stays parked in the
+            // socket's keystore mutex and may still reach WhatsApp. With a
+            // caller-reserved messageId the resend lands on the same WhatsApp
+            // key.id, so WhatsApp itself dedupes it and releasing the lock is
+            // strictly better: the retry is free and cannot duplicate. Without
+            // one, a retry would create a SECOND WhatsApp message, so the
+            // outcome is recorded as unknown and the caller is told to
+            // reconcile rather than resend blindly.
+            isIndeterminate: (e) =>
+              e instanceof OperationTimeoutError && !messageId,
+            onIndeterminate: (marker) => {
+              indeterminateMarker = marker;
+              retractIndeterminate();
+            },
+          },
+        );
       } catch (e) {
         // The phone has no live socket on this instance (never connected, or
         // dropped mid-request). Surface it as 404 instead of a generic 500 so
@@ -338,13 +633,71 @@ const connectionsController = new Elysia({
         if (e instanceof BaileysNotConnectedError) {
           return new Response("Phone number not connected", { status: 404 });
         }
+        // The send did not complete in time. Distinct from 503 below: this
+        // attempt's outcome is unknown, so a caller may retry it (safely, if it
+        // reserved a messageId), whereas 503 means the connection is known not
+        // to be sending at all and retrying only burns workers.
+        if (e instanceof OperationTimeoutError && !messageId) {
+          // Surfaces which integrations still let Baileys generate the id;
+          // production runs at LOG_LEVEL=warn, so this is the list.
+          logger.warn(
+            "[%s] [send-message] timed out without a reserved messageId — resend is not duplicate-safe",
+            phoneNumber,
+          );
+        }
+        // The marker that actually landed, never the key that was supplied. With
+        // no key at all, withIdempotency took its no-key path and never consulted
+        // isIndeterminate; with a key but no Redis it failed open, ran the send
+        // unlocked and could not write the marker either. Both leave nothing to
+        // stop the next attempt from sending a second message, and `retry-after`
+        // is an instruction to make one.
+        const sendPathResponse = sendPathErrorResponse(e, {
+          // knownNotSent counts as protection in its own right, and is the
+          // strongest of the three: the send provably did not happen, so a retry
+          // cannot duplicate anything. It also covers the case where the verdict
+          // beat the marker and the retraction above already ran.
+          retrySafe:
+            Boolean(messageId) || knownNotSent || indeterminateMarker !== null,
+        });
+        if (sendPathResponse) {
+          return sendPathResponse;
+        }
         throw e;
       }
 
+      // Both idempotency conflicts answer 409 to preserve the contract callers
+      // already handle; the header is what tells them apart, since a plain-text
+      // body is no basis for that decision.
       if (result.status === "processing") {
         return new Response("Message is already being processed", {
           status: 409,
+          headers: { "x-baileys-idempotency-state": "processing" },
         });
+      }
+
+      if (result.status === "indeterminate") {
+        // No retry-after: nothing clears this marker on a timer. It outlives the
+        // caller's retries on purpose, so advertising a 60-second wait would
+        // promise a state change that never comes and turn a message needing
+        // reconciliation into a job that retries for a day.
+        //
+        // And no way forward is named, because there is not one. A marker is only
+        // ever written for a send that reserved NO WhatsApp message id, so the key
+        // that attempt used is unknown here and nothing can deduplicate a resend
+        // against it: not a freshly reserved id, which lands on a different key
+        // and is therefore a second message (which is why the marker refuses one
+        // (see withIdempotency), and not a new chatwootMessageId, which only
+        // sidesteps the marker by asking a different question. The parked send can
+        // still reach WhatsApp, and "it is not in the conversation yet" is no
+        // evidence that it will not. Reconciliation is the answer; reserving an id
+        // on the FIRST send is how a caller avoids ever landing here.
+        return new Response(
+          "Previous send timed out and may still be delivered; the outcome is unknown. It reserved no WhatsApp message id, so no resend can be deduplicated against it. Reconcile against the conversation on WhatsApp instead of resending.",
+          {
+            status: 409,
+            headers: { "x-baileys-idempotency-state": "indeterminate" },
+          },
+        );
       }
 
       if (result.status === "failed") {
@@ -387,11 +740,13 @@ const connectionsController = new Elysia({
             description: "Phone number not connected",
           },
           409: {
-            description: "Message is already being processed",
+            description:
+              "Message is already being processed, or a previous send timed out with an unknown outcome. `x-baileys-idempotency-state` tells them apart: `processing` vs `indeterminate`. `indeterminate` is not resolved by retrying, under any id or under a new `chatwootMessageId`, because the timed-out attempt reserved no WhatsApp message id and may still be delivered.",
           },
           500: {
             description: "Message not sent",
           },
+          ...SEND_PATH_RESPONSES,
         },
       },
     },
@@ -495,7 +850,15 @@ const connectionsController = new Elysia({
     async ({ params, body }) => {
       const { phoneNumber } = params;
 
-      await baileys.deleteMessage(phoneNumber, body);
+      try {
+        await baileys.deleteMessage(phoneNumber, body);
+      } catch (e) {
+        const sendPathResponse = sendPathErrorResponse(e);
+        if (sendPathResponse) {
+          return sendPathResponse;
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,
@@ -510,6 +873,7 @@ const connectionsController = new Elysia({
           200: {
             description: "Message deleted successfully",
           },
+          ...SEND_PATH_RESPONSES,
         },
       },
     },
@@ -520,11 +884,20 @@ const connectionsController = new Elysia({
       const { phoneNumber } = params;
       const { jid, key, messageContent } = body;
 
-      const response = await baileys.editMessage(phoneNumber, {
-        jid,
-        key,
-        messageContent: buildEditableMessageContent(messageContent),
-      });
+      let response: Awaited<ReturnType<typeof baileys.editMessage>>;
+      try {
+        response = await baileys.editMessage(phoneNumber, {
+          jid,
+          key,
+          messageContent: buildEditableMessageContent(messageContent),
+        });
+      } catch (e) {
+        const sendPathResponse = sendPathErrorResponse(e);
+        if (sendPathResponse) {
+          return sendPathResponse;
+        }
+        throw e;
+      }
 
       if (!response) {
         return new Response("Message not edited", { status: 500 });
@@ -564,6 +937,7 @@ const connectionsController = new Elysia({
           500: {
             description: "Message not edited",
           },
+          ...SEND_PATH_RESPONSES,
         },
       },
     },

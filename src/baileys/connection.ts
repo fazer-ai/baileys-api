@@ -22,6 +22,10 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
+import {
+  isTxMutexTimeout,
+  txMutexTimeoutKey,
+} from "@/baileys/helpers/isTxMutexTimeout";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
@@ -43,9 +47,18 @@ import {
   type QuarantineState,
   recordStrike,
 } from "@/cluster/quarantineStore";
+import {
+  canRestart as canRestartAfterStall,
+  clearSendStall,
+  nextRestartAllowedAt,
+  recordRestart as recordStallRestart,
+  restoreState as restoreSendStallState,
+  type SendStallState,
+} from "@/cluster/sendStallStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { errorToString } from "@/helpers/errorToString";
+import { OperationTimeoutError, withTimeout } from "@/helpers/withTimeout";
 import logger, { baileysLogger, deepSanitizeObject } from "@/lib/logger";
 
 // `connectionReplaced` (440 conflict/replaced) usually clears on the next attempt,
@@ -68,6 +81,47 @@ const MESSAGE_ACCOUNT_RESTRICTION_CODE = "463";
 // once per window per connection.
 const REACHOUT_TIMELOCK_REFETCH_WINDOW_MS = 60_000;
 
+// Send-stall watchdog. Six keystore operations serialize on a mutex keyed by
+// our own JID, so once one of them wedges, EVERY send on this connection times
+// out while receiving and health checks stay perfect -- the connection goes
+// mute without a single error, for minutes or for hours.
+//
+// Consecutive timeouts, not a sliding window: the failure is total, so one
+// success proves the mutex is free and a consecutive counter is the exact shape
+// of the signal. The minimum streak duration exists because three concurrent
+// sends started together all expire at sendTimeoutMs, which would otherwise let
+// one 45s hiccup with three sends in flight recreate a healthy socket.
+const SEND_STALL_THRESHOLD = 3;
+// Hard ceiling on sends in flight at once, and it is a queue bound rather than a
+// stall detector. The breaker only opens after three COMPLETED timeouts, which
+// is one whole BAILEYS_SEND_TIMEOUT_MS away: everything arriving inside that
+// first window passes an empty counter and parks behind the wedged mutex. Those
+// operations are not cancellable -- withTimeout stops us waiting, nothing stops
+// them running -- so if the mutex frees while the socket is still alive they all
+// fire at once, hours late, at a real customer, while their callers have long
+// since timed out and retried. That burst is the failure this whole file is
+// shaped around, and until this cap its size was "however many sends arrived in
+// 45 seconds", not three.
+//
+// Generous on purpose: the keystore transaction serialises the relay anyway, so
+// concurrency past a handful buys only parallel media uploads, and a healthy
+// connection to one WhatsApp account rarely has eight sends in the air.
+const MAX_IN_FLIGHT_SENDS = 8;
+const SEND_STALL_MIN_DURATION_MS = 90_000;
+// Spreads restarts across a fleet-wide event: with several inboxes stalled at
+// once, they recover over minutes instead of reconnecting simultaneously
+// against the same IP.
+const SEND_STALL_RESTART_COOLDOWN_MS = 30_000;
+// How many recently submitted WhatsApp ids to remember for ack matching. An ack
+// follows its send within seconds, so this is generous; the cap is what keeps a
+// long-lived busy connection from growing the set without bound.
+const SUBMITTED_ID_HISTORY = 500;
+// Acknowledgements for `fromMe` ids we have not (yet) submitted. Smaller than the
+// submitted history because it only has to cover the gap between WhatsApp
+// acknowledging and socket.sendMessage resolving, and because most entries here
+// are genuinely not ours -- messages the operator sent from the phone.
+const UNMATCHED_ACK_HISTORY = 100;
+
 export class BaileysNotConnectedError extends Error {
   constructor() {
     super("Phone number not connected");
@@ -77,6 +131,16 @@ export class BaileysNotConnectedError extends Error {
 export class BaileysConnectionForbiddenError extends Error {
   constructor() {
     super("Connection not owned by this API key");
+  }
+}
+
+// Raised instead of attempting a send the connection is known to be unable to
+// complete. Queueing another operation behind a wedged mutex only grows the
+// burst that fires if the mutex ever releases while the socket is still open —
+// a burst of duplicate messages to real customers, hours late.
+export class BaileysSendStalledError extends Error {
+  constructor() {
+    super("Connection is not accepting sends");
   }
 }
 
@@ -144,6 +208,8 @@ export class BaileysConnection {
   private syncFullHistory: boolean;
   private onConnectionClose: (() => void) | null;
   private requestLogout: (() => void) | null;
+  private requestRestart: ((reason: string) => void) | null;
+  private onUnrecoverable: (() => void) | null;
   private socket: ReturnType<typeof makeWASocket> | null;
   private clearAuthState: AuthenticationState["keys"]["clear"] | null;
   private clearOnlinePresenceTimeout: ReturnType<typeof setTimeout> | null =
@@ -155,6 +221,11 @@ export class BaileysConnection {
   // Noise candidates only while they have never opened; a close after opening
   // is a normal disconnect, not a wrong-key handshake failure.
   private hasOpened = false;
+  // The socket's actual state, as WhatsApp last reported it. Registration in the
+  // handler is NOT connectivity: a connection is registered before it ever opens
+  // (QR pairing) and stays registered while its socket is closed and backing off,
+  // which is exactly when a health check must not claim it is connected.
+  private connectionState: WAConnectionState = "connecting";
   private _inFlightWebhooks = 0;
   private leaseEpoch: number | null = null;
   // Monotonic timestamp of the last message-level traffic (received message,
@@ -173,6 +244,70 @@ export class BaileysConnection {
   // a 463 (see handleMessagesUpdate / fetchReachoutTimelockOn463).
   private reachoutTimelockFetchInFlight = false;
   private lastReachoutTimelockFetchAt = 0;
+  // Identifies the socket the watchdog state below belongs to. Incremented once
+  // per makeWASocket, which is the ONLY event that gives a fresh keystore and a
+  // fresh mutex map — the two things the watchdog actually reasons about. It
+  // exists because neither side of that state can be trusted without it: an
+  // `isOnline` presence echo arrives as `connection: "open"` on the SAME wedged
+  // socket, and a timeout from a socket that has since been replaced settles
+  // long after its deadlines stopped mattering. Every read and write of the
+  // fields below is stamped with the generation it describes.
+  private socketGeneration = 0;
+  // Identifies the keystore of the live socket, so events from a replaced one
+  // are ignored. Set only once makeWASocket has returned.
+  private currentTxToken: object | null = null;
+  // Which keystore key the patched transaction reported as wedged. Its release
+  // is the only proof the mutex freed itself that arrives while the breaker is
+  // open and nothing can reach the socket.
+  private wedgedTxKey: string | null = null;
+  // Sends admitted to the current socket and not yet settled. Reset with the
+  // socket, because a parked send never settles and its decrement never comes.
+  private inFlightSends = 0;
+  // The backoff state as it was before this episode's strike, so a restart
+  // cancelled after the fact can undo exactly its own increment.
+  // "The session stopped existing", as opposed to "this socket was replaced".
+  // isDiscarded conflates the two -- discard() sets it for an ordinary
+  // replacement (a forceRestart connect, the lease fence, a respawn) just as
+  // logout and close do for a teardown -- and the send-stall rollback has to
+  // tell them apart: a destroyed session's backoff key must go, a replaced
+  // socket's must keep whatever history the phone genuinely earned.
+  private sessionEnded = false;
+  // Serializes the send-stall verdicts against each other. See reportSendStall.
+  private stallReportChain: Promise<unknown> = Promise.resolve();
+  private stallStrikeRollback:
+    | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
+    | undefined;
+  // When each keystore key last gave up acquiring, and when it last released.
+  // Both are needed to tell "the wedge is still there" from "it let go while the
+  // failure was still on its way to us". Keyed by the handful of distinct
+  // keystore keys a socket ever uses, and reset with the socket.
+  private txTimeoutAt = new Map<string, number>();
+  private txReleasedAt = new Map<string, number>();
+  // Send-stall watchdog state. Deliberately in memory and never in Redis: a
+  // restart gives a new socket, hence a new keystore and a new mutex map, so
+  // the count must die with the socket. Persisted state would survive the
+  // restart and drive a restart loop.
+  private _consecutiveSendTimeouts = 0;
+  private sendStallStreakStartedAt: number | null = null;
+  private restartRequested = false;
+  // When this episode may be reported again. 0 means now; Infinity means never
+  // again on this socket. A finite timestamp is the middle case that matters:
+  // the report was DEFERRED, and the deferral has an expiry the connection
+  // already advertised to the client as `until`. Without it the breaker-open
+  // path would emit a webhook for every rejected send, since the breaker keeps
+  // rejecting for as long as the socket lives.
+  private sendStallSilentUntil = 0;
+  // Wall-clock (not performance.now()) so it can be reported as an age to
+  // clients and driven by setSystemTime in tests, matching
+  // trackConnectionReplaced.
+  private _lastSendCompletedAt: number | null = null;
+  private _lastOutgoingAckAt: number | null = null;
+  // WhatsApp ids this socket actually submitted, so an ack can be told apart from
+  // the same account's traffic on another device. Insertion-ordered and capped:
+  // an ack that matters arrives seconds after its send, so the oldest entries are
+  // dead weight, and an unbounded set on a busy connection is a leak.
+  private submittedMessageIds = new Set<string>();
+  private unmatchedAckIds = new Map<string, number>();
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -181,6 +316,8 @@ export class BaileysConnection {
     this.webhookVerifyToken = options.webhookVerifyToken;
     this.onConnectionClose = options.onConnectionClose || null;
     this.requestLogout = options.requestLogout ?? null;
+    this.requestRestart = options.requestRestart ?? null;
+    this.onUnrecoverable = options.onUnrecoverable ?? null;
     this.socket = null;
     this.clearAuthState = null;
     this.isReconnect = !!options.isReconnect;
@@ -207,6 +344,174 @@ export class BaileysConnection {
 
   private markTraffic() {
     this._lastTrafficAt = performance.now();
+  }
+
+  private trackSubmittedId(messageId: string) {
+    if (this.submittedMessageIds.size >= SUBMITTED_ID_HISTORY) {
+      const oldest = this.submittedMessageIds.values().next().value;
+      if (oldest !== undefined) {
+        this.submittedMessageIds.delete(oldest);
+      }
+    }
+    this.submittedMessageIds.add(messageId);
+    // The ack may have beaten the id here. Claiming it now is the difference
+    // between "we have never seen this connection deliver anything" and the
+    // truth, on the send whose own response was the slow part.
+    const ackedAt = this.unmatchedAckIds.get(messageId);
+    if (ackedAt !== undefined) {
+      this.unmatchedAckIds.delete(messageId);
+      // Never backwards. A parked ack can be claimed long after it arrived --
+      // the send it belongs to may have taken hours to resolve -- and other
+      // sends acknowledge in the meantime. Writing the older timestamp over the
+      // newer one makes /health report a send path staler than it is, which for
+      // a signal whose whole job is "when did WhatsApp last confirm anything"
+      // is the one direction that raises a false alarm.
+      this._lastOutgoingAckAt = Math.max(this._lastOutgoingAckAt ?? 0, ackedAt);
+    }
+  }
+
+  // The connection's CURRENT options, which are not the ones it was built with:
+  // a later POST /connections reuses a live connection and mutates these in
+  // place via updateOptions. Anything that rebuilds the socket has to read them
+  // from here, because the options captured when it was spawned may since have
+  // been superseded — and persistMetadata would write the stale copy back to
+  // Redis, silently reverting a webhook reconfiguration.
+  get currentOptions(): BaileysConnectionOptions {
+    return {
+      clientName: this.clientName,
+      webhookUrl: this.webhookUrl,
+      webhookVerifyToken: this.webhookVerifyToken,
+      includeMedia: this.includeMedia,
+      syncFullHistory: this.syncFullHistory,
+      groupsEnabled: this.groupsEnabled,
+      autoPresenceSubscribe: this.autoPresenceSubscribe,
+      ...(this._apiKeyHash !== null && { apiKeyHash: this._apiKeyHash }),
+      leaseEpoch: this.leaseEpoch,
+    };
+  }
+
+  get lastSendCompletedAt(): number | null {
+    return this._lastSendCompletedAt;
+  }
+
+  get lastOutgoingAckAt(): number | null {
+    return this._lastOutgoingAckAt;
+  }
+
+  get consecutiveSendTimeouts(): number {
+    return this._consecutiveSendTimeouts;
+  }
+
+  // True between asking for a restart and any evidence of recovery. The handler
+  // re-reads it after draining the per-number slot: a restart that queued behind
+  // an unrelated operation must not kill a socket that recovered while it waited.
+  get restartPending(): boolean {
+    return this.restartRequested;
+  }
+
+  get isOpen(): boolean {
+    return this.connectionState === "open" && this.socket !== null;
+  }
+
+  // "unknown" is a first-class answer, not a fallback: a connection nobody
+  // writes to can be wedged for hours and still look perfect, and reporting it
+  // as healthy is worse than admitting we have not observed a send.
+  get sendState(): "unknown" | "ok" | "degraded" | "stalled" {
+    // Same gate as assertCanSend, and for the same reason: "stalled" is what
+    // stalledConnectionCount and the operator read as "up but mute". A socket
+    // that is not open yet is an ordinary outage, and its failing sends are
+    // honestly reported as `degraded` rather than as the fault they are not.
+    if (this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD && this.isOpen) {
+      return "stalled";
+    }
+    if (this._consecutiveSendTimeouts > 0) {
+      return "degraded";
+    }
+    if (
+      this._lastSendCompletedAt === null &&
+      this._lastOutgoingAckAt === null
+    ) {
+      return "unknown";
+    }
+    return "ok";
+  }
+
+  // Reported by the patched addTransactionCapability. Logged here rather than
+  // inside the patch because the logger the lib holds is baileysLogger, whose
+  // level is BAILEYS_LOG_LEVEL (often `error` in production) — a warn from
+  // inside the patch would be invisible exactly where it matters.
+  private handleTxEvent(
+    token: object,
+    event: {
+      phase: "acquired" | "released" | "stalled" | "timeout";
+      key: string;
+      waitedMs: number;
+      heldMs?: number;
+      originStack?: string;
+      stillLocked?: boolean;
+    },
+  ) {
+    // Each socket's keystore closes over its own token. A socket we replaced can
+    // still emit here -- its wedged transaction releases whenever the download it
+    // was waiting on finally dies -- and reading that as news about the live
+    // socket is the same mistake the generation stamp exists to prevent.
+    if (token !== this.currentTxToken) {
+      return;
+    }
+    if (event.phase === "acquired") {
+      return;
+    }
+    if (event.phase === "released") {
+      // Recorded for every key, armed or not: the release that matters most is
+      // the one that arrives BEFORE we know which key to watch, while the
+      // acquisition's Boom is still travelling up the send path.
+      this.txReleasedAt.set(event.key, Date.now());
+      // The one signal that can close the breaker without a new socket once the
+      // wedge starts reporting itself through mutex timeouts. Every abandoned
+      // send then rejects with E_TX_MUTEX_TIMEOUT, which recordLateSettle
+      // deliberately refuses to read as recovery, and an open breaker means no
+      // send reaches the socket again -- so the ordinary success path that would
+      // clear it can never run. With BAILEYS_SEND_STALL_RESTART_ENABLED off (the
+      // default, and the whole of the diagnostic rollout) nothing else clears it
+      // either, and the connection answers 503 for the life of a socket whose
+      // mutex has been free for hours.
+      //
+      // Keyed, because a release on any other key proves nothing about the one
+      // that is wedged: the mutexes live in a per-key map.
+      if (this.wedgedTxKey !== null && event.key === this.wedgedTxKey) {
+        if (this._consecutiveSendTimeouts > 0) {
+          logger.warn(
+            "[%s] [keystoreTx] wedged key released, closing the breaker key=%s heldMs=%s afterTimeouts=%d",
+            this.phoneNumber,
+            event.key,
+            event.heldMs ?? "-",
+            this._consecutiveSendTimeouts,
+          );
+        }
+        this.clearSendStallState();
+      }
+      return;
+    }
+    if (event.phase === "timeout") {
+      this.txTimeoutAt.set(event.key, Date.now());
+    }
+    // Deliberately NOT the source of wedgedTxKey. `stalled` fires for whatever
+    // key happens to be held past BAILEYS_TX_HOLD_WARN_MS, which is regularly an
+    // unrelated one -- a group transaction, a lid-mapping write. Letting it
+    // overwrite the key would make that transaction's release close the breaker
+    // while the send mutex is still wedged, readmitting a batch into the queue
+    // the breaker exists to bound. Only our own send's failure names the key
+    // that is actually blocking sends.
+    logger.warn(
+      "[%s] [keystoreTx] %s key=%s waitedMs=%d heldMs=%s stillLocked=%s stack=%s",
+      this.phoneNumber,
+      event.phase,
+      event.key,
+      event.waitedMs,
+      event.heldMs ?? "-",
+      event.stillLocked ?? "-",
+      event.originStack ?? "-",
+    );
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: Typing this wrapper is not trivial.
@@ -250,7 +555,21 @@ export class BaileysConnection {
     // A reused connection may have been re-leased under a newer epoch (e.g. a
     // force-acquire on POST /connections); stale epochs would get the
     // webhooks discarded by the client.
-    if (options.leaseEpoch !== undefined) {
+    //
+    // Forward only, and that is the half that bites. The epoch is a global INCR
+    // per phone, so it only ever grows -- but an explicit operation that acquired
+    // an OLDER one can still be parked before the handler when a newer one
+    // replaces the socket, and it arrives here afterwards carrying its own. Let
+    // it through and a live connection stamps events the client discards as
+    // stale while the coordinator renews an epoch nobody publishes: the channel
+    // simply stops updating. The rest of its options still apply -- it is a real
+    // reconfiguration, just no longer the owner of record. A null carries no
+    // epoch information at all and must not erase one either.
+    if (
+      options.leaseEpoch !== undefined &&
+      (this.leaseEpoch === null ||
+        (options.leaseEpoch !== null && options.leaseEpoch >= this.leaseEpoch))
+    ) {
       this.leaseEpoch = options.leaseEpoch;
     }
     await this.persistMetadata();
@@ -326,6 +645,11 @@ export class BaileysConnection {
       },
     };
 
+    // Identity for the keystore this socket is about to be built on, so a
+    // transaction event can be told from one emitted by a socket we replaced.
+    // A token rather than the generation counter because the counter is bumped
+    // only after makeWASocket succeeds, and this closure has to exist before it.
+    const txToken = {};
     const socketOptions: UserFacingSocketConfig = {
       auth: {
         creds: state.creds,
@@ -337,18 +661,76 @@ export class BaileysConnection {
       syncFullHistory: this.syncFullHistory,
       shouldIgnoreJid,
       version,
+      // Deadline for the lib's own HTTP downloads. Read by the patched
+      // getHttpStream; without it an app-state blob download can park forever
+      // inside the keystore transaction and mute this connection's sends.
+      options: { timeoutMs: config.baileys.httpTimeoutMs },
+      // NOTE: The config merge in the lib is shallow, so supplying
+      // transactionOpts replaces the whole default object — maxCommitRetries
+      // and delayBetweenTriesMs must be restated at their upstream defaults.
+      transactionOpts: {
+        maxCommitRetries: 10,
+        delayBetweenTriesMs: 3000,
+        acquireTimeoutMs: config.baileys.txAcquireTimeoutMs,
+        holdWarnMs: config.baileys.txHoldWarnMs,
+        onTransactionEvent: (event) => this.handleTxEvent(txToken, event),
+      },
     };
 
     try {
       this.socket = makeWASocket(socketOptions);
+      this.currentTxToken = txToken;
+      // The new socket carries a new keystore and a new mutex map. Bumping here
+      // (and only here) is what makes every stamped watchdog reading below
+      // mean "observed on the socket that is live right now".
+      this.socketGeneration += 1;
+      // The breaker counts refusals by ONE socket's keystore mutex, and this is a
+      // different mutex, so the streak dies with the socket that produced it. Two
+      // things go wrong when it survives. The count carries, so a single timeout
+      // during the new handshake (safeSocket only requires a socket object, and the
+      // replacement has one before `open` arrives) opens the breaker on a connection
+      // that was merely reconnecting, and every later request gets the stall-specific
+      // 503 that tells the caller NOT to mark the channel down. Worse, the streak
+      // CLOCK carries: sendStallStreakStartedAt still points at the old socket, so
+      // the 90s floor — the guard whose whole job is to stop one hiccup from
+      // recreating a healthy socket — is already satisfied and the watchdog restarts
+      // on the first timeout. Clearing on `open` alone is too late for both.
+      this.clearSendStallState();
+      // The id history belongs to the socket that submitted them. A delayed
+      // receipt for a message the PREVIOUS socket sent would otherwise stamp
+      // lastOutgoingAckAt now, presenting end-to-end evidence about a
+      // replacement that may itself be wedged and has sent nothing.
+      this.submittedMessageIds.clear();
+      this.unmatchedAckIds.clear();
+      this.inFlightSends = 0;
+      // Both belong to the keystore that just went away.
+      this.txTimeoutAt.clear();
+      this.txReleasedAt.clear();
+      // And the evidence itself, for the same reason and with more force: any
+      // non-null value makes sendState read `ok`, so a replacement that has
+      // never sent anything would inherit the previous socket's health report
+      // and hold it indefinitely. `unknown` is the true answer for a socket
+      // nobody has written through yet.
+      this._lastSendCompletedAt = null;
+      this._lastOutgoingAckAt = null;
     } catch (error) {
       logger.error(
         "[%s] [BaileysConnection.connect] Failed to create socket: %s",
         this.phoneNumber,
         errorToString(error),
       );
-      this.onConnectionClose?.();
-      return;
+      // Not onConnectionClose here any more: every caller now handles the
+      // rejection and does its own, better cleanup (spawnConnection removes the
+      // entry it just registered and discards; the reconnect path below aborts).
+      // Firing it as well would double-notify and, on the reconnect path, evict
+      // through two routes at once.
+      // Rethrown, not swallowed. Resolving here reports a connect that built
+      // nothing as success: spawnConnection's cleanup never runs, an automatic
+      // restart never reports the failure so the lease is never released, and
+      // POST /restart answers 202 for a socket that does not exist. Every caller
+      // above already handles a rejection -- the claim cycle releases its lease
+      // on one, and the handler removes the entry it had just registered.
+      throw error;
     }
 
     this.addEventListeners({ saveCreds });
@@ -427,6 +809,16 @@ export class BaileysConnection {
   }
 
   private async close() {
+    // Inert from here on. close() is the terminal teardown -- logout, and a
+    // remote `loggedOut` -- and it is where the auth state is destroyed, but it
+    // was leaving isDiscarded false. Anything awaiting across it (the send-stall
+    // watchdog writing its strike is the one that bites) then read a connection
+    // that still looked live and asked the handler to rebuild a socket for a
+    // session that no longer has credentials: a fresh QR pairing conjured out of
+    // a logout. Every other teardown path marks itself; this one has to as well.
+    this.isDiscarded = true;
+    // Reached without logout() too, on a remote `loggedOut`.
+    this.sessionEnded = true;
     this.stopGroupActivityFlush();
     if (this.clearOnlinePresenceTimeout) {
       clearTimeout(this.clearOnlinePresenceTimeout);
@@ -434,6 +826,19 @@ export class BaileysConnection {
     }
     await this.clearAuthState?.();
     this.clearAuthState = null;
+    // Here, not only in the coordinator's logout: this is where the session
+    // stops existing, and every destructive path goes through it -- admin
+    // logoutAll, the wrong-number requestLogout, a remote `loggedOut` close.
+    // The backoff key is per phone number and lives 24h, so without this the
+    // next pairing on that number inherits the discarded session's restart
+    // suppression and its watchdog is disarmed for a stall it never caused.
+    await clearSendStall(this.phoneNumber).catch((error) => {
+      logger.warn(
+        "[%s] [close] failed to clear send-stall backoff: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    });
     this.socket = null;
     this.reconnectCount = 0;
     this.connectionReplacedTimestamps = [];
@@ -441,6 +846,10 @@ export class BaileysConnection {
   }
 
   async logout() {
+    // Terminal for the SESSION, not just for this socket: close() below destroys
+    // the auth state. Marked before the first await so anything crossing it (the
+    // send-stall rollback is the one that bites) sees a session that is ending.
+    this.sessionEnded = true;
     // Mark as discarded up front so any close event the socket emits during
     // the logout flow (e.g. a connectionReplaced from another device while
     // we're awaiting the WhatsApp logout RPC) is treated as terminal by
@@ -509,24 +918,59 @@ export class BaileysConnection {
   async sendMessage(
     jid: string,
     messageContent: AnyMessageContent,
-    options?: { quoted?: WAMessage; messageId?: string },
+    options?: {
+      quoted?: WAMessage;
+      messageId?: string;
+      // See relayWithTimeout: fires when this send is later proved never to have
+      // reached WhatsApp, long after its caller was answered.
+      onLateDefinitiveFailure?: () => void;
+    },
   ) {
     this.safeSocket();
+    // Before the audio work below, not only inside relayWithTimeout. An open breaker
+    // means this request is already decided, and preprocessAudio runs up to two ffmpeg
+    // jobs for a PTT: a caller retrying into a stalled connection would burn that CPU
+    // on every attempt to be told 503 at the end. "Fails immediately" has to mean
+    // immediately.
+    this.assertCanSend();
     this.markTraffic();
     this.autoSubscribePresence(jid);
+    if (options?.messageId) {
+      this.trackSubmittedId(options.messageId);
+    }
 
     let waveformProxy: Buffer | null = null;
     try {
       if ("audio" in messageContent && Buffer.isBuffer(messageContent.audio)) {
         const originalAudio = messageContent.audio;
         // NOTE: Due to limitations in internal Baileys logic used to generate waveform, we use a wav proxy.
+        //
+        // Bounded, and deliberately NOT by the send deadline. This work is local
+        // and legitimately slow, so charging it to the send budget would open the
+        // breaker and recreate a socket that never refused anything. But it runs
+        // BEFORE that deadline is armed, so unbounded it defeats the guarantee
+        // sendTimeoutMs < PROXY_REQUEST_TIMEOUT_MS exists to give: the proxy would
+        // cut first and answer its own generic 504, and the worker would never
+        // reach the code that releases the idempotency lock or counts the stall.
+        //
+        // Expressed as a signal rather than a race, because a race only stops us
+        // waiting: the abandoned conversion would keep its slot in the worker
+        // pool's pending map with a promise nobody can ever settle. On expiry the
+        // catch below sends the original buffer, which is exactly what already
+        // happens when ffmpeg is missing.
+        const preprocessDeadline = AbortSignal.timeout(
+          config.baileys.audioPreprocessTimeoutMs,
+        );
         [messageContent.audio, waveformProxy] = await Promise.all([
           preprocessAudio(
             originalAudio,
             // NOTE: Use lower quality for ptt messages for more realistic quality.
             messageContent.ptt ? "ogg-low" : "mp3-high",
+            preprocessDeadline,
           ),
-          messageContent.ptt ? preprocessAudio(originalAudio, "wav") : null,
+          messageContent.ptt
+            ? preprocessAudio(originalAudio, "wav", preprocessDeadline)
+            : null,
         ]);
         messageContent.mimetype = messageContent.ptt
           ? "audio/ogg; codecs=opus"
@@ -548,11 +992,777 @@ export class BaileysConnection {
     // Spread it only when set: Baileys spreads our options over its own
     // `messageId: generateMessageIDV2(user)` default, so an explicit
     // `undefined` would downgrade that default to the user-less fallback.
-    return this.safeSocket().sendMessage(jid, messageContent, {
-      waveformProxy,
-      quoted: options?.quoted,
-      ...(options?.messageId ? { messageId: options.messageId } : {}),
-    });
+    // Again, here, and not only at the top of this method. The audio work above
+    // can await for up to the preprocessing budget, and a reconnect inside that
+    // window clears submittedMessageIds along with the socket that owned them --
+    // so this send would go out on the replacement carrying a reserved id the
+    // history no longer holds, and every ack for it would be rejected as not
+    // ours. Registering it against the socket that is about to carry it is what
+    // makes the history mean what it says.
+    if (options?.messageId) {
+      this.trackSubmittedId(options.messageId);
+    }
+    const sent = await this.relayWithTimeout(
+      "sendMessage",
+      () =>
+        this.safeSocket().sendMessage(jid, messageContent, {
+          waveformProxy,
+          quoted: options?.quoted,
+          ...(options?.messageId ? { messageId: options.messageId } : {}),
+        }),
+      options?.onLateDefinitiveFailure,
+    );
+    // Also on the way out, for the sends that let Baileys generate the id: without
+    // a reservation this response is the first time we learn it, and an ack for it
+    // still lands afterwards.
+    if (sent?.key?.id) {
+      this.trackSubmittedId(sent.key.id);
+    }
+    return sent;
+  }
+
+  // Throws when the breaker is open, and re-evaluates the episode on the way out.
+  // The re-evaluation belongs here, not only where a fresh timeout lands: once the
+  // breaker is open no send reaches the socket, so no further timeout is ever
+  // recorded. Three sends started together all expire at sendTimeoutMs with a streak
+  // near zero, which latches the breaker below the minimum duration — without this
+  // the watchdog would stay disarmed for the life of the socket, answering 503 with
+  // no webhook and no restart.
+  private assertCanSend() {
+    if (this.inFlightSends >= MAX_IN_FLIGHT_SENDS) {
+      // Same guard the breaker branch below carries, and for the same reason. A
+      // socket that closes with its sends still unresolved keeps every one of
+      // them holding a slot -- the slot belongs to the operation, not to our wait
+      // on it -- so the cap is exactly what a send lands on during an ordinary
+      // outage. Answering `stalled` there tells the caller the connection is up
+      // and must NOT be marked down, which is the opposite of true and costs it
+      // the reconnect it needed.
+      if (!this.isOpen) {
+        throw new BaileysNotConnectedError();
+      }
+      logger.warn(
+        "[%s] [sendStall] refusing send: %d already in flight",
+        this.phoneNumber,
+        this.inFlightSends,
+      );
+      // The same answer as an open breaker, and for the same reason: the
+      // connection is not accepting sends right now and must NOT be marked down.
+      // Deliberately without maybeReportSendStall -- a full queue is backpressure,
+      // not evidence of a wedge, and it must not spend a restart.
+      throw new BaileysSendStalledError();
+    }
+    if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
+      return;
+    }
+    // A stall is a claim about a socket that is UP, and maybeReportSendStall
+    // already refuses to report one otherwise. The refusal has to agree: the
+    // stall-specific 503 tells the caller the connection is up and must NOT be
+    // marked down, which is precisely wrong for a socket still handshaking, and
+    // it would cost the caller the reconnect it needed. Three concurrent sends
+    // expiring during a slow handshake is all it takes to reach the threshold.
+    if (!this.isOpen) {
+      throw new BaileysNotConnectedError();
+    }
+    this.maybeReportSendStall();
+    throw new BaileysSendStalledError();
+  }
+
+  // Bounds every path that goes through the socket's sendMessage, which is what
+  // takes the keystore transaction keyed by our own JID. `withTimeout` cannot
+  // cancel the underlying operation — it stays parked in that mutex — so a
+  // timeout means "outcome unknown", and the circuit breaker below is what
+  // keeps the parked queue from growing with every caller retry.
+  private async relayWithTimeout<T>(
+    operation: string,
+    fn: () => Promise<T>,
+    // Called when a send that already answered its caller is LATER proved never
+    // to have reached WhatsApp. Only the mutex-acquire timeout proves that: its
+    // waiter never entered txStorage.run, so it read nothing, wrote nothing and
+    // relayed nothing. Everything else that settles late is still ambiguous.
+    onLateDefinitiveFailure?: () => void,
+  ): Promise<T> {
+    this.assertCanSend();
+    // Captured BEFORE the send starts, and carried into every callback below.
+    // A reconnect mid-send replaces the socket while these deadlines keep
+    // running against a keystore that no longer exists: unstamped, three of
+    // them expiring after the swap would open the breaker on a healthy
+    // replacement that had not refused a single send.
+    const generation = this.socketGeneration;
+    this.inFlightSends += 1;
+    try {
+      const result = await withTimeout(
+        operation,
+        config.baileys.sendTimeoutMs,
+        fn,
+        (error, value) => {
+          // Before recordLateSettle, which drops a discarded or superseded
+          // connection on the way in. That guard is right for the breaker's
+          // bookkeeping and wrong here: "this send never entered the transaction"
+          // stays true whether or not the socket that made it still exists, and
+          // it is the caller's message that is waiting on the answer.
+          if (error !== undefined && isTxMutexTimeout(error)) {
+            onLateDefinitiveFailure?.();
+          }
+          // The slot belongs to the OPERATION, not to our wait on it. A timed-out
+          // send is still parked in the mutex and still the thing the cap exists
+          // to bound, so its slot is only given back here, when the underlying
+          // promise actually settles.
+          this.releaseInFlight(generation);
+          this.recordLateSettle(operation, generation, error, value);
+        },
+      );
+      this.releaseInFlight(generation);
+      this.recordSendSuccess(generation);
+      return result;
+    } catch (error) {
+      // Both are refusals the breaker must count, and which one arrives first is
+      // decided by config, not by the failure: BAILEYS_TX_ACQUIRE_TIMEOUT_MS can be
+      // set below BAILEYS_SEND_TIMEOUT_MS, and then the wedge reports itself before
+      // our own deadline does. Counting only OperationTimeoutError there would leave
+      // the detector blind in exactly the configuration that detects the wedge
+      // fastest. recordLateSettle already reads this error as wedge evidence; this
+      // is the same reading on the path that runs first.
+      if (error instanceof OperationTimeoutError) {
+        // Deliberately no release: onLateSettle above owns it now. Holding the
+        // slot is the whole correction -- an abandoned send keeps running, and
+        // admitting a replacement for it is how the queue grew past the ceiling.
+        this.recordSendTimeout(operation, generation);
+        throw error;
+      }
+      this.releaseInFlight(generation);
+      if (isTxMutexTimeout(error) && this.isCurrentGeneration(generation)) {
+        // Gated together, and the gate has to come first. recordSendTimeout drops
+        // a stale generation on its own, but noteMutexWedge would already have
+        // stamped a replaced socket's key onto the live watchdog -- the same
+        // ordering the late-settlement path gets right.
+        this.noteMutexWedge(error);
+        this.recordSendTimeout(operation, generation, "mutex-wedge");
+      }
+      throw error;
+    }
+  }
+
+  // Only for the socket that admitted it. A parked send may settle long after
+  // its socket was replaced, and letting that decrement land would drift the
+  // replacement's count downwards; the counter is reset with the socket instead.
+  private releaseInFlight(generation: number) {
+    if (this.isCurrentGeneration(generation)) {
+      this.inFlightSends -= 1;
+    }
+  }
+
+  // True while the argument still describes the live socket. A settlement from
+  // an earlier generation is not wrong, it is about a keystore that has since
+  // been thrown away, and the watchdog's whole subject is the current one.
+  // Records which keystore key our sends are blocked on, from the Boom the
+  // patched transaction throws. This arms the release-based recovery in
+  // handleTxEvent, and it arms it in exactly the configuration that needs it:
+  // with BAILEYS_TX_ACQUIRE_TIMEOUT_MS at 0 no send ever rejects this way, but
+  // then nothing converts a parked send into a rejection either, so the parked
+  // send eventually succeeds and the ordinary late-success path closes the
+  // breaker on its own.
+  private noteMutexWedge(error: unknown) {
+    const key = txMutexTimeoutKey(error);
+    if (key === null) {
+      return;
+    }
+    // The holder can let go in the gap between the acquisition giving up and the
+    // Boom reaching here -- a few awaits up the send path. handleTxEvent saw that
+    // release while wedgedTxKey was still null and rightly ignored it, and it was
+    // the ONLY one that key will ever emit. Arming on it now would wait forever
+    // for a second release, and with automatic restart off (the default) nothing
+    // else closes the breaker: 503 for the life of a socket whose mutex is free.
+    const releasedAt = this.txReleasedAt.get(key) ?? 0;
+    const timedOutAt = this.txTimeoutAt.get(key) ?? 0;
+    if (releasedAt >= timedOutAt && releasedAt > 0) {
+      logger.warn(
+        "[%s] [keystoreTx] key=%s released while its timeout was propagating; not arming",
+        this.phoneNumber,
+        key,
+      );
+      this.clearSendStallState();
+      return;
+    }
+    this.wedgedTxKey = key;
+  }
+
+  private isCurrentGeneration(generation: number): boolean {
+    return generation === this.socketGeneration;
+  }
+
+  // Clears the breaker without asserting anything about a send having landed.
+  // Split out because a late REJECTION proves the operation left the mutex
+  // queue (which is what the breaker counts) but proves nothing about delivery,
+  // so it must not touch the health timestamps.
+  private clearSendStallState() {
+    this._consecutiveSendTimeouts = 0;
+    this.wedgedTxKey = null;
+    this.sendStallStreakStartedAt = null;
+    this.sendStallSilentUntil = 0;
+    // Also the restart request: a send going through proves the socket works, so a
+    // pending restart is moot. Leaving it set would latch the same way the breaker
+    // used to — if the restart never lands (the handler logs and gives up on a
+    // failed connect), this connection could never report a stall again.
+    this.restartRequested = false;
+  }
+
+  private recordSendSuccess(generation: number) {
+    if (!this.isCurrentGeneration(generation)) {
+      return;
+    }
+    this.clearSendStallState();
+    this._lastSendCompletedAt = Date.now();
+  }
+
+  // A send we already gave up on finally settled. This is the ONLY signal that
+  // can close the breaker without a new socket: once it is open no send reaches
+  // the socket, so the ordinary success path can never run again. It is also
+  // what keeps a slow-but-healthy connection out of a permanent 503 — media
+  // generation and upload happen inside socket.sendMessage BEFORE the keystore
+  // mutex, so three slow uploads can open the breaker with the mutex perfectly
+  // free, and this is what closes it when they land.
+  //
+  // `error` present means the abandoned operation rejected. That still empties
+  // the mutex queue, so it still closes the breaker — with one exception, and
+  // it is the exception that matters: a rejection that IS the transaction-mutex
+  // timeout reports a wedged mutex, not a freed one. Closing the breaker on it
+  // would send the next batch straight back into the queue we are trying to
+  // keep bounded.
+  private recordLateSettle(
+    operation: string,
+    generation: number,
+    error?: unknown,
+    value?: unknown,
+  ) {
+    if (this.isDiscarded || !this.isCurrentGeneration(generation)) {
+      return;
+    }
+    // And it does not free a queue slot either, which is the other half of why
+    // this branch exists. async-mutex@0.5's withTimeout rejects the wrapper on
+    // expiry but leaves the underlying acquire in the semaphore queue; it only
+    // releases the ticket once the holder finally unlocks (withTimeout.js, the
+    // `if (isTimeout) release()` path). So a timed-out waiter is still queued,
+    // and treating its rejection as "the queue emptied" would be false.
+    //
+    // Deliberately not worked around. Removing the waiter means replacing that
+    // acquisition with a cancellable queue of our own, inside the patch, which
+    // trades a bounded cost for a much larger patch to rebase on every bump. The
+    // cost is bounded: the retained waiters are a promise each, the breaker caps
+    // the send-side ones at three, and draining them is an acquire-then-release
+    // apiece with no work in between. It also buys something -- every drained
+    // ticket releases instead of sending, so an acquire timeout is precisely what
+    // stops a freed mutex from firing hours of queued sends at a real customer.
+    // That burst is the failure this whole file is shaped around, and it is
+    // BAILEYS_TX_ACQUIRE_TIMEOUT_MS=0 that reopens it.
+    if (error !== undefined && isTxMutexTimeout(error)) {
+      this.noteMutexWedge(error);
+      logger.warn(
+        "[%s] [sendStall] late tx-mutex timeout operation=%s afterTimeouts=%d (breaker stays open)",
+        this.phoneNumber,
+        operation,
+        this._consecutiveSendTimeouts,
+      );
+      return;
+    }
+    logger.warn(
+      "[%s] [sendStall] late %s operation=%s afterTimeouts=%d",
+      this.phoneNumber,
+      error === undefined ? "completion" : "failure",
+      operation,
+      this._consecutiveSendTimeouts,
+    );
+    if (error === undefined) {
+      // The id Baileys generated for this message, which the success path would
+      // have recorded and never got to. Without it every receipt for this
+      // message is rejected by isOurSubmittedKey, so lastOutgoingAckAt -- the
+      // only end-to-end evidence there is, and the only one that does not come
+      // from us -- stays null for precisely the send whose outcome was unknown.
+      // Only reachable when the caller reserved no messageId; with one, the
+      // same id was already tracked before the send left.
+      const sentId = (value as { key?: { id?: string | null } } | undefined)
+        ?.key?.id;
+      if (sentId) {
+        this.trackSubmittedId(sentId);
+      }
+      this.recordSendSuccess(generation);
+      return;
+    }
+    // ONE slot, not the whole streak. A rejection proves this operation left the
+    // queue; it does not prove the mutex is free, because media generation and
+    // upload run BEFORE the transaction is taken — a failing upload can depart
+    // while other sends are still queued behind a wedged mutex. Clearing
+    // everything here would readmit a full batch into that queue and give up the
+    // bound the breaker exists to hold. A late SUCCESS is different, and that is
+    // why it clears: it proves the transaction was both acquired and released.
+    this._consecutiveSendTimeouts = Math.max(
+      0,
+      this._consecutiveSendTimeouts - 1,
+    );
+    if (this._consecutiveSendTimeouts === 0) {
+      this.clearSendStallState();
+    }
+  }
+
+  private recordSendTimeout(
+    operation: string,
+    generation: number,
+    cause: "timeout" | "mutex-wedge" = "timeout",
+  ) {
+    if (!this.isCurrentGeneration(generation)) {
+      logger.warn(
+        "[%s] [sendStall] ignoring timeout from a replaced socket operation=%s generation=%d current=%d",
+        this.phoneNumber,
+        operation,
+        generation,
+        this.socketGeneration,
+      );
+      return;
+    }
+    this._consecutiveSendTimeouts += 1;
+    this.sendStallStreakStartedAt ??= Date.now();
+    const streakMs = Date.now() - this.sendStallStreakStartedAt;
+
+    logger.warn(
+      "[%s] [sendStall] %s operation=%s consecutive=%d streakMs=%d",
+      this.phoneNumber,
+      cause,
+      operation,
+      this._consecutiveSendTimeouts,
+      streakMs,
+    );
+
+    this.maybeReportSendStall();
+  }
+
+  // The trigger, shared by the timeout path and the breaker-open path. A stall
+  // needs the streak to be both deep enough (consecutive timeouts) and long
+  // enough: concurrent sends all expire at the same instant, so depth alone
+  // would let one 45s hiccup recreate a perfectly healthy socket.
+  private maybeReportSendStall() {
+    if (
+      Date.now() < this.sendStallSilentUntil ||
+      this.sendStallStreakStartedAt === null
+    ) {
+      return;
+    }
+    if (this._consecutiveSendTimeouts < SEND_STALL_THRESHOLD) {
+      return;
+    }
+    if (
+      Date.now() - this.sendStallStreakStartedAt <
+      SEND_STALL_MIN_DURATION_MS
+    ) {
+      return;
+    }
+    // Already closed or reconnecting: the timeouts are explained and recreating
+    // the socket adds nothing.
+    // isOpen, not "we hold a socket object": during a first connect or a slow
+    // reconnect the socket exists while the handshake is still running, and sends
+    // that time out in that window are an ordinary connection outage, not a wedged
+    // mutex. Reporting one as a stall would tear down a socket that was on its way
+    // up, and do it again on the replacement.
+    if (!this.isOpen || this.isDiscarded || this.restartRequested) {
+      return;
+    }
+    // Silenced before the async work so concurrent rejections cannot each start
+    // their own episode. handleSendStall lowers this again when the restart
+    // turns out to be merely deferred rather than decided.
+    this.sendStallSilentUntil = Number.POSITIVE_INFINITY;
+    void this.handleSendStall(Date.now() - this.sendStallStreakStartedAt);
+  }
+
+  // True while the episode this handler was launched for is still the live one.
+  // Every await below is a window in which WhatsApp can drop and remake the socket
+  // on its own: the replacement gets a fresh keystore and clears the breaker, and
+  // acting on the old verdict afterwards means reporting a stall on a healthy
+  // connection and asking the handler to discard it.
+  private isStallEpisodeCurrent(generation: number): boolean {
+    return (
+      // isOpen carries the entry gate across the awaits. The socket can emit
+      // `close` while Redis answers, and until the reconnect builds its
+      // replacement the generation and the streak both still match — so without
+      // this the handler reports a send stall, spends a backoff strike and asks
+      // for a restart, all for an ordinary disconnect that is already
+      // reconnecting on its own.
+      this.isOpen &&
+      !this.isDiscarded &&
+      this.isCurrentGeneration(generation) &&
+      this._consecutiveSendTimeouts >= SEND_STALL_THRESHOLD
+    );
+  }
+
+  private async handleSendStall(streakMs: number) {
+    const generation = this.socketGeneration;
+    let action: "restart" | "suppressed" = "suppressed";
+    let until: string | undefined;
+
+    if (config.baileys.sendStallRestartEnabled) {
+      try {
+        // Both reads together, resolved by ONE currency check. Chaining them
+        // would put a second window between the checks in which the socket can
+        // be replaced, and every await on this path has cost us that once.
+        const [mayRestart, ownedElsewhere] = await Promise.all([
+          canRestartAfterStall(this.phoneNumber),
+          this.shouldYieldToLeaseOwner(),
+        ]);
+        if (!this.isStallEpisodeCurrent(generation)) {
+          // Recovered while Redis was answering. Lower the silence so a fresh
+          // episode on the new socket can report itself.
+          this.sendStallSilentUntil = 0;
+          return;
+        }
+        // The distributed fence, and this was the one socket-creating path
+        // without it. Every other one consults the lease: the claim cycle
+        // acquires, the explicit paths force-acquire behind a live-owner guard,
+        // and the connectionReplaced kick yields through this same call. The
+        // watchdog decided purely on local state, so a phone force-taken over
+        // while this handler awaited Redis -- another instance acting on a
+        // registry that briefly reported us dead -- would be rebuilt here under
+        // a lease that is no longer ours, fighting the legitimate owner for the
+        // identity until the next renew cycle noticed.
+        //
+        // abort() rather than a bare skip, and for the same reason the renew
+        // cycle discards on this evidence: a socket for a phone somebody else
+        // owns is a duplicate that is still receiving. It preserves the auth
+        // state, so the owner keeps serving the identity.
+        if (ownedElsewhere) {
+          this.abort();
+          return;
+        }
+        if (mayRestart) {
+          if (!BaileysConnection.claimStallRestartSlot()) {
+            // Process-wide cooldown: another connection restarted moments ago.
+            // That is a scheduling delay, not a verdict, so this episode is
+            // neither reported nor closed — the next send attempt re-evaluates
+            // once the slot frees. Reporting "suppressed" here would turn a
+            // fleet-wide stall into 8 alerts and 1 recovery.
+            this.sendStallSilentUntil = 0;
+            return;
+          }
+          action = "restart";
+        } else {
+          const allowedAt = await nextRestartAllowedAt(this.phoneNumber);
+          if (!this.isStallEpisodeCurrent(generation)) {
+            this.sendStallSilentUntil = 0;
+            return;
+          }
+          until = allowedAt ? new Date(allowedAt).toISOString() : undefined;
+          // Reconsider once the backoff we just advertised as `until` expires.
+          // Staying silent past it would make that timestamp a lie: the breaker
+          // rejects every send without touching the socket, so nothing else
+          // would ever bring this connection back up for review.
+          this.sendStallSilentUntil = allowedAt ?? 0;
+        }
+      } catch (error) {
+        logger.error(
+          "[%s] [sendStall] backoff lookup failed: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+        // Re-arm. maybeReportSendStall raised the silence to Infinity before
+        // launching this, on the assumption that it would come back with a
+        // verdict; a Redis blip is not a verdict, and leaving it there means no
+        // later send can ever re-evaluate — the breaker rejects them all
+        // without touching the socket, so this connection would stay muted for
+        // the life of the socket with the restart it needed never requested.
+        // A cooldown rather than 0, so a Redis outage cannot turn every
+        // rejected send into its own webhook.
+        //
+        // Guarded like every other path out of an await here. A Redis lookup can
+        // outlive the episode that started it, and an in-place reconnect keeps
+        // THIS object and only bumps the generation -- so the cooldown would land
+        // on the new socket's detector and mute it for a stall it never had,
+        // while the `suppressed` verdict below would describe an episode that is
+        // over.
+        if (!this.isStallEpisodeCurrent(generation)) {
+          this.sendStallSilentUntil = 0;
+          return;
+        }
+        this.sendStallSilentUntil = Date.now() + SEND_STALL_RESTART_COOLDOWN_MS;
+      }
+    }
+
+    // Reported here only when nothing more can cancel it. `action` is documented
+    // as whether the socket was recreated, and everything below can still call
+    // the restart off -- the final gate, the discard check, the recovery check --
+    // so announcing "restart" up front tells a consumer that recovery is underway
+    // when it may not be. The suppressed verdict is final the moment it is
+    // decided, so it goes out now.
+    if (action !== "restart") {
+      this.reportSendStall(streakMs, action, until);
+      return;
+    }
+
+    // Last gate before the socket is actually discarded, and the one that matters
+    // most: the webhook above only reports, this destroys a live connection.
+    if (!this.isStallEpisodeCurrent(generation)) {
+      this.sendStallSilentUntil = 0;
+      return;
+    }
+    this.restartRequested = true;
+    // BEFORE requesting the restart, not after. requestRestart hands off to
+    // connectionsHandler.connect, which runs synchronously up to its first await
+    // when the per-number slot is free -- and that stretch includes discard().
+    // So by the time the call returns, this connection is already discarded, and
+    // recording afterwards under an isDiscarded guard would record nothing at
+    // all: a phone that stalls repeatedly would bypass its own backoff and
+    // recreate its socket without limit. The final gate is above, so a strike
+    // here still implies a restart that was actually asked for.
+    //
+    // The guard stays, for the case it was written for: logout sets isDiscarded
+    // before its first await, and the coordinator DELs the backoff key in its
+    // finally. The store is a plain read-modify-write, so a strike straddling
+    // that DEL recreates it, and the next session paired on this number inherits
+    // an escalating suppression from a socket that no longer exists.
+    if (!this.isDiscarded) {
+      try {
+        // The lease read rides along with the write rather than sitting before
+        // it, so the fence ends up at the last point before requestRestart with
+        // no await of ours after it. The check further up is what saves the
+        // restart slot and this strike in the common case, but by now it is a
+        // Redis round trip old, and a takeover landing inside that round trip
+        // would leave this rebuilding the old owner's socket against the new
+        // one's.
+        const [{ previous, previousTtlMs, wrote }, ownedElsewhere] =
+          await Promise.all([
+            recordStallRestart(this.phoneNumber),
+            this.shouldYieldToLeaseOwner(),
+          ]);
+        // The expiry travels with the value: restoring with a fresh 24h would
+        // hand an old history another full day on the strength of a restart that
+        // never happened.
+        this.stallStrikeRollback = { previous, ttlMs: previousTtlMs, wrote };
+        // Re-checked after the write: all three of these can land inside it,
+        // which the guard above cannot see. Undoing is the only way back, since
+        // nothing in the store fences a write against a session that has already
+        // ended.
+        //
+        // Three ways this write can be obsolete by the time it lands, and they
+        // undo differently.
+        //
+        // sessionEnded: a logout began, and close() DELs this key on its way
+        // out, so restoring the previous episode's value would resurrect a
+        // backoff for a session that no longer exists and hand it to whatever is
+        // paired on this number next. Clear instead. Not isDiscarded, which a
+        // concurrent POST /restart also sets: that one replaces the socket and
+        // keeps the session, so wiping the phone's history there would hand it a
+        // clean slate an earlier genuine stall already spent.
+        //
+        // ownedElsewhere: another instance force-acquired the phone. Its socket
+        // is the legitimate one, so ours is a duplicate that is still receiving
+        // and has to go -- and the strike goes back, because the backoff key is
+        // cluster-wide and charging one for a restart we are not performing
+        // would suppress the new owner's watchdog. Ranked above recovery: a
+        // socket we do not own has to be given up whether or not it healed.
+        //
+        // !restartRequested: a late send completion or the wedged key releasing
+        // cleared the stall, so the handler's own guard will veto the restart --
+        // and a strike that outlives the restart it stands for suppresses the
+        // NEXT genuine stall on the strength of a recovery. The connection is
+        // still ours, so only THIS episode's increment is wrong.
+        if (this.sessionEnded) {
+          this.stallStrikeRollback = undefined;
+          await clearSendStall(this.phoneNumber).catch(() => {});
+          return;
+        }
+        if (this.isDiscarded) {
+          // Replaced, not ended: something else took this socket over while the
+          // strike was landing (a forceRestart connect, the lease fence). The
+          // restart is off, so only THIS episode's increment is wrong.
+          await this.rollBackStallStrike();
+          return;
+        }
+        if (ownedElsewhere) {
+          // Before the abort, which sets isDiscarded and would send the rollback
+          // down the clear-instead branch above.
+          await this.rollBackStallStrike();
+          this.abort();
+          return;
+        }
+        if (!this.restartRequested) {
+          await this.rollBackStallStrike();
+          return;
+        }
+      } catch (error) {
+        logger.error(
+          "[%s] [sendStall] failed to record restart: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+        // Suppressed, not restarted anyway. The strike is what turns "restarting
+        // is not curing this" into "give up and let the operator see it", so
+        // without one a phone that keeps stalling gets a restart every episode
+        // for as long as Redis is unreachable -- and a Redis outage is fleet-wide
+        // by nature, so that is every stalled inbox reconnecting on a loop while
+        // the system is already degraded. The READ side of the same outage
+        // already suppresses (the backoff-lookup catch above); a failed write is
+        // no different, and answering the same way keeps one outage from having
+        // two behaviours depending on which call it hit.
+        // Cleared unconditionally: this handler set it for an episode that is
+        // now over either way, and leaving it would report restartPending on a
+        // connection nobody is restarting.
+        this.restartRequested = false;
+        // Same guard as the lookup catch above, and for the same reason: the
+        // write we were waiting on can outlive the episode, and everything below
+        // belongs to that episode.
+        if (!this.isStallEpisodeCurrent(generation)) {
+          this.sendStallSilentUntil = 0;
+          return;
+        }
+        // Re-armed on the cooldown rather than 0, for the same reason as the
+        // lookup catch: a Redis outage must not turn every rejected send into
+        // its own webhook, and leaving the silence at Infinity would mute this
+        // socket for its lifetime.
+        this.sendStallSilentUntil = Date.now() + SEND_STALL_RESTART_COOLDOWN_MS;
+        this.reportSendStall(streakMs, "suppressed", undefined);
+        return;
+      }
+    }
+
+    // Through the handler, never inline: the replacement socket has to
+    // participate in the handler's per-number inFlightOps lock. See
+    // connectionsHandler.spawnConnection.
+    this.reportSendStall(streakMs, action, until);
+    this.requestRestart?.(
+      `send stall: ${this._consecutiveSendTimeouts} consecutive timeouts over ${streakMs}ms`,
+    );
+  }
+
+  private reportSendStall(
+    streakMs: number,
+    action: "restart" | "suppressed" | "cancelled" | "failed",
+    until: string | undefined,
+  ) {
+    logger.warn(
+      "[%s] [sendStall] detected consecutiveTimeouts=%d streakMs=%d action=%s",
+      this.phoneNumber,
+      this._consecutiveSendTimeouts,
+      streakMs,
+      action,
+    );
+    const payload: BaileysConnectionWebhookPayload = {
+      event: "connection.update",
+      data: {
+        error: "send_stall_detected",
+        sendStall: {
+          consecutiveTimeouts: this._consecutiveSendTimeouts,
+          stalledForMs: streakMs,
+          action,
+          ...(until && { until }),
+        },
+      },
+    };
+    // Chained, not fired independently. These verdicts contradict each other --
+    // `failed` and `cancelled` exist to retract a `restart` already announced --
+    // and sendToWebhook offers no ordering: every payload runs its own retry loop
+    // with backoff, so a `restart` that needed two attempts lands AFTER a
+    // `failed` that went out on the first, and the consumer is left reading
+    // recovery as underway on a connection that never came back. That is the one
+    // reading this whole feature exists to prevent. The wait is bounded by the
+    // retry policy, and a retraction arriving late in the right order beats one
+    // arriving on time in the wrong one.
+    //
+    // The reservation is taken HERE, synchronously, and not left to
+    // sendToWebhook: the chain does not enter it until a microtask, while
+    // requestRestart discards this connection synchronously on the way out. The
+    // handler reads inFlightWebhooks at exactly that moment to decide whether to
+    // keep the old connection in drainingWebhooks, so a queued verdict that has
+    // not started yet reads as nothing pending -- and a graceful shutdown landing
+    // mid-restart exits without ever delivering the message that says recovery is
+    // underway.
+    this._inFlightWebhooks += 1;
+    this.stallReportChain = this.stallReportChain
+      .catch(() => {})
+      .then(() => this.sendToWebhook(payload))
+      .catch(() => {})
+      .finally(() => {
+        this._inFlightWebhooks -= 1;
+      });
+  }
+
+  // The handler drains its per-number slot before re-checking whether the
+  // restart is still wanted, so a recovery landing in that window vetoes it long
+  // after this connection committed to it. Two things then have to be undone: the
+  // strike, which would otherwise suppress the NEXT genuine stall on the strength
+  // of a restart that never happened, and the verdict already sent to consumers.
+  // The restart was asked for and could not rebuild anything. The strike stands
+  // -- an attempt was made and it burned -- but consumers were told the socket
+  // was being recreated, and nothing else would ever correct that. This is the
+  // state where a human has to step in, so it has to be visible.
+  reportFailedStallRestart() {
+    this.reportSendStall(0, "failed", undefined);
+  }
+
+  async withdrawStallRestart(streakMs = 0) {
+    this.restartRequested = false;
+    await this.rollBackStallStrike();
+    this.reportSendStall(streakMs, "cancelled", undefined);
+  }
+
+  // Restores exactly this episode's increment rather than deleting the key: the
+  // history is per phone and lives 24h, so a delete would also wipe an earlier
+  // genuine strike and hand the phone a clean slate it did not earn.
+  private async rollBackStallStrike() {
+    const rollback = this.stallStrikeRollback;
+    this.stallStrikeRollback = undefined;
+    if (rollback === undefined) {
+      return;
+    }
+    try {
+      // The same fork handleSendStall makes after its own write, for the same
+      // reason: the two ways a restart gets called off undo differently. The
+      // veto that lands here is issued by the handler AFTER it drains the
+      // per-number slot, so an explicit logout queued ahead of the restart is
+      // exactly what produces it -- and by then the auth state is gone and
+      // close() has DELed this key. Restoring a previous episode's value would
+      // recreate it for a session that no longer exists and hand it to whatever
+      // is paired on this number next, its watchdog suppressed on the strength
+      // of a socket nobody can reach.
+      //
+      // sessionEnded, not isDiscarded: a concurrent POST /restart produces this
+      // same veto and also sets isDiscarded, but it replaced the socket and kept
+      // the session. Clearing there would hand the phone a clean backoff slate
+      // that an earlier genuine stall already spent, so only this episode's
+      // increment comes back.
+      if (this.sessionEnded) {
+        await clearSendStall(this.phoneNumber);
+        return;
+      }
+      await restoreSendStallState(
+        this.phoneNumber,
+        rollback.previous,
+        rollback.ttlMs,
+        rollback.wrote,
+      );
+    } catch (error) {
+      logger.error(
+        "[%s] [sendStall] failed to roll back strike: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+    }
+  }
+
+  // Process-wide, not per-connection: the point is to keep a fleet-wide stall
+  // from reconnecting every affected socket at the same instant.
+  //
+  // performance.now(), not Date.now(), for the same reason the coordinator uses
+  // it for lastRebalanceReleaseAt: this is a pure elapsed-time gate, and an NTP
+  // step backwards would otherwise suppress every restart until wall clock
+  // caught up. -Infinity because performance.now() starts near zero at boot, so
+  // a 0 sentinel would silently rate-limit the first restart away.
+  private static lastStallRestartAt = Number.NEGATIVE_INFINITY;
+
+  private static claimStallRestartSlot(): boolean {
+    const now = performance.now();
+    if (
+      now - BaileysConnection.lastStallRestartAt <
+      SEND_STALL_RESTART_COOLDOWN_MS
+    ) {
+      return false;
+    }
+    BaileysConnection.lastStallRestartAt = now;
+    return true;
   }
 
   sendPresenceUpdate(type: WAPresence, toJid?: string | undefined) {
@@ -669,7 +1879,9 @@ export class BaileysConnection {
   }
 
   deleteMessage(jid: string, key: MessageKeyWithId) {
-    return this.safeSocket().sendMessage(jid, { delete: key });
+    return this.relayWithTimeout("deleteMessage", () =>
+      this.safeSocket().sendMessage(jid, { delete: key }),
+    );
   }
 
   editMessage(
@@ -677,10 +1889,12 @@ export class BaileysConnection {
     key: proto.IMessageKey,
     messageContent: AnyMessageContent,
   ) {
-    return this.safeSocket().sendMessage(jid, {
-      ...messageContent,
-      edit: key,
-    } as AnyMessageContent);
+    return this.relayWithTimeout("editMessage", () =>
+      this.safeSocket().sendMessage(jid, {
+        ...messageContent,
+        edit: key,
+      } as AnyMessageContent),
+    );
   }
 
   async profilePictureUrl(jid: string, type?: "preview" | "image") {
@@ -811,6 +2025,32 @@ export class BaileysConnection {
     return this.socket;
   }
 
+  // Reconnects are fire-and-forget by design -- handleConnectionUpdate must not
+  // block on a handshake -- but connect() rejects when it cannot build a socket
+  // at all (Redis down inside useRedisAuthState, makeWASocket throwing). An
+  // unhandled rejection is fatal in Bun, so one failed reconnect would take the
+  // whole worker down and every other connection with it. Aborting rather than
+  // only logging because a connection left registered with no socket is the dark
+  // phone this change exists to eliminate: abort preserves the auth state and
+  // fires onConnectionClose, so the handler evicts us and the number becomes
+  // claimable again.
+  private reconnectInBackground() {
+    void this.connect().catch((error) => {
+      logger.error(
+        "[%s] [reconnect] could not rebuild socket: %s",
+        this.phoneNumber,
+        errorToString(error),
+      );
+      if (!this.isDiscarded) {
+        this.abort();
+      }
+      // abort() gets us out of the handler's registry, but the lease is the
+      // coordinator's and the claim scan skips any phone that still has one.
+      // Same route a failed restart spawn takes, for the same reason.
+      this.onUnrecoverable?.();
+    });
+  }
+
   private async handleConnectionUpdate(data: Partial<ConnectionState>) {
     // A discarded connection must be inert. `socket.end()` fires a final
     // connection.update before the listeners are torn down; without this
@@ -821,6 +2061,18 @@ export class BaileysConnection {
     }
 
     const { connection, qr, lastDisconnect, isNewLogin, isOnline } = data;
+
+    // Recorded here, before the branches below — several of which return early
+    // (reconnect, wrong number, lease yield) and never reach the assignment near
+    // the bottom of this method. Leaving it to that one means a socket that just
+    // closed keeps reporting `open`, and since the reconnect path creates a
+    // replacement socket on its way out, `isOpen` (and the health endpoint built
+    // on it) would answer `connected: true` for the whole handshake. The
+    // assignment below still runs: it applies the qr/isOnline rewrites, which
+    // describe what the client is told, not what the socket is doing.
+    if (connection) {
+      this.connectionState = connection;
+    }
 
     // WhatsApp's authoritative reach-out time-lock state (the restriction
     // behind error 463). It rides on connection.update — sometimes standalone
@@ -916,7 +2168,7 @@ export class BaileysConnection {
           this.reconnectCount = 0;
           await this.handleReconnecting();
           this.socket = null;
-          this.connect();
+          this.reconnectInBackground();
           return;
         }
         // Distributed fence: a conflict/replaced kick may mean another
@@ -958,7 +2210,7 @@ export class BaileysConnection {
           }
         }
 
-        this.connect();
+        this.reconnectInBackground();
         return;
       }
       await this.close();
@@ -986,8 +2238,37 @@ export class BaileysConnection {
       Object.assign(data, { connection: "open" });
     }
 
+    // Deliberately NOT re-derived from data.connection here. The two rewrites
+    // above describe what the CLIENT is told, not what the socket is doing:
+    // `isOnline` is a presence echo on the socket we already have, emitted by
+    // sendPresenceUpdate("available") -- which POST /connections calls whenever
+    // it reuses a live connection, i.e. every five minutes from the Chatwoot
+    // health check. Taking it as connectivity makes a socket still finishing its
+    // handshake report `connected: true` on /health, and makes isOpen true, which
+    // is the gate that decides whether a run of send timeouts is an ordinary
+    // reconnect outage or a send stall. The real field was already applied at the
+    // top of this method, before any of the early returns.
+
     if (data.connection === "open") {
       this.reconnectCount = 0;
+      // A fresh socket means a fresh keystore and a fresh mutex map, so
+      // whatever was wedged is gone. Without this reset the circuit breaker
+      // stays open across an in-place reconnect (the connection object
+      // survives a socket drop) and the connection would answer 503 forever —
+      // worse than the stall it was built to contain, since the original bug
+      // at least cleared itself when WhatsApp dropped the socket.
+      //
+      // Gated on the ORIGINAL event, not on `data.connection`: `isOnline` was
+      // rewritten into `data` a few lines above, and `isOnline` is a presence
+      // echo on the socket we already have. `sendPresenceUpdate("available")`
+      // emits one, and POST /connections calls exactly that when it reuses a
+      // live connection — which is what the Chatwoot health check does every
+      // five minutes. Resetting on that would hand a still-wedged socket a
+      // clean breaker on a timer, and every reset lets another batch of sends
+      // queue behind the same stuck mutex.
+      if (connection === "open") {
+        this.clearSendStallState();
+      }
       // Any healthy open wipes the quarantine strike history — the backoff
       // must reflect CONSECUTIVE failed cycles, not lifetime totals. Not
       // awaited (the open path must not block on it), rejection logged.
@@ -1089,6 +2370,8 @@ export class BaileysConnection {
       this.fetchReachoutTimelockOn463();
     }
 
+    this.trackOutgoingAck(data);
+
     this.sendToWebhook(
       {
         event: "messages.update",
@@ -1098,6 +2381,89 @@ export class BaileysConnection {
         awaitResponse: true,
       },
     );
+  }
+
+  // The only end-to-end proof that sending works, short of injecting a probe
+  // message: WhatsApp acknowledging one of OUR messages. markTraffic() fires
+  // before the send and on inbound traffic, so it stays fresh while sending is
+  // dead — it cannot serve as this signal. A resolved socket.sendMessage proves
+  // the keystore mutex was free, not that the server took the message.
+  //
+  // "Ours" means submitted through THIS socket, which `fromMe` does not say: the
+  // same account sending from the phone or another companion device produces
+  // `fromMe` keys too, and none of those went through this connection's keystore
+  // mutex. Accepting them would let a busy account keep a wedged connection
+  // reporting `ok` — the store's own phone answering customers by hand is exactly
+  // the situation this signal is supposed to see through.
+  private trackOutgoingAck(data: BaileysEventMap["messages.update"]) {
+    // Evidence first, ownership second, and the order is load-bearing:
+    // isOurSubmittedKey has a side effect. It parks an id it does not recognise
+    // so a send that had not yet learned its generated id can claim it
+    // retroactively -- and that claim is read as an acknowledgement. Running it
+    // ahead of the status check parks ids from updates that are not
+    // acknowledgements at all (an ERROR status, or an edit carrying none), and
+    // /health then reports end-to-end delivery for a message WhatsApp rejected.
+    const acked = data.some(
+      ({ key, update }) =>
+        update?.status !== undefined &&
+        update.status !== null &&
+        update.status >= WAMessageStatus.SERVER_ACK &&
+        this.isOurSubmittedKey(key),
+    );
+    if (acked) {
+      this._lastOutgoingAckAt = Date.now();
+    }
+  }
+
+  // The group half of the same signal. A group message's delivery and read
+  // acknowledgements arrive on message-receipt.update, not messages.update, so a
+  // connection that only ever writes to groups would sit at `unknown` forever no
+  // matter how many recipients confirmed — an inbox whose send path is provably
+  // working, reported as never observed.
+  private trackOutgoingReceiptAck(
+    data: BaileysEventMap["message-receipt.update"],
+  ) {
+    // Same ordering as trackOutgoingAck, and for the same reason: a receipt with
+    // no timestamp on it is not an acknowledgement, and must not park an id that
+    // a later send would then claim as one.
+    const acked = data.some(
+      ({ key, receipt }) =>
+        (receipt?.receiptTimestamp != null ||
+          receipt?.readTimestamp != null ||
+          receipt?.playedTimestamp != null) &&
+        this.isOurSubmittedKey(key),
+    );
+    if (acked) {
+      this._lastOutgoingAckAt = Date.now();
+    }
+  }
+
+  private isOurSubmittedKey(key: WAMessageKey | undefined | null): boolean {
+    if (key?.fromMe !== true || key.id === undefined || key.id === null) {
+      return false;
+    }
+    if (this.submittedMessageIds.has(key.id)) {
+      return true;
+    }
+    // Not ours yet, and it may never be: `fromMe` also covers messages the
+    // operator sent from the phone itself, which must not count as proof that
+    // OUR send path works. But when the caller reserved no messageId we only
+    // learn the generated one once socket.sendMessage resolves, and WhatsApp can
+    // acknowledge before that -- the node is on the wire while the enclosing
+    // keystore transaction is still committing. Held here so trackSubmittedId
+    // can claim it retroactively; if it never does, it decays with the socket.
+    this.rememberUnmatchedAck(key.id);
+    return false;
+  }
+
+  private rememberUnmatchedAck(messageId: string) {
+    if (this.unmatchedAckIds.size >= UNMATCHED_ACK_HISTORY) {
+      const oldest = this.unmatchedAckIds.keys().next().value;
+      if (oldest !== undefined) {
+        this.unmatchedAckIds.delete(oldest);
+      }
+    }
+    this.unmatchedAckIds.set(messageId, Date.now());
   }
 
   private hasAccountRestrictionError(
@@ -1156,6 +2522,7 @@ export class BaileysConnection {
     data: BaileysEventMap["message-receipt.update"],
   ) {
     this.markTraffic();
+    this.trackOutgoingReceiptAck(data);
     this.sendToWebhook({
       event: "message-receipt.update",
       data,

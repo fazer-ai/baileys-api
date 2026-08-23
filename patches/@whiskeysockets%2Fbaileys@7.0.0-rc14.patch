@@ -25,6 +25,30 @@ index ae34a8f315a0b9fd101472cc69e59624c6c63861..c4ddb74ddb49d1e161e6746147fca17e
          logger.error({ err }, `unexpected error in '${msg}'`);
      };
      /** await the next incoming message */
+diff --git a/lib/Types/Auth.d.ts b/lib/Types/Auth.d.ts
+index 035bd00ccc3b640daf417dd581add94dccedc7ac..547d7b265dea2ac2d77876aae8514d8f2193fc97 100644
+--- a/lib/Types/Auth.d.ts
++++ b/lib/Types/Auth.d.ts
+@@ -104,6 +104,19 @@ export type SignalKeyStoreWithTransaction = SignalKeyStore & {
+ export type TransactionCapabilityOptions = {
+     maxCommitRetries: number;
+     delayBetweenTriesMs: number;
++    /** reject after this long WAITING for the transaction mutex; 0 disables */
++    acquireTimeoutMs?: number;
++    /** report a transaction still holding the mutex after this long; 0 disables */
++    holdWarnMs?: number;
++    /** observability hook for mutex wait/hold; see addTransactionCapability */
++    onTransactionEvent?: (event: {
++        phase: 'acquired' | 'released' | 'stalled' | 'timeout';
++        key: string;
++        waitedMs: number;
++        heldMs?: number;
++        originStack?: string;
++        stillLocked?: boolean;
++    }) => void;
+ };
+ export type SignalAuthState = {
+     creds: SignalCreds;
 diff --git a/lib/Types/Message.d.ts b/lib/Types/Message.d.ts
 index 0004fb678bf732ec3fd5ec35ae48594bd5960c43..c0802d9e512724d06ef8f3bdd52f0325853c192f 100644
 --- a/lib/Types/Message.d.ts
@@ -46,11 +70,137 @@ index 0004fb678bf732ec3fd5ec35ae48594bd5960c43..c0802d9e512724d06ef8f3bdd52f0325
  };
  export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
      userJid: string;
+diff --git a/lib/Types/Socket.d.ts b/lib/Types/Socket.d.ts
+index f9623cb6f91b9c9eedfedef730b6d88b319fe06a..7dbf0326c504e509e8620a4ea7442c67e2b77af4 100644
+--- a/lib/Types/Socket.d.ts
++++ b/lib/Types/Socket.d.ts
+@@ -122,7 +122,10 @@ export type SocketConfig = {
+         snapshot: boolean;
+     };
+     /** options for HTTP fetch requests */
+-    options: RequestInit;
++    options: RequestInit & {
++        /** deadline applied per request when the caller passes no `signal` */
++        timeoutMs?: number;
++    };
+     /**
+      * fetch a message from your store
+      * implement this so that messages failed to send
+diff --git a/lib/Utils/auth-utils.js b/lib/Utils/auth-utils.js
+index 24a358326a704e3f95b27ad996d2bc5e8ecfd101..f5a738f2b7d501ece18be53032540b0509bf0cc2 100644
+--- a/lib/Utils/auth-utils.js
++++ b/lib/Utils/auth-utils.js
+@@ -1,7 +1,7 @@
+ import NodeCache from '@cacheable/node-cache';
+ import { Boom } from '@hapi/boom';
+ import { AsyncLocalStorage } from 'async_hooks';
+-import { Mutex } from 'async-mutex';
++import { E_TIMEOUT, Mutex, withTimeout } from 'async-mutex';
+ import { randomBytes } from 'crypto';
+ import PQueue from 'p-queue';
+ import { DEFAULT_CACHE_TTLS } from '../Defaults/index.js';
+@@ -81,7 +81,7 @@ export function makeCacheableSignalKeyStore(store, logger, _cache) {
+  * @param logger logger to log events
+  * @returns SignalKeyStore with transaction capability
+  */
+-export const addTransactionCapability = (state, logger, { maxCommitRetries, delayBetweenTriesMs }) => {
++export const addTransactionCapability = (state, logger, { maxCommitRetries, delayBetweenTriesMs, acquireTimeoutMs = 0, holdWarnMs = 0, onTransactionEvent }) => {
+     const txStorage = new AsyncLocalStorage();
+     // Queues for concurrency control (keyed by signal data type - bounded set)
+     const keyQueues = new Map();
+@@ -236,10 +236,48 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+                 return work();
+             }
+             // New transaction - acquire mutex and create context
+-            const mutex = getTxMutex(key);
++            const rawMutex = getTxMutex(key);
+             acquireTxMutexRef(key);
++            // Captured out here, not inside runExclusive: once we are in the
++            // callback the async stack no longer names the caller, and naming
++            // the caller is the whole point of the stall diagnostic. Several
++            // operations share the key `meId`, so "who is holding it" is the
++            // one question the logs cannot otherwise answer.
++            const originStack = onTransactionEvent ? new Error('tx origin').stack : undefined;
++            const waitStartedAt = Date.now();
++            // Bounded ACQUISITION only, never a deadline on `work` itself:
++            // abandoning a transaction mid-flight would leave Signal ratchet
++            // state advanced in memory but uncommitted, which corrupts the
++            // session and costs a re-pair. A waiter that times out here never
++            // entered txStorage.run, so it touched no state at all.
++            const mutex = acquireTimeoutMs > 0 ? withTimeout(rawMutex, acquireTimeoutMs) : rawMutex;
+             try {
+                 return await mutex.runExclusive(async () => {
++                    const waitedMs = Date.now() - waitStartedAt;
++                    const heldStartedAt = Date.now();
++                    // A wedged holder never reaches any finally, so hold time
++                    // can only be observed from a timer armed on acquisition.
++                    // Re-arms with doubling so a six-hour stall logs a handful
++                    // of lines instead of hundreds.
++                    let stallTimer;
++                    const armStall = (delayMs) => {
++                        if (!(holdWarnMs > 0) || !onTransactionEvent) {
++                            return;
++                        }
++                        stallTimer = setTimeout(() => {
++                            onTransactionEvent({
++                                phase: 'stalled',
++                                key,
++                                waitedMs,
++                                heldMs: Date.now() - heldStartedAt,
++                                originStack
++                            });
++                            armStall(Math.min(delayMs * 2, 300000));
++                        }, delayMs);
++                        stallTimer.unref?.();
++                    };
++                    armStall(holdWarnMs);
++                    onTransactionEvent?.({ phase: 'acquired', key, waitedMs });
+                     const ctx = {
+                         cache: {},
+                         mutations: {},
+@@ -257,8 +295,37 @@ export const addTransactionCapability = (state, logger, { maxCommitRetries, dela
+                         logger.error({ error }, 'transaction failed, rolling back');
+                         throw error;
+                     }
++                    finally {
++                        clearTimeout(stallTimer);
++                        onTransactionEvent?.({
++                            phase: 'released',
++                            key,
++                            waitedMs,
++                            heldMs: Date.now() - heldStartedAt
++                        });
++                    }
+                 });
+             }
++            catch (error) {
++                if (error === E_TIMEOUT) {
++                    const waitedMs = Date.now() - waitStartedAt;
++                    onTransactionEvent?.({
++                        phase: 'timeout',
++                        key,
++                        waitedMs,
++                        originStack,
++                        stillLocked: rawMutex.isLocked()
++                    });
++                    // E_TIMEOUT is a module-level singleton Error in async-mutex:
++                    // no stack, no key, and mutable by whoever catches it. Always
++                    // wrap so the failure carries which key timed out.
++                    throw new Boom(`keystore transaction timed out acquiring lock for key=${key} after ${acquireTimeoutMs}ms`, {
++                        statusCode: 503,
++                        data: { key, acquireTimeoutMs, waitedMs, code: 'E_TX_MUTEX_TIMEOUT' }
++                    });
++                }
++                throw error;
++            }
+             finally {
+                 releaseTxMutexRef(key);
+             }
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf71e7be00 100644
+index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9ff8f009d 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
-@@ -1,6 +1,52 @@
+@@ -1,6 +1,62 @@
  import { prepareWAMessageMedia } from './messages.js';
  import { extractImageThumb, getHttpStream } from './messages-media.js';
  const THUMBNAIL_WIDTH_PX = 192;
@@ -80,7 +230,17 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf
 +        throw new Error('Invalid YouTube URL');
 +    }
 +    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`;
-+    const response = await fetch(oembedUrl, fetchOpts);
++    // Native fetch ignores both budgets the caller passes here: the lib's own
++    // `timeout` (3000, set in messages-send.js) and our `timeoutMs`. Unbounded,
++    // a parked oEmbed request holds the send until the app-level deadline gives
++    // up, counts a stall strike against a keystore that is perfectly healthy,
++    // and leaks the request forever. Prefer the lib's tighter link-preview
++    // budget: a preview is worth 3s, not two minutes of the caller's send.
++    const previewTimeoutMs = fetchOpts?.timeout ?? fetchOpts?.timeoutMs;
++    const response = await fetch(oembedUrl, {
++        ...fetchOpts,
++        signal: fetchOpts?.signal ?? (previewTimeoutMs ? AbortSignal.timeout(previewTimeoutMs) : undefined)
++    });
 +    if (!response.ok) {
 +        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
 +    }
@@ -103,7 +263,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf
  /** Fetches an image and generates a thumbnail for it */
  const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
      const stream = await getHttpStream(url, fetchOpts);
-@@ -26,27 +72,36 @@ export const getUrlInfo = async (text, opts = {
+@@ -26,27 +82,36 @@ export const getUrlInfo = async (text, opts = {
          if (!text.startsWith('https://') && !text.startsWith('http://')) {
              previewLink = 'https://' + previewLink;
          }
@@ -161,6 +321,38 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..740c45d80b39355b4585e2af5f808aaf
          if (info && 'title' in info && info.title) {
              const [image] = info.images;
              const urlInfo = {
+diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
+index a3d2fa6bae6af021a4a50b4270584fed08623f34..42b1f21786dd0d7bce3a09af35492a6c44516597 100644
+--- a/lib/Utils/messages-media.js
++++ b/lib/Utils/messages-media.js
+@@ -295,10 +295,26 @@ export async function generateThumbnail(file, mediaType, options) {
+     };
+ }
+ export const getHttpStream = async (url, options = {}) => {
++    // A parked TLS stream (headers sent, body never advances, no FIN) otherwise
++    // hangs this await forever. On the app-state path this runs inside the
++    // keystore transaction keyed by our own JID, so one stuck download wedges
++    // every send on the connection with no error, no log and no close -- the
++    // silent send stall. `timeoutMs` comes from the socket's `options` config,
++    // so the deadline stays policy-in-app and this patch stays mechanism-only.
++    // `timeout` first: link previews pass BOTH (messages-send.js builds
++    // `{ timeout: 3000, ...httpRequestOptions }`), and the tighter one is the
++    // right budget there -- a thumbnail is worth 3s, not two minutes of the
++    // caller's send, which would outlive the app-level send deadline and spend a
++    // stall strike on a keystore that is perfectly healthy. The app-state and
++    // media paths pass only `timeoutMs`, so they are unaffected.
++    const deadlineMs = options.timeout ?? options.timeoutMs;
++    const signal = options.signal ??
++        (deadlineMs ? AbortSignal.timeout(deadlineMs) : undefined);
+     const response = await fetch(url.toString(), {
+         dispatcher: options.dispatcher,
+         method: 'GET',
+-        headers: options.headers
++        headers: options.headers,
++        signal
+     });
+     if (!response.ok) {
+         throw new Boom(`Failed to fetch stream from ${url}`, { statusCode: response.status, data: { url } });
 diff --git a/lib/Utils/messages.js b/lib/Utils/messages.js
 index 247b1f12d912923d4ad032e6572fc76cd958e51b..284bb717c9f34a8580d1d14f1a4014df2e8a9aff 100644
 --- a/lib/Utils/messages.js
