@@ -3208,6 +3208,57 @@ describe("BaileysConnection", () => {
       expect(connection.lastOutgoingAckAt).not.toBeNull();
     });
 
+    // A parked ack can be claimed long after it arrived: the send it belongs to
+    // may take the full send timeout to resolve, and other sends acknowledge in
+    // between. Writing the older timestamp over the newer one makes /health
+    // report a send path staler than it is -- a false alarm on the one signal
+    // that does not come from us.
+    it("does not roll the newest acknowledgement backwards", async () => {
+      await connectOpen();
+
+      let resolveFirst: ((value: unknown) => void) | undefined;
+      mockSocket.sendMessage.mockImplementationOnce(() => {
+        // WhatsApp acknowledges the first send before it resolves.
+        mockEventHandlers.get("messages.update")?.([
+          {
+            key: { fromMe: true, id: "GENERATED-FIRST" },
+            update: { status: WAMessageStatus.SERVER_ACK },
+          },
+        ]);
+        return new Promise((resolve) => {
+          resolveFirst = () => resolve({ key: { id: "GENERATED-FIRST" } });
+        });
+      });
+      const first = connection.sendMessage("jid@s.whatsapp.net", {
+        text: "one",
+      });
+      await new Promise((r) => setTimeout(r, 5));
+      // Nothing claimed yet: the id is still unknown to us.
+      expect(connection.lastOutgoingAckAt).toBeNull();
+
+      // A second send goes out and is acknowledged, all while the first is still
+      // resolving.
+      await connection.sendMessage(
+        "jid@s.whatsapp.net",
+        { text: "two" },
+        { messageId: "RESERVED-SECOND" },
+      );
+      mockEventHandlers.get("messages.update")?.([
+        {
+          key: { fromMe: true, id: "RESERVED-SECOND" },
+          update: { status: WAMessageStatus.SERVER_ACK },
+        },
+      ]);
+      const newest = connection.lastOutgoingAckAt;
+      expect(newest).not.toBeNull();
+
+      // Only now does the first send resolve and claim its parked ack.
+      resolveFirst?.(undefined);
+      await first;
+
+      expect(connection.lastOutgoingAckAt).toBe(newest);
+    });
+
     // A receipt with no timestamp on it is not an acknowledgement either.
     it("does not claim an empty receipt as an acknowledgement", async () => {
       await connectOpen();

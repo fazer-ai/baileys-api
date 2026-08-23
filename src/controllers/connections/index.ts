@@ -553,6 +553,21 @@ const connectionsController = new Elysia({
       // The value, not a flag, because retracting it later has to prove the
       // marker is still the one this attempt wrote.
       let indeterminateMarker: string | null = null;
+      // Whether the parked send has been proved never to have reached WhatsApp.
+      // Kept as state rather than acted on inline because the two events race:
+      // markIndeterminate is a Redis round trip, and the parked send can reject
+      // inside it. A verdict that arrives first would otherwise find no marker,
+      // return, and leave the marker that lands a moment later standing for 24h
+      // over an outcome that is no longer unknown.
+      let knownNotSent = false;
+      const retractIndeterminate = () => {
+        if (!idempotencyKey || !knownNotSent || indeterminateMarker === null) {
+          return;
+        }
+        const marker = indeterminateMarker;
+        indeterminateMarker = null;
+        void clearIndeterminate(idempotencyKey, marker);
+      };
       let result: Awaited<ReturnType<typeof withIdempotency>>;
       try {
         result = await withIdempotency(
@@ -573,17 +588,14 @@ const connectionsController = new Elysia({
               // and it is what makes an operator's resend of this same message
               // answer 409 for 24h. Retract it: with the send known not to have
               // happened, that resend is exactly the right thing.
+              // Both sides call the same retraction, and it fires on whichever
+              // arrives second. Nothing is retracted while no marker of ours has
+              // landed -- deleting on that evidence would strip another attempt's
+              // marker off an outcome that is still unknown.
               onLateDefinitiveFailure: idempotencyKey
                 ? () => {
-                    // Nothing to retract if no marker of ours ever landed -- and
-                    // deleting on that evidence would strip a retry's own marker
-                    // off an outcome that is still unknown.
-                    if (indeterminateMarker) {
-                      void clearIndeterminate(
-                        idempotencyKey,
-                        indeterminateMarker,
-                      );
-                    }
+                    knownNotSent = true;
+                    retractIndeterminate();
                   }
                 : undefined,
             });
@@ -608,6 +620,7 @@ const connectionsController = new Elysia({
               e instanceof OperationTimeoutError && !messageId,
             onIndeterminate: (marker) => {
               indeterminateMarker = marker;
+              retractIndeterminate();
             },
           },
         );
@@ -639,7 +652,12 @@ const connectionsController = new Elysia({
         // stop the next attempt from sending a second message, and `retry-after`
         // is an instruction to make one.
         const sendPathResponse = sendPathErrorResponse(e, {
-          retrySafe: Boolean(messageId) || indeterminateMarker !== null,
+          // knownNotSent counts as protection in its own right, and is the
+          // strongest of the three: the send provably did not happen, so a retry
+          // cannot duplicate anything. It also covers the case where the verdict
+          // beat the marker and the retraction above already ran.
+          retrySafe:
+            Boolean(messageId) || knownNotSent || indeterminateMarker !== null,
         });
         if (sendPathResponse) {
           return sendPathResponse;

@@ -360,7 +360,13 @@ export class BaileysConnection {
     const ackedAt = this.unmatchedAckIds.get(messageId);
     if (ackedAt !== undefined) {
       this.unmatchedAckIds.delete(messageId);
-      this._lastOutgoingAckAt = ackedAt;
+      // Never backwards. A parked ack can be claimed long after it arrived --
+      // the send it belongs to may have taken hours to resolve -- and other
+      // sends acknowledge in the meantime. Writing the older timestamp over the
+      // newer one makes /health report a send path staler than it is, which for
+      // a signal whose whole job is "when did WhatsApp last confirm anything"
+      // is the one direction that raises a false alarm.
+      this._lastOutgoingAckAt = Math.max(this._lastOutgoingAckAt ?? 0, ackedAt);
     }
   }
 

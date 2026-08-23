@@ -940,21 +940,22 @@ export class ClusterCoordinator {
     // reverting the reconfiguration -- the same hazard, and the same answer, as
     // the watchdog's requestRestart. Read at the last statement before the call
     // so no await of ours sits between it and the spawn.
-    const live = this.handler.currentConnectionOptions(phoneNumber);
+    const spawnOptions = (): BaileysConnectionOptions | null => {
+      if (this.heldLeaseEpochs.get(phoneNumber) !== acquired.epoch) {
+        return null;
+      }
+      const live = this.handler.currentConnectionOptions(phoneNumber);
+      return {
+        ...(live ?? metadata),
+        isReconnect: true,
+        leaseEpoch: acquired.epoch,
+        forceRestart: true,
+      };
+    };
     const proceeded = await this.runUnderExplicitLease(
       phoneNumber,
       acquired.epoch,
-      () =>
-        this.handler.connect(
-          phoneNumber,
-          {
-            ...(live ?? metadata),
-            isReconnect: true,
-            leaseEpoch: acquired.epoch,
-            forceRestart: true,
-          },
-          () => this.heldLeaseEpochs.get(phoneNumber) === acquired.epoch,
-        ),
+      () => this.handler.connect(phoneNumber, spawnOptions),
     );
     // "superseded", not "not-found": the guard only vetoes when a newer explicit
     // operation took the lease, which usually leaves a perfectly good session

@@ -297,23 +297,23 @@ export class BaileysConnectionsHandler {
           // that window clears the stall, which clears restartPending. Without
           // it the watchdog kills a socket that has already recovered and spends
           // a backoff strike doing so.
-          const stillOurs = () =>
-            this.connections[phoneNumber] === connection &&
-            connection.restartPending;
           // connection.currentOptions, never the captured `options`: a later
           // POST /connections reuses a live connection and updates its webhook
           // config and lease epoch in place, so the closure's copy can be
           // stale — and connect() would persist that stale copy back to Redis,
-          // reverting the reconfiguration.
-          void this.connect(
-            phoneNumber,
-            {
-              ...connection.currentOptions,
-              isReconnect: true,
-              forceRestart: true,
-            },
-            stillOurs,
-          )
+          // reverting the reconfiguration. Read inside the resolver rather than
+          // at the call, so it is read AFTER the drain: the reconfiguration can
+          // land while this restart is queued behind the slot.
+          const stillOurs = () =>
+            this.connections[phoneNumber] === connection &&
+            connection.restartPending
+              ? {
+                  ...connection.currentOptions,
+                  isReconnect: true,
+                  forceRestart: true,
+                }
+              : null;
+          void this.connect(phoneNumber, stillOurs)
             .then(async (started) => {
               // connect() resolves false when stillOurs vetoed it after draining
               // the slot -- i.e. the connection recovered while this restart was
@@ -385,8 +385,18 @@ export class BaileysConnectionsHandler {
   // deleted while it queued.
   async connect(
     phoneNumber: string,
-    options: BaileysConnectionOptions,
-    shouldProceed?: () => boolean,
+    // A value, or a resolver run after every drain that returns the options to
+    // spawn with (or null to veto). The resolver form exists because a caller's
+    // snapshot can be superseded while this connect queues: an explicit
+    // operation holding the per-phone slot updates the live connection's webhook
+    // config in place, and spawning from the older copy persists it back over
+    // the reconfiguration.
+    //
+    // A resolver must be SYNCHRONOUS, and that is load-bearing. Nothing may
+    // await between the drain exiting and spawnConnection assigning the slot --
+    // that stretch is what makes withInFlightOp's "nothing can run in between"
+    // true.
+    options: BaileysConnectionOptions | (() => BaileysConnectionOptions | null),
   ): Promise<boolean> {
     // Loops because every decision must be re-validated after an await:
     //   1. Drain any in-flight connect for this number (multiple callers can
@@ -398,17 +408,19 @@ export class BaileysConnectionsHandler {
     //      replacement (two callers hitting the same stale connection would
     //      otherwise both spawn parallel sockets with the same identity).
     //   3. Otherwise spawn a new connection.
-    const { forceRestart, ...connectOptions } = options;
     for (;;) {
       while (this.inFlightOps[phoneNumber]) {
         await this.inFlightOps[phoneNumber].catch(() => {});
       }
 
       // Before reading `existing`, and after every drain: whatever ran while we
-      // waited may have made this connect the wrong thing to do.
-      if (shouldProceed && !shouldProceed()) {
+      // waited may have made this connect the wrong thing to do, or changed what
+      // it should be done with.
+      const resolved = typeof options === "function" ? options() : options;
+      if (resolved === null) {
         return false;
       }
+      const { forceRestart, ...connectOptions } = resolved;
 
       const existing = this.connections[phoneNumber];
 

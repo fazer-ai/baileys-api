@@ -402,6 +402,56 @@ describe("connectionsController send-message", () => {
     }
   });
 
+  // The two events race. markIndeterminate is a Redis round trip, and the parked
+  // send can reject inside it -- so the "never sent" verdict can arrive while
+  // there is still no marker to retract. Acting on it inline would leave the
+  // marker that lands a moment later standing for 24h over an outcome that is no
+  // longer unknown, 409ing the operator's resend of a message that never went.
+  it("retracts a marker installed after the never-sent verdict arrived", async () => {
+    const stringData = (redis as any).__stringData as Map<string, string>;
+    stringData.clear();
+    const spy = spyOn(baileys, "sendMessage").mockImplementation(
+      async (
+        _phone: string,
+        args: { onLateDefinitiveFailure?: () => void },
+      ) => {
+        // The verdict beats the marker: it fires while withIdempotency is still
+        // on its way to writing one.
+        args.onLateDefinitiveFailure?.();
+        throw new OperationTimeoutError("sendMessage", 45_000);
+      },
+    );
+
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+
+      await new Promise((r) => setTimeout(r, 5));
+      const key = "@baileys-api:idempotency:send-message:+551234567890:42";
+      expect(stringData.has(key)).toBe(false);
+
+      // And the answer says a retry is safe, because the send provably did not
+      // happen.
+      expect(res.status).toBe(504);
+      expect(res.headers.get("retry-after")).toBe("60");
+
+      // The resend goes through instead of meeting a 409.
+      spy.mockImplementation(async () => ({
+        key: { id: "3EB0AGAIN" },
+        messageTimestamp: 1,
+      }));
+      const resend = await app.handle(
+        sendMessageRequest("+551234567890", { chatwootMessageId: "42" }),
+      );
+      expect(resend.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+      stringData.clear();
+    }
+  });
+
   // With a reserved messageId the resend lands on the same WhatsApp key.id, so
   // WhatsApp dedupes it and releasing the lock is strictly safe.
   it("releases the idempotency lock on timeout when a messageId was reserved", async () => {

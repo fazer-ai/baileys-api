@@ -87,7 +87,7 @@ function makeHandlerMock() {
     // Returns true like the real connect: false means only "shouldProceed vetoed
     // it", and a double that answered undefined would report every restart as
     // skipped.
-    connect: mock(async (phone: string) => {
+    connect: mock(async (phone: string, _options?: unknown) => {
       connections.add(phone);
       return true;
     }),
@@ -928,6 +928,16 @@ describe("ClusterCoordinator", () => {
   });
 
   describe("#restartWithLease", () => {
+    // handler.connect now takes a resolver rather than a value: it is invoked
+    // after the drain, which is the point of it. Invoking it here is what the
+    // real connect does.
+    const spawnedWith = (handler: HandlerMock) => {
+      const resolve = handler.connect.mock
+        .calls[0]?.[1] as unknown as () => Record<string, unknown> | null;
+      expect(typeof resolve).toBe("function");
+      return resolve();
+    };
+
     const storedMetadata = {
       webhookUrl: "https://stored.example/hook",
       webhookVerifyToken: "stored-token",
@@ -943,16 +953,12 @@ describe("ClusterCoordinator", () => {
 
       expect(restarted).toBe("restarted");
       expect(forceAcquireLease).toHaveBeenCalledWith("+5511999");
-      expect(handler.connect).toHaveBeenCalledWith(
-        "+5511999",
-        {
-          ...storedMetadata,
-          isReconnect: true,
-          leaseEpoch: 1,
-          forceRestart: true,
-        },
-        expect.any(Function),
-      );
+      expect(spawnedWith(handler)).toEqual({
+        ...storedMetadata,
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
     });
 
     // The lease fences other instances and nothing else. A POST /connections
@@ -979,18 +985,46 @@ describe("ClusterCoordinator", () => {
       const restarted = await coordinator.restartWithLease("+5511999");
 
       expect(restarted).toBe("restarted");
-      expect(handler.connect).toHaveBeenCalledWith(
-        "+5511999",
-        {
-          webhookUrl: "https://reconfigured.example/hook",
-          webhookVerifyToken: "new-token",
-          clientName: "Stored Client",
-          isReconnect: true,
-          leaseEpoch: 1,
-          forceRestart: true,
-        },
-        expect.any(Function),
-      );
+      expect(spawnedWith(handler)).toEqual({
+        webhookUrl: "https://reconfigured.example/hook",
+        webhookVerifyToken: "new-token",
+        clientName: "Stored Client",
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
+    });
+
+    // The snapshot the restart takes before calling connect is not the last word:
+    // connect drains the per-phone slot first, and an explicit operation holding
+    // it can reconfigure the live connection in that window. Since it acquired an
+    // OLDER epoch, the lease guard does not veto this restart either -- so the
+    // options have to be read again on the other side of the drain.
+    it("re-reads the live options after the drain, not only before it", async () => {
+      const handler = makeHandlerMock();
+      const coordinator = makeCoordinator(handler);
+      getRedisAuthMetadata.mockResolvedValue(storedMetadata);
+      handler.connections.add("+5511999");
+      handler.liveOptions.set("+5511999", {
+        webhookUrl: "https://before-drain.example/hook",
+        webhookVerifyToken: "old-token",
+      });
+
+      await coordinator.restartWithLease("+5511999");
+
+      // The reconfiguration lands while this restart is parked on the slot.
+      handler.liveOptions.set("+5511999", {
+        webhookUrl: "https://after-drain.example/hook",
+        webhookVerifyToken: "new-token",
+      });
+
+      expect(spawnedWith(handler)).toEqual({
+        webhookUrl: "https://after-drain.example/hook",
+        webhookVerifyToken: "new-token",
+        isReconnect: true,
+        leaseEpoch: 1,
+        forceRestart: true,
+      });
     });
 
     // The checks above ran before this restart queued behind the handler's per-phone
@@ -1004,20 +1038,13 @@ describe("ClusterCoordinator", () => {
 
       await coordinator.restartWithLease("+5511999", "stall");
 
-      const shouldProceed = (
-        handler.connect.mock.calls[0] as unknown as [
-          string,
-          Record<string, unknown>,
-          () => boolean,
-        ]
-      )[2];
-      expect(shouldProceed()).toBe(true);
+      expect(spawnedWith(handler)).not.toBeNull();
 
       // Whatever ran while we were parked force-acquired its own lease.
       (
         coordinator as unknown as { heldLeaseEpochs: Map<string, number> }
       ).heldLeaseEpochs.set("+5511999", 2);
-      expect(shouldProceed()).toBe(false);
+      expect(spawnedWith(handler)).toBeNull();
     });
 
     // heldLeaseEpochs stops describing THIS operation the moment a concurrent explicit
@@ -1134,14 +1161,10 @@ describe("ClusterCoordinator", () => {
 
       await coordinator.restartWithLease("+5511999");
 
-      expect(handler.connect).toHaveBeenCalledWith(
-        "+5511999",
-        expect.objectContaining({
-          webhookUrl: storedMetadata.webhookUrl,
-          webhookVerifyToken: storedMetadata.webhookVerifyToken,
-        }),
-        expect.any(Function),
-      );
+      expect(spawnedWith(handler)).toMatchObject({
+        webhookUrl: storedMetadata.webhookUrl,
+        webhookVerifyToken: storedMetadata.webhookVerifyToken,
+      });
     });
 
     // The lease is taken BEFORE the session is inspected, and given back when there
