@@ -65,6 +65,7 @@ describe("BaileysConnection", () => {
     mockSocket.groupToggleEphemeral.mockClear();
     mockSocket.groupFetchAllParticipating.mockClear();
     mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
+    mockSocket.signalRepository.lidMapping.getLIDForPN.mockClear();
 
     // Clear redis state
     (redis as any).__hashData.clear();
@@ -3460,6 +3461,69 @@ describe("BaileysConnection", () => {
       const keys = [{ id: "msg-1" }];
       await connection.readMessages(keys as any);
       expect(mockSocket.readMessages).toHaveBeenCalledWith(keys);
+    });
+  });
+
+  // A `<phone>@lid` address is one callers build by appending the suffix to whatever id
+  // they hold, and WhatsApp answers it with silence rather than an error -- which reads
+  // downstream as a chat with no history left.
+  describe("#fetchMessageHistory addressing", () => {
+    const anchor = { id: "MSG", fromMe: false };
+
+    beforeEach(async () => {
+      await connection.connect();
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
+      mockSocket.signalRepository.lidMapping.getLIDForPN.mockClear();
+    });
+
+    const fetchFrom = async (remoteJid: string) => {
+      mockSocket.fetchMessageHistory.mockClear();
+      await connection.fetchMessageHistory(50, { ...anchor, remoteJid }, 1000);
+      return mockSocket.fetchMessageHistory.mock.calls.at(-1)?.[1].remoteJid;
+    };
+
+    it("keeps a LID the mapping store recognises", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        "5517996808833:0@s.whatsapp.net",
+      );
+
+      expect(await fetchFrom("123583875535016@lid")).toBe(
+        "123583875535016@lid",
+      );
+    });
+
+    it("swaps a phone number wearing the LID suffix for its real LID", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        null,
+      );
+      mockSocket.signalRepository.lidMapping.getLIDForPN.mockResolvedValueOnce(
+        "167392323834034@lid",
+      );
+
+      expect(await fetchFrom("553499503261@lid")).toBe("167392323834034@lid");
+    });
+
+    it("leaves the address alone when neither direction is known", async () => {
+      expect(await fetchFrom("999@lid")).toBe("999@lid");
+    });
+
+    it("does not look up an address that is not a LID", async () => {
+      expect(await fetchFrom("553499503261@s.whatsapp.net")).toBe(
+        "553499503261@s.whatsapp.net",
+      );
+      expect(
+        mockSocket.signalRepository.lidMapping.getPNForLID,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the address it was given when the store throws", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockRejectedValueOnce(
+        new Error("store down"),
+      );
+
+      expect(await fetchFrom("123583875535016@lid")).toBe(
+        "123583875535016@lid",
+      );
     });
   });
 

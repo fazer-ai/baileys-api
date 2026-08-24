@@ -546,6 +546,7 @@ function createMockSocket() {
     signalRepository: {
       lidMapping: {
         getPNForLID: mock(async () => null),
+        getLIDForPN: mock(async () => null),
       },
     },
   };
