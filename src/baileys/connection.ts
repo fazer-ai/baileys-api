@@ -24,6 +24,7 @@ import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMe
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
 import {
   type BaileysHistoryFramePayload,
+  exhaustedChats,
   historyFrames,
 } from "@/baileys/helpers/historySync";
 import {
@@ -2599,17 +2600,23 @@ export class BaileysConnection {
     data: BaileysEventMap["messaging-history.set"],
   ) {
     const messages = data.messages ?? [];
-    if (messages.length === 0) {
+    // The one thing worth keeping from the chat records: which chats have
+    // nothing older left. An answer that still has history behind it carries no
+    // chat record at all, so an empty list here means "no news", never "there
+    // is more".
+    const exhausted = exhaustedChats(data.chats ?? []);
+    if (messages.length === 0 && exhausted.length === 0) {
       return;
     }
 
     logger.info(
-      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s",
+      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s exhausted=%d",
       this.phoneNumber,
       data.syncType ?? "-",
       messages.length,
       data.isLatest ?? "-",
       data.progress ?? "-",
+      exhausted.length,
     );
 
     let chunkIndex = 0;
@@ -2623,11 +2630,30 @@ export class BaileysConnection {
         progress: data.progress,
         isLatest: data.isLatest,
         chunkIndex,
+        ...(chunkIndex === 0 && exhausted.length > 0 ? { exhausted } : {}),
       };
       chunkIndex += 1;
       await this.sendToWebhook({
         event: "messaging-history.set",
         data: payload,
+      });
+    }
+
+    // A chat with nothing left answers with an anchor and a flag, but nothing
+    // promises it answers with a message at all, and `historyFrames` yields
+    // nothing for an empty list. The flag is the whole point of that answer, so
+    // it goes out on its own rather than being lost with the empty slice.
+    if (chunkIndex === 0) {
+      await this.sendToWebhook({
+        event: "messaging-history.set",
+        data: {
+          messages: [],
+          syncType: data.syncType,
+          progress: data.progress,
+          isLatest: data.isLatest,
+          chunkIndex: 0,
+          exhausted,
+        },
       });
     }
   }

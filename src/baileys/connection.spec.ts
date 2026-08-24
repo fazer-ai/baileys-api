@@ -4534,6 +4534,59 @@ describe("BaileysConnection", () => {
       expect(historyPayloads()).toHaveLength(0);
     });
 
+    // The only way WhatsApp ever says a chat is finished, and it says it on the
+    // answer to an on-demand request and nowhere else. Discarding it left the
+    // caller unable to tell "nothing older exists" from "the request went
+    // nowhere", which is what a misaddressed request also looks like.
+    describe("the chat-is-finished flag", () => {
+      it("carries the flagged chats on the first frame", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid", endOfHistoryTransferType: 1 }],
+          contacts: [],
+          messages: [historyMessage("ID-1")],
+          syncType: 6,
+        });
+
+        expect(historyPayloads()[0].exhausted).toEqual(["5511888@lid"]);
+      });
+
+      it("sends the flag even when the answer carries no message", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid", endOfHistoryTransferType: 1 }],
+          contacts: [],
+          messages: [],
+          syncType: 6,
+        });
+
+        const payloads = historyPayloads();
+        expect(payloads).toHaveLength(1);
+        expect(payloads[0].messages).toEqual([]);
+        expect(payloads[0].exhausted).toEqual(["5511888@lid"]);
+      });
+
+      // An answer that still has history behind it ships no chat record at all,
+      // so silence on this field is "no news", not "there is more".
+      it("says nothing when no chat was flagged", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid" }],
+          contacts: [],
+          messages: [historyMessage("ID-1")],
+          syncType: 6,
+        });
+
+        expect(historyPayloads()[0].exhausted).toBeUndefined();
+      });
+    });
+
     it("splits a large dump into frames under the budget, numbered in order", async () => {
       const previousBudget = config.webhook.historyFrameMaxBytes;
       config.webhook.historyFrameMaxBytes = 2_048;

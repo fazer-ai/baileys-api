@@ -96,10 +96,32 @@ export function* historyFrames<T>(
   }
 }
 
-// What the client is told about a history dump. The chats, contacts and
-// participant lists Baileys ships alongside the messages are dropped: nothing
-// reads them, and on a mature account they are a second dump the size of the
-// first.
+// The chat is done: WhatsApp holds nothing older than what it just sent. Named
+// after the protobuf value it comes from,
+// `Conversation.EndOfHistoryTransferType.COMPLETE_AND_NO_MORE_MESSAGE_REMAIN_ON_PRIMARY`.
+export const NO_MORE_HISTORY = 1;
+
+// The jids of the chats in this dump that WhatsApp flagged as having nothing
+// older left, which is the only way it ever says so.
+//
+// It says it on the answer to an on-demand request and nowhere else: the chat
+// records in a bootstrap dump never carry the value. And it is the presence of
+// a chat record that carries the meaning -- an answer that still has history
+// behind it ships the messages with no chat record at all, so the two cases are
+// told apart by whether a record arrived, not by reading a field off one.
+export function exhaustedChats(
+  chats: { id?: string | null; endOfHistoryTransferType?: number | null }[],
+): string[] {
+  return chats
+    .filter((chat) => chat.endOfHistoryTransferType === NO_MORE_HISTORY)
+    .map((chat) => chat.id)
+    .filter((id): id is string => Boolean(id));
+}
+
+// What the client is told about a history dump. The contacts and participant
+// lists Baileys ships alongside the messages are dropped: nothing reads them,
+// and on a mature account they are a second dump the size of the first. The
+// chats are dropped too, except for the one bit above.
 export interface BaileysHistoryFramePayload {
   messages: proto.IWebMessageInfo[];
   // proto.HistorySync.HistorySyncType. Decides whether the dump is an offline
@@ -114,4 +136,8 @@ export interface BaileysHistoryFramePayload {
   // There is no total: the frames are produced lazily, so the count is not
   // known until the last one has been sent.
   chunkIndex: number;
+  // Chats WhatsApp flagged as having nothing older left. Sent on the first
+  // frame only: it describes the answer, not the slice of messages this frame
+  // happens to carry.
+  exhausted?: string[];
 }

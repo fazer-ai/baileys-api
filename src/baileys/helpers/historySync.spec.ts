@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { historyFrames, stripHistoryPayload } from "./historySync";
+import {
+  exhaustedChats,
+  historyFrames,
+  NO_MORE_HISTORY,
+  stripHistoryPayload,
+} from "./historySync";
 
 function textMessage(id: string, text: string) {
   return {
@@ -142,5 +147,31 @@ describe("historyFrames", () => {
 
     expect(frames).toHaveLength(1);
     expect(frames[0]).toHaveLength(10);
+  });
+});
+
+describe("which chats WhatsApp says are finished", () => {
+  it("names the chats flagged as having nothing older", () => {
+    expect(
+      exhaustedChats([
+        { id: "a@lid", endOfHistoryTransferType: NO_MORE_HISTORY },
+        { id: "b@lid", endOfHistoryTransferType: 0 },
+        { id: "c@lid" },
+      ]),
+    ).toEqual(["a@lid"]);
+  });
+
+  // The value it never sends on a bootstrap dump, and the one a proto default
+  // reads as when the field was simply absent.
+  it("does not read the enum default as an answer", () => {
+    expect(
+      exhaustedChats([{ id: "a@lid", endOfHistoryTransferType: 0 }]),
+    ).toEqual([]);
+  });
+
+  it("ignores a flagged chat with no id to name it by", () => {
+    expect(
+      exhaustedChats([{ endOfHistoryTransferType: NO_MORE_HISTORY }]),
+    ).toEqual([]);
   });
 });
