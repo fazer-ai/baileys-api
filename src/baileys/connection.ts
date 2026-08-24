@@ -11,7 +11,7 @@ import makeWASocket, {
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type ParticipantAction,
-  type proto,
+  proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
   type WAMessage,
@@ -22,6 +22,11 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
+import {
+  type BaileysHistoryFramePayload,
+  exhaustedChats,
+  historyFrames,
+} from "@/baileys/helpers/historySync";
 import {
   isTxMutexTimeout,
   txMutexTimeoutKey,
@@ -659,6 +664,17 @@ export class BaileysConnection {
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
+      // The lib's default is `syncType !== FULL`, which drops the very dump
+      // `syncFullHistory` asks the phone for: WhatsApp sends the FULL
+      // notification and Baileys discards it before decoding, so the option
+      // buys a bootstrap and an offline replay and nothing deeper. Measured on
+      // a real pairing: six notifications sent (one per syncType), two
+      // delivered. Accepting FULL is therefore what `syncFullHistory: true`
+      // was always supposed to mean; with it off the default stands and the
+      // deep archive is refused, which is the privacy behaviour we want.
+      shouldSyncHistoryMessage: ({ syncType }) =>
+        this.syncFullHistory ||
+        syncType !== proto.HistorySync.HistorySyncType.FULL,
       shouldIgnoreJid,
       version,
       // Deadline for the lib's own HTTP downloads. Read by the patched
@@ -1862,16 +1878,50 @@ export class BaileysConnection {
     return this.safeSocket().chatModify(mod, jid);
   }
 
-  fetchMessageHistory(
+  async fetchMessageHistory(
     count: number,
     oldestMsgKey: proto.IMessageKey,
     oldestMsgTimestamp: number,
   ) {
+    const remoteJid = await this.historyJid(oldestMsgKey.remoteJid ?? "");
+
     return this.safeSocket().fetchMessageHistory(
       count,
-      oldestMsgKey,
+      { ...oldestMsgKey, remoteJid },
       oldestMsgTimestamp,
     );
+  }
+
+  // The chat as WhatsApp will actually answer for, which is not always the one we were
+  // handed. Callers build a `@lid` address by appending the suffix to whatever id they
+  // hold for the contact, so a chat that reached them by phone arrives as `<phone>@lid` --
+  // an address no account answers to. WhatsApp does not reject it, it simply never
+  // replies, and silence here is indistinguishable from a chat with nothing left to give:
+  // the request looks answered-and-empty rather than misaddressed.
+  //
+  // The mapping store WhatsApp itself populates settles it, and the two lookups are
+  // exactly complementary: a real LID resolves to a phone and has no LID of its own, a
+  // phone resolves to a LID and has no phone. Measured on a live account across four
+  // chats, every one answered on exactly one side. Where neither answers the address is
+  // left alone, since an unknown mapping is not evidence that this one is wrong.
+  private async historyJid(jid: string): Promise<string> {
+    if (!jid.endsWith("@lid")) return jid;
+
+    try {
+      const mapping = this.safeSocket().signalRepository.lidMapping;
+      if (await mapping.getPNForLID(jid)) return jid;
+
+      const digits = jid.slice(0, -"@lid".length);
+      return (await mapping.getLIDForPN(`${digits}@s.whatsapp.net`)) ?? jid;
+    } catch (error) {
+      logger.warn(
+        "[%s] [historyJid] Failed to resolve %s: %s",
+        this.phoneNumber,
+        jid,
+        errorToString(error),
+      );
+      return jid;
+    }
   }
 
   sendReceipts(keys: proto.IMessageKey[], type: MessageReceiptType) {
@@ -2529,18 +2579,83 @@ export class BaileysConnection {
     });
   }
 
-  private handleMessagingHistorySet(
+  // WhatsApp's history: the dump the phone sends on pairing, and -- the reason
+  // this is forwarded regardless of `syncFullHistory` -- the offline replay of
+  // whatever arrived while the connection was down. `syncFullHistory` decides
+  // what the socket ASKS the phone for; it does not decide whether what the
+  // phone volunteers is worth delivering. Dropping it is how messages received
+  // during a disconnect used to disappear.
+  //
+  // Sent as frames rather than one body. A whole dump is megabytes once the
+  // protobuf `bytes` fields are JSON-encoded, and serializing it in one go
+  // freezes the process for every session on it, not just this one. The
+  // classification (`syncType`) rides along so the client can tell an offline
+  // replay from an archive it may not be allowed to store.
+  //
+  // NOTE: the dump carries no media bytes regardless of the `includeMedia`
+  // option, and downloading them here has never worked, so a historical
+  // message's media resolves through /media and is stored unsupported when the
+  // file was never fetched.
+  private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
-    if (!this.syncFullHistory) {
+    const messages = data.messages ?? [];
+    // The one thing worth keeping from the chat records: which chats have
+    // nothing older left. An answer that still has history behind it carries no
+    // chat record at all, so an empty list here means "no news", never "there
+    // is more".
+    const exhausted = exhaustedChats(data.chats ?? []);
+    if (messages.length === 0 && exhausted.length === 0) {
       return;
     }
 
-    // NOTE: messaging-history.set event has a payload size is typically extensive so it does not include base64 media content, regardless of the `includeMedia` option.
-    // FIXME: Downloads are failing heavily right now. Under investigation.
-    // await downloadMediaFromMessages(data.messages);
+    logger.info(
+      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s exhausted=%d",
+      this.phoneNumber,
+      data.syncType ?? "-",
+      messages.length,
+      data.isLatest ?? "-",
+      data.progress ?? "-",
+      exhausted.length,
+    );
 
-    this.sendToWebhook({ event: "messaging-history.set", data });
+    let chunkIndex = 0;
+    for (const frame of historyFrames(
+      messages,
+      config.webhook.historyFrameMaxBytes,
+    )) {
+      const payload: BaileysHistoryFramePayload = {
+        messages: frame,
+        syncType: data.syncType,
+        progress: data.progress,
+        isLatest: data.isLatest,
+        chunkIndex,
+        ...(chunkIndex === 0 && exhausted.length > 0 ? { exhausted } : {}),
+      };
+      chunkIndex += 1;
+      await this.sendToWebhook({
+        event: "messaging-history.set",
+        data: payload,
+      });
+    }
+
+    // A chat with nothing left answers with an anchor and a flag, but nothing
+    // promises it answers with a message at all, and `historyFrames` yields
+    // nothing for an empty list. The flag is the whole point of that answer, so
+    // it goes out on its own rather than being lost with the empty slice.
+    if (chunkIndex === 0) {
+      await this.sendToWebhook({
+        event: "messaging-history.set",
+        data: {
+          messages: [],
+          syncType: data.syncType,
+          progress: data.progress,
+          isLatest: data.isLatest,
+          chunkIndex: 0,
+          exhausted,
+        },
+      });
+    }
   }
 
   private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {
@@ -2869,6 +2984,11 @@ export class BaileysConnection {
           "Content-Type": "application/json",
         },
         body: serializedBody,
+        // Without a deadline a webhook that accepts the connection and then
+        // never answers parks this delivery forever, and a graceful shutdown
+        // waits on it (see _inFlightWebhooks). Timing out feeds the retry loop,
+        // which is the behaviour every other failure already gets.
+        signal: AbortSignal.timeout(config.webhook.timeoutMs),
       });
       return { response };
     } catch (error) {

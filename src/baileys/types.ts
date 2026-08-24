@@ -3,6 +3,7 @@ import type {
   MessageReceiptType,
   proto,
 } from "@whiskeysockets/baileys";
+import type { BaileysHistoryFramePayload } from "@/baileys/helpers/historySync";
 
 export interface BaileysConnectionOptions {
   clientName?: string;
@@ -50,6 +51,9 @@ export interface BaileysConnectionWebhookPayload {
   data:
     | BaileysEventMap[keyof BaileysEventMap]
     | (BaileysEventMap["connection.update"] & { epoch?: number })
+    // messaging-history.set is delivered in frames rather than as the raw
+    // event: see historySync.ts.
+    | BaileysHistoryFramePayload
     | {
         error: string;
         // Present on reconnect_loop_detected when the phone entered

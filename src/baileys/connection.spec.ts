@@ -65,6 +65,7 @@ describe("BaileysConnection", () => {
     mockSocket.groupToggleEphemeral.mockClear();
     mockSocket.groupFetchAllParticipating.mockClear();
     mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
+    mockSocket.signalRepository.lidMapping.getLIDForPN.mockClear();
 
     // Clear redis state
     (redis as any).__hashData.clear();
@@ -3463,6 +3464,69 @@ describe("BaileysConnection", () => {
     });
   });
 
+  // A `<phone>@lid` address is one callers build by appending the suffix to whatever id
+  // they hold, and WhatsApp answers it with silence rather than an error -- which reads
+  // downstream as a chat with no history left.
+  describe("#fetchMessageHistory addressing", () => {
+    const anchor = { id: "MSG", fromMe: false };
+
+    beforeEach(async () => {
+      await connection.connect();
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
+      mockSocket.signalRepository.lidMapping.getLIDForPN.mockClear();
+    });
+
+    const fetchFrom = async (remoteJid: string) => {
+      mockSocket.fetchMessageHistory.mockClear();
+      await connection.fetchMessageHistory(50, { ...anchor, remoteJid }, 1000);
+      return mockSocket.fetchMessageHistory.mock.calls.at(-1)?.[1].remoteJid;
+    };
+
+    it("keeps a LID the mapping store recognises", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        "5517996808833:0@s.whatsapp.net",
+      );
+
+      expect(await fetchFrom("123583875535016@lid")).toBe(
+        "123583875535016@lid",
+      );
+    });
+
+    it("swaps a phone number wearing the LID suffix for its real LID", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockResolvedValueOnce(
+        null,
+      );
+      mockSocket.signalRepository.lidMapping.getLIDForPN.mockResolvedValueOnce(
+        "167392323834034@lid",
+      );
+
+      expect(await fetchFrom("553499503261@lid")).toBe("167392323834034@lid");
+    });
+
+    it("leaves the address alone when neither direction is known", async () => {
+      expect(await fetchFrom("999@lid")).toBe("999@lid");
+    });
+
+    it("does not look up an address that is not a LID", async () => {
+      expect(await fetchFrom("553499503261@s.whatsapp.net")).toBe(
+        "553499503261@s.whatsapp.net",
+      );
+      expect(
+        mockSocket.signalRepository.lidMapping.getPNForLID,
+      ).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the address it was given when the store throws", async () => {
+      mockSocket.signalRepository.lidMapping.getPNForLID.mockRejectedValueOnce(
+        new Error("store down"),
+      );
+
+      expect(await fetchFrom("123583875535016@lid")).toBe(
+        "123583875535016@lid",
+      );
+    });
+  });
+
   describe("#chatModify", () => {
     it("throws BaileysNotConnectedError if not connected", () => {
       expect(() =>
@@ -4373,6 +4437,219 @@ describe("BaileysConnection", () => {
       // Should not throw
       await handler([{ key: { id: "msg-1" }, update: {} }]);
       await flushAsync();
+    });
+  });
+
+  describe("messaging-history.set", () => {
+    function historyMessage(id: string, thumbnailBytes = 0) {
+      const message: Record<string, unknown> = thumbnailBytes
+        ? {
+            imageMessage: {
+              caption: `photo ${id}`,
+              jpegThumbnail: new Uint8Array(thumbnailBytes).fill(255),
+            },
+          }
+        : { conversation: `text ${id}` };
+
+      return {
+        key: { id, remoteJid: "5511888@s.whatsapp.net", fromMe: false },
+        messageTimestamp: 1_700_000_000,
+        message,
+      };
+    }
+
+    function historyPayloads() {
+      return fetchCalls
+        .map((call) => JSON.parse(call.body))
+        .filter((payload) => payload.event === "messaging-history.set")
+        .map((payload) => payload.data);
+    }
+
+    // The lib's default drops FULL, which is the dump `syncFullHistory` asks the
+    // phone for: without this override the option buys a bootstrap and an
+    // offline replay, and the deep archive is discarded before it is decoded.
+    describe("which dumps the lib is allowed to decode", () => {
+      async function gate(syncFullHistory: boolean) {
+        const conn = new BaileysConnection("+5511999999999", {
+          ...defaultOptions,
+          syncFullHistory,
+        });
+        await conn.connect();
+        const makeSocket = ((await import("@whiskeysockets/baileys")) as any)
+          .default as ReturnType<typeof mock>;
+        const [socketOptions] = makeSocket.mock.calls.at(-1) as [
+          {
+            shouldSyncHistoryMessage: (msg: { syncType: number }) => boolean;
+          },
+        ];
+        return socketOptions.shouldSyncHistoryMessage;
+      }
+
+      it("accepts the full archive when the inbox asked for it", async () => {
+        const shouldSync = await gate(true);
+
+        expect(shouldSync({ syncType: 2 })).toBe(true);
+      });
+
+      it("refuses it when the inbox did not", async () => {
+        const shouldSync = await gate(false);
+
+        expect(shouldSync({ syncType: 2 })).toBe(false);
+      });
+
+      // The offline replay is how a disconnect is recovered, so it is never
+      // gated on a setting about the archive.
+      it("takes the offline replay either way", async () => {
+        expect((await gate(false))({ syncType: 3 })).toBe(true);
+        expect((await gate(true))({ syncType: 3 })).toBe(true);
+      });
+    });
+
+    it("forwards the dump even when syncFullHistory is off, since that is the offline replay", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messaging-history.set")!;
+
+      await handler({
+        chats: [],
+        contacts: [],
+        messages: [historyMessage("A")],
+        syncType: 3,
+        isLatest: true,
+      });
+
+      const payloads = historyPayloads();
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0].syncType).toBe(3);
+      expect(payloads[0].isLatest).toBe(true);
+      expect(payloads[0].chunkIndex).toBe(0);
+      expect(payloads[0].messages).toHaveLength(1);
+    });
+
+    it("sends nothing for an empty dump", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messaging-history.set")!;
+
+      await handler({ chats: [], contacts: [], messages: [] });
+
+      expect(historyPayloads()).toHaveLength(0);
+    });
+
+    // The only way WhatsApp ever says a chat is finished, and it says it on the
+    // answer to an on-demand request and nowhere else. Discarding it left the
+    // caller unable to tell "nothing older exists" from "the request went
+    // nowhere", which is what a misaddressed request also looks like.
+    describe("the chat-is-finished flag", () => {
+      it("carries the flagged chats on the first frame", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid", endOfHistoryTransferType: 1 }],
+          contacts: [],
+          messages: [historyMessage("ID-1")],
+          syncType: 6,
+        });
+
+        expect(historyPayloads()[0].exhausted).toEqual(["5511888@lid"]);
+      });
+
+      it("sends the flag even when the answer carries no message", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid", endOfHistoryTransferType: 1 }],
+          contacts: [],
+          messages: [],
+          syncType: 6,
+        });
+
+        const payloads = historyPayloads();
+        expect(payloads).toHaveLength(1);
+        expect(payloads[0].messages).toEqual([]);
+        expect(payloads[0].exhausted).toEqual(["5511888@lid"]);
+      });
+
+      // An answer that still has history behind it ships no chat record at all,
+      // so silence on this field is "no news", not "there is more".
+      it("says nothing when no chat was flagged", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid" }],
+          contacts: [],
+          messages: [historyMessage("ID-1")],
+          syncType: 6,
+        });
+
+        expect(historyPayloads()[0].exhausted).toBeUndefined();
+      });
+    });
+
+    it("splits a large dump into frames under the budget, numbered in order", async () => {
+      const previousBudget = config.webhook.historyFrameMaxBytes;
+      config.webhook.historyFrameMaxBytes = 2_048;
+
+      try {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+        const messages = Array.from({ length: 60 }, (_, i) =>
+          historyMessage(`ID-${i}`),
+        );
+
+        await handler({ chats: [], contacts: [], messages, syncType: 0 });
+
+        const payloads = historyPayloads();
+        expect(payloads.length).toBeGreaterThan(1);
+        expect(payloads.map((payload) => payload.chunkIndex)).toEqual(
+          payloads.map((_, index) => index),
+        );
+        for (const payload of payloads) {
+          expect(payload.syncType).toBe(0);
+        }
+
+        const ids = payloads.flatMap((payload) =>
+          payload.messages.map(
+            (message: { key: { id: string } }) => message.key.id,
+          ),
+        );
+        expect(ids).toEqual(messages.map((message) => message.key.id));
+      } finally {
+        config.webhook.historyFrameMaxBytes = previousBudget;
+      }
+    });
+
+    it("strips thumbnails, so the body never carries the bytes nothing reads", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messaging-history.set")!;
+
+      await handler({
+        chats: [],
+        contacts: [],
+        messages: [historyMessage("A", 4_096)],
+      });
+
+      const [payload] = historyPayloads();
+      expect(payload.messages[0].message.imageMessage.caption).toBe("photo A");
+      expect(
+        payload.messages[0].message.imageMessage.jpegThumbnail,
+      ).toBeUndefined();
+    });
+
+    it("drops the chat and contact lists, which nothing reads and which double the dump", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messaging-history.set")!;
+
+      await handler({
+        chats: [{ id: "5511888@s.whatsapp.net" }],
+        contacts: [{ id: "5511888@s.whatsapp.net", name: "June" }],
+        messages: [historyMessage("A")],
+      });
+
+      const [payload] = historyPayloads();
+      expect(payload.chats).toBeUndefined();
+      expect(payload.contacts).toBeUndefined();
     });
   });
 });
