@@ -18,6 +18,8 @@ const {
   WEBHOOK_RETRY_POLICY_MAX_RETRIES,
   WEBHOOK_RETRY_POLICY_RETRY_INTERVAL,
   WEBHOOK_RETRY_POLICY_BACKOFF_FACTOR,
+  WEBHOOK_TIMEOUT_MS,
+  WEBHOOK_HISTORY_FRAME_MAX_BYTES,
   CORS_ORIGIN,
   IGNORE_GROUP_MESSAGES,
   IGNORE_STATUS_MESSAGES,
@@ -200,6 +202,20 @@ const config = {
     password: REDIS_PASSWORD || "",
   },
   webhook: {
+    // Deadline for a single webhook delivery. A webhook that accepts the
+    // connection and never answers would otherwise park the delivery -- and the
+    // graceful shutdown that waits on it -- indefinitely.
+    timeoutMs: intFromEnv("WEBHOOK_TIMEOUT_MS", WEBHOOK_TIMEOUT_MS, 60_000),
+    // Serialized size a single `messaging-history.set` frame may reach before
+    // the dump is split. Bun is single-threaded: one JSON.stringify of a whole
+    // history freezes every session on the instance, and the retry loop then
+    // resends that same body up to three more times.
+    historyFrameMaxBytes: intFromEnv(
+      "WEBHOOK_HISTORY_FRAME_MAX_BYTES",
+      WEBHOOK_HISTORY_FRAME_MAX_BYTES,
+      512 * 1024,
+      { min: 1024 },
+    ),
     retryPolicy: {
       maxRetries: WEBHOOK_RETRY_POLICY_MAX_RETRIES
         ? Number(WEBHOOK_RETRY_POLICY_MAX_RETRIES)

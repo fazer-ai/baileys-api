@@ -426,6 +426,8 @@ mock.module("@/config", () => ({
       listenToEvents: new Set<string>(),
     },
     webhook: {
+      timeoutMs: 60_000,
+      historyFrameMaxBytes: 512 * 1024,
       retryPolicy: {
         maxRetries: 0,
         retryInterval: 10,
@@ -640,6 +642,17 @@ mock.module("@whiskeysockets/baileys", () => ({
     reviver: (_key: string, value: any) => value,
   },
   proto: {
+    HistorySync: {
+      HistorySyncType: {
+        INITIAL_BOOTSTRAP: 0,
+        INITIAL_STATUS_V3: 1,
+        FULL: 2,
+        RECENT: 3,
+        PUSH_NAME: 4,
+        NON_BLOCKING_DATA: 5,
+        ON_DEMAND: 6,
+      },
+    },
     Message: {
       AppStateSyncKeyData: {
         fromObject: (obj: any) => ({ ...obj, __appStateSyncKey: true }),

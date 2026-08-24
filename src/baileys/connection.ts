@@ -11,7 +11,7 @@ import makeWASocket, {
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type ParticipantAction,
-  type proto,
+  proto,
   type UserFacingSocketConfig,
   type WAConnectionState,
   type WAMessage,
@@ -22,6 +22,10 @@ import makeWASocket, {
 import { toDataURL } from "qrcode";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
+import {
+  type BaileysHistoryFramePayload,
+  historyFrames,
+} from "@/baileys/helpers/historySync";
 import {
   isTxMutexTimeout,
   txMutexTimeoutKey,
@@ -659,6 +663,17 @@ export class BaileysConnection {
       logger: baileysLogger,
       browser: Browsers.windows(this.clientName),
       syncFullHistory: this.syncFullHistory,
+      // The lib's default is `syncType !== FULL`, which drops the very dump
+      // `syncFullHistory` asks the phone for: WhatsApp sends the FULL
+      // notification and Baileys discards it before decoding, so the option
+      // buys a bootstrap and an offline replay and nothing deeper. Measured on
+      // a real pairing: six notifications sent (one per syncType), two
+      // delivered. Accepting FULL is therefore what `syncFullHistory: true`
+      // was always supposed to mean; with it off the default stands and the
+      // deep archive is refused, which is the privacy behaviour we want.
+      shouldSyncHistoryMessage: ({ syncType }) =>
+        this.syncFullHistory ||
+        syncType !== proto.HistorySync.HistorySyncType.FULL,
       shouldIgnoreJid,
       version,
       // Deadline for the lib's own HTTP downloads. Read by the patched
@@ -2529,18 +2544,58 @@ export class BaileysConnection {
     });
   }
 
-  private handleMessagingHistorySet(
+  // WhatsApp's history: the dump the phone sends on pairing, and -- the reason
+  // this is forwarded regardless of `syncFullHistory` -- the offline replay of
+  // whatever arrived while the connection was down. `syncFullHistory` decides
+  // what the socket ASKS the phone for; it does not decide whether what the
+  // phone volunteers is worth delivering. Dropping it is how messages received
+  // during a disconnect used to disappear.
+  //
+  // Sent as frames rather than one body. A whole dump is megabytes once the
+  // protobuf `bytes` fields are JSON-encoded, and serializing it in one go
+  // freezes the process for every session on it, not just this one. The
+  // classification (`syncType`) rides along so the client can tell an offline
+  // replay from an archive it may not be allowed to store.
+  //
+  // NOTE: the dump carries no media bytes regardless of the `includeMedia`
+  // option, and downloading them here has never worked, so a historical
+  // message's media resolves through /media and is stored unsupported when the
+  // file was never fetched.
+  private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
-    if (!this.syncFullHistory) {
+    const messages = data.messages ?? [];
+    if (messages.length === 0) {
       return;
     }
 
-    // NOTE: messaging-history.set event has a payload size is typically extensive so it does not include base64 media content, regardless of the `includeMedia` option.
-    // FIXME: Downloads are failing heavily right now. Under investigation.
-    // await downloadMediaFromMessages(data.messages);
+    logger.info(
+      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s",
+      this.phoneNumber,
+      data.syncType ?? "-",
+      messages.length,
+      data.isLatest ?? "-",
+      data.progress ?? "-",
+    );
 
-    this.sendToWebhook({ event: "messaging-history.set", data });
+    let chunkIndex = 0;
+    for (const frame of historyFrames(
+      messages,
+      config.webhook.historyFrameMaxBytes,
+    )) {
+      const payload: BaileysHistoryFramePayload = {
+        messages: frame,
+        syncType: data.syncType,
+        progress: data.progress,
+        isLatest: data.isLatest,
+        chunkIndex,
+      };
+      chunkIndex += 1;
+      await this.sendToWebhook({
+        event: "messaging-history.set",
+        data: payload,
+      });
+    }
   }
 
   private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {
@@ -2869,6 +2924,11 @@ export class BaileysConnection {
           "Content-Type": "application/json",
         },
         body: serializedBody,
+        // Without a deadline a webhook that accepts the connection and then
+        // never answers parks this delivery forever, and a graceful shutdown
+        // waits on it (see _inFlightWebhooks). Timing out feeds the retry loop,
+        // which is the behaviour every other failure already gets.
+        signal: AbortSignal.timeout(config.webhook.timeoutMs),
       });
       return { response };
     } catch (error) {
