@@ -151,9 +151,11 @@ function splitJid(jid: string | null | undefined) {
 }
 
 // The two servers a LID lives on, `hosted.lid` being the business-hosted form. Both are
-// LID domains to `jidDecode`, but not to `isLidUser`, which is a plain `@lid` suffix test
-// -- so the mapping store never resolves a hosted LID, while the chat records in a dump do
-// carry mappings for one. Marking the address is the half that does not depend on either.
+// LID domains to `jidDecode`, but upstream's `isLidUser` is a plain `@lid` suffix test, and
+// it guarded the mapping store on both the write and the reverse read -- so a hosted pair
+// was warned away when the history handed it over and could never be read back. Patched;
+// see `hostedLidMapping.spec.ts`. Without it a hosted chat resolves only on the flush that
+// carries its own record, because the event buffer suppresses a record it has already seen.
 const LID_SERVERS = ["lid", "hosted.lid"];
 
 // The LID user a jid addresses, or undefined when the jid is not a LID.
@@ -233,6 +235,12 @@ export function chatLidPnPairs(
 // before the ones that merely remember it. Phone jids are normalized, because
 // the mapping store answers with a device suffix (`:0`) that a live message
 // never carries.
+//
+// Both sides are checked against their domain, and a pair that fails either is dropped
+// rather than half-read. Which address is the LID and which is the phone is a fact about
+// the jid, never about the field it arrived in -- a pair handed over the other way round
+// would otherwise put a LID into `remoteJidAlt`, where a client reads it as a phone number.
+// That is the whole defect this module exists to close, arriving through the back door.
 export function lidPnIndex(
   ...sources: (readonly LIDMapping[] | null | undefined)[]
 ): Map<string, string> {
@@ -241,7 +249,10 @@ export function lidPnIndex(
     for (const { lid, pn } of source ?? []) {
       const user = lidUser(lid);
       const phone = splitJid(pn);
-      if (user && phone && !index.has(user)) {
+      if (!user || !phone || !PHONE_SERVERS.includes(phone.server)) {
+        continue;
+      }
+      if (!index.has(user)) {
         index.set(user, `${phone.user}@${phone.server}`);
       }
     }

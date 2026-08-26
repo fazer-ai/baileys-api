@@ -1,3 +1,70 @@
+diff --git a/lib/Signal/lid-mapping.js b/lib/Signal/lid-mapping.js
+index c99bdf522c6143055b28de6ce3bcefaeac936a3c..5028728cf5d42312dd01ace5f3e2147cc969622d 100644
+--- a/lib/Signal/lid-mapping.js
++++ b/lib/Signal/lid-mapping.js
+@@ -1,5 +1,35 @@
+ import { LRUCache } from 'lru-cache';
+-import { isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary/index.js';
++import { isHostedLidUser, isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary/index.js';
++// A hosted account addresses itself on `hosted` / `hosted.lid`, and neither `isPnUser` nor
++// `isLidUser` recognises those: both are plain suffix tests for the non-hosted form. Every
++// other part of this file already handles the hosted domains -- `_getLIDsForPNsImpl` accepts
++// a hosted PN and builds a `hosted.lid` answer, and `addResolvedPair` below builds a `@hosted`
++// jid off `WAJIDDomains.HOSTED_LID`. So does the caller: `processHistoryMessage` derives
++// hosted pairs on purpose (`isHostedLidUser`, `isHostedPnUser`) and hands them straight to
++// `storeLIDPNMappings`. Only the two guards below were left on the narrow test, so every
++// hosted pair was warned away at the door and no hosted LID ever resolved to a phone number.
++//
++// The table is keyed by user rather than by jid, and a hosted and a plain LID for one account
++// share that user -- the domain says how the account is reached, not who it is. So the pairs
++// belong in the same table, and the reverse lookup rebuilds the right domain from the
++// `domainType` of the jid it was asked about.
++const isAnyLidUser = (jid) => isLidUser(jid) || isHostedLidUser(jid);
++const isAnyPnUser = (jid) => isPnUser(jid) || isHostedPnUser(jid);
++// Which of the two is the LID and which is the phone number is decided by the domain, never
++// by the field the caller happened to put it in. `handleMessage` in Socket/messages-recv.js
++// tests `altServer === 'lid'` strictly, so a hosted alternate falls to its else branch and a
++// PN-addressed hosted message arrives here as `{lid: <phone>, pn: <lid>}`. Upstream's guard
++// already accepted that order and then decoded positionally, persisting the pair backwards
++// and leaving the real LID unresolvable; widening the guard is what makes hosted reach it.
++const orientPair = (lid, pn) => {
++    if (isAnyLidUser(lid) && isAnyPnUser(pn)) {
++        return { lidJid: lid, pnJid: pn };
++    }
++    if (isAnyPnUser(lid) && isAnyLidUser(pn)) {
++        return { lidJid: pn, pnJid: lid };
++    }
++    return undefined;
++};
+ export class LIDMappingStore {
+     constructor(keys, logger, pnToLIDFunc) {
+         this.mappingCache = new LRUCache({
+@@ -18,12 +48,13 @@ export class LIDMappingStore {
+             return;
+         const validatedPairs = [];
+         for (const { lid, pn } of pairs) {
+-            if (!((isLidUser(lid) && isPnUser(pn)) || (isPnUser(lid) && isLidUser(pn)))) {
++            const oriented = orientPair(lid, pn);
++            if (!oriented) {
+                 this.logger.warn(`Invalid LID-PN mapping: ${lid}, ${pn}`);
+                 continue;
+             }
+-            const lidDecoded = jidDecode(lid);
+-            const pnDecoded = jidDecode(pn);
++            const lidDecoded = jidDecode(oriented.lidJid);
++            const pnDecoded = jidDecode(oriented.pnJid);
+             if (!lidDecoded || !pnDecoded)
+                 continue;
+             validatedPairs.push({ pnUser: pnDecoded.user, lidUser: lidDecoded.user });
+@@ -232,7 +263,7 @@ export class LIDMappingStore {
+             return true;
+         };
+         for (const lid of lids) {
+-            if (!isLidUser(lid))
++            if (!isAnyLidUser(lid))
+                 continue;
+             const decoded = jidDecode(lid);
+             if (!decoded)
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
 index 311fb3ef977e3f8bd091650e2f484ce57f12e91c..b1d29fdf662b7afb2649ff876f359a3d172e8dbc 100644
 --- a/lib/Socket/Client/websocket.js
