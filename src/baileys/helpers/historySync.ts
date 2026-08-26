@@ -259,30 +259,33 @@ export function lidPnIndex(
 // follows only when the mapping resolved -- a phone number we do not know must
 // arrive absent, never guessed.
 //
-// Which of the two alt fields is filled falls out of the address: a group's
-// `remoteJid` is never a LID, and a 1:1 message has no participant, which is
-// the same split the live decoder makes explicitly.
+// Both rules are the decoder's, copied rather than reasoned about. The sender is the
+// participant where there is one and the chat otherwise, which is a 1:1 peer, a group's
+// author, or a broadcast's. Its alternate address is filed under `participantAlt` for a
+// group and `remoteJidAlt` for everything else -- and it is the chat being a group that
+// decides that, not which of the two fields the sender was read from.
 export function restoreAddressing<T extends HistoryMessage>(
   messages: readonly T[],
   index: ReadonlyMap<string, string>,
 ): T[] {
   return messages.map((message) => {
     const key = message.key;
-    const chat = lidUser(key?.remoteJid);
-    const author = lidUser(key?.participant);
-    if (!key || (!chat && !author)) {
+    const sender = lidUser(key?.participant) ?? lidUser(key?.remoteJid);
+    if (!key || !sender) {
       return message;
     }
 
-    const remoteJidAlt = chat && index.get(chat);
-    const participantAlt = author && index.get(author);
+    const senderAlt = index.get(sender);
+    const altField =
+      splitJid(key.remoteJid)?.server === "g.us"
+        ? "participantAlt"
+        : "remoteJidAlt";
     return {
       ...message,
       key: {
         ...key,
         addressingMode: "lid",
-        ...(remoteJidAlt ? { remoteJidAlt } : {}),
-        ...(participantAlt ? { participantAlt } : {}),
+        ...(senderAlt ? { [altField]: senderAlt } : {}),
       },
     };
   });

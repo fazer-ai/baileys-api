@@ -332,6 +332,20 @@ describe("restoring the addressing a dump strips", () => {
     expect(message.key.addressingMode).toBe("lid");
   });
 
+  // Not a group, so the decoder files the sender's alternate under `remoteJidAlt` even
+  // though the sender was read off `participant`. The chat decides the field, not where
+  // the address came from.
+  it("files a broadcast sender the way a non-group key does", () => {
+    const [message] = restoreAddressing(
+      [chatMessage("status@broadcast", "777@lid")],
+      lidPnIndex([{ lid: "777@lid", pn: PN }]),
+    );
+
+    expect(message.key.remoteJidAlt).toBe(PN);
+    expect(message.key.participantAlt).toBeUndefined();
+    expect(message.key.addressingMode).toBe("lid");
+  });
+
   it("leaves a phone-addressed message exactly as it arrived", () => {
     const message = chatMessage(PN);
     const [restored] = restoreAddressing(
