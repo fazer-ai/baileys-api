@@ -8,6 +8,7 @@ import makeWASocket, {
   type ConnectionState,
   DisconnectReason,
   isJidGroup,
+  type LIDMapping,
   type MessageReceiptType,
   makeCacheableSignalKeyStore,
   type ParticipantAction,
@@ -26,6 +27,9 @@ import {
   type BaileysHistoryFramePayload,
   exhaustedChats,
   historyFrames,
+  lidPnIndex,
+  restoreAddressing,
+  unresolvedLids,
 } from "@/baileys/helpers/historySync";
 import {
   isTxMutexTimeout,
@@ -2621,7 +2625,7 @@ export class BaileysConnection {
 
     let chunkIndex = 0;
     for (const frame of historyFrames(
-      messages,
+      await this.addressHistory(messages, data.lidPnMappings),
       config.webhook.historyFrameMaxBytes,
     )) {
       const payload: BaileysHistoryFramePayload = {
@@ -2656,6 +2660,41 @@ export class BaileysConnection {
         },
       });
     }
+  }
+
+  // Restores the addressing a dump strips (see historySync.ts), from the two
+  // places the LID→PN mapping lives: the event, which speaks about the chats in
+  // this dump, and the mapping store, which also knows the group authors and
+  // whatever earlier traffic taught it. The store is asked only about the LIDs
+  // the event left unnamed, and in one batched read for the whole dump.
+  //
+  // A store that cannot be read costs the phone numbers it would have supplied,
+  // not the dump: what the event carried still applies, and every LID-addressed
+  // key is still marked as one, which is what keeps a client from reading the
+  // address as a phone number.
+  private async addressHistory(messages: WAMessage[], mappings?: LIDMapping[]) {
+    const index = lidPnIndex(mappings);
+    const missing = unresolvedLids(messages, index);
+
+    if (missing.length > 0) {
+      try {
+        const stored =
+          await this.safeSocket().signalRepository.lidMapping.getPNsForLIDs(
+            missing,
+          );
+        for (const [lid, pn] of lidPnIndex(stored)) {
+          index.set(lid, pn);
+        }
+      } catch (error) {
+        logger.warn(
+          "[%s] [addressHistory] Failed to resolve LID mappings: %s",
+          this.phoneNumber,
+          errorToString(error),
+        );
+      }
+    }
+
+    return restoreAddressing(messages, index);
   }
 
   private handleGroupsUpdate(data: BaileysEventMap["groups.update"]) {

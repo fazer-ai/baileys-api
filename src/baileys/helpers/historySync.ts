@@ -1,4 +1,4 @@
-import type { proto } from "@whiskeysockets/baileys";
+import type { LIDMapping, proto, WAMessageKey } from "@whiskeysockets/baileys";
 
 // Binary fields the client never reads, dropped before the payload reaches the
 // wire. They are decoded protobuf `bytes`, so they arrive as Uint8Array and
@@ -116,6 +116,124 @@ export function exhaustedChats(
     .filter((chat) => chat.endOfHistoryTransferType === NO_MORE_HISTORY)
     .map((chat) => chat.id)
     .filter((id): id is string => Boolean(id));
+}
+
+// A history message key holds exactly what the protobuf defines: `remoteJid`,
+// `fromMe`, `id`, `participant`. The three fields a live key also carries --
+// `addressingMode`, `remoteJidAlt`, `participantAlt` -- are stamped by the live
+// decoder from stanza attributes, and a dump has no stanza. So on a
+// LID-addressed account every chat in a dump reaches the client as a bare
+// `<LID>@lid`, with the phone number nowhere in the payload, and a client that
+// reads the address as a number files the LID as one. Measured on a real
+// pairing: contacts created with a phone number of `+235085806727321`, which is
+// a LID.
+//
+// The mapping is not missing, only unshipped. WhatsApp sends it in this very
+// event -- Baileys distills `lidPnMappings` out of the chat records we drop --
+// and stores it in `signalRepository.lidMapping` before emitting. Both are read
+// back below to rebuild the live shape.
+//
+// A message as a history dump carries it. `WAMessageKey` is what its key
+// becomes once the three fields above are stamped back on.
+interface HistoryMessage {
+  key?: WAMessageKey | null;
+}
+
+// A jid split into the account it names and the server it lives on, with the
+// device and agent suffixes dropped: `5511:3@s.whatsapp.net` and
+// `5511@s.whatsapp.net` are one account. The same split `jidDecode` makes,
+// minus the domain classification nothing here reads, and done by hand for the
+// same reason `historyJid` does it: the shapes involved are two.
+function splitJid(jid: string | null | undefined) {
+  const [address, server] = (jid ?? "").split("@");
+  const user = address?.split(":")[0]?.split("_")[0];
+  return user && server ? { user, server } : undefined;
+}
+
+// The LID user a jid addresses, or undefined when the jid is not a LID.
+function lidUser(jid: string | null | undefined): string | undefined {
+  const decoded = splitJid(jid);
+  return decoded?.server === "lid" ? decoded.user : undefined;
+}
+
+// The LIDs this dump addresses a chat or a group author by that the index
+// cannot resolve yet, deduplicated: what is left to look up, and the whole of
+// it, so the lookup is one batched read rather than one per message. A mature
+// chat repeats its own address a thousand times.
+export function unresolvedLids(
+  messages: readonly HistoryMessage[],
+  index: ReadonlyMap<string, string>,
+): string[] {
+  const lids = new Set<string>();
+  for (const { key } of messages) {
+    for (const jid of [key?.remoteJid, key?.participant]) {
+      const user = jid ? lidUser(jid) : undefined;
+      if (jid && user && !index.has(user)) {
+        lids.add(jid);
+      }
+    }
+  }
+  return [...lids];
+}
+
+// LID user to phone jid, merged from every source that holds part of it. The
+// first source to name a LID wins, so pass the ones that describe this dump
+// before the ones that merely remember it. Phone jids are normalized, because
+// the mapping store answers with a device suffix (`:0`) that a live message
+// never carries.
+export function lidPnIndex(
+  ...sources: (readonly LIDMapping[] | null | undefined)[]
+): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const source of sources) {
+    for (const { lid, pn } of source ?? []) {
+      const user = lidUser(lid);
+      const phone = splitJid(pn);
+      if (user && phone && !index.has(user)) {
+        index.set(user, `${phone.user}@${phone.server}`);
+      }
+    }
+  }
+  return index;
+}
+
+// Puts back on a history key the addressing fields the live decoder stamps from
+// stanza attributes, so an imported message is addressed exactly like the same
+// message would have been live.
+//
+// `addressingMode` is stamped from the address alone and does not wait for the
+// mapping: that a chat is LID-addressed is a fact about the message, and saying
+// so is what stops a client from reading the LID as a phone number. The alt jid
+// follows only when the mapping resolved -- a phone number we do not know must
+// arrive absent, never guessed.
+//
+// Which of the two alt fields is filled falls out of the address: a group's
+// `remoteJid` is never a LID, and a 1:1 message has no participant, which is
+// the same split the live decoder makes explicitly.
+export function restoreAddressing<T extends HistoryMessage>(
+  messages: readonly T[],
+  index: ReadonlyMap<string, string>,
+): T[] {
+  return messages.map((message) => {
+    const key = message.key;
+    const chat = lidUser(key?.remoteJid);
+    const author = lidUser(key?.participant);
+    if (!key || (!chat && !author)) {
+      return message;
+    }
+
+    const remoteJidAlt = chat && index.get(chat);
+    const participantAlt = author && index.get(author);
+    return {
+      ...message,
+      key: {
+        ...key,
+        addressingMode: "lid",
+        ...(remoteJidAlt ? { remoteJidAlt } : {}),
+        ...(participantAlt ? { participantAlt } : {}),
+      },
+    };
+  });
 }
 
 // What the client is told about a history dump. The contacts and participant
