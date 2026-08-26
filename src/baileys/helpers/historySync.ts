@@ -150,10 +150,18 @@ function splitJid(jid: string | null | undefined) {
   return user && server ? { user, server } : undefined;
 }
 
+// The two servers a LID lives on, `hosted.lid` being the business-hosted form. Both are
+// LID domains to `jidDecode`, but not to `isLidUser`, which is a plain `@lid` suffix test
+// -- so the mapping store never resolves a hosted LID, while the chat records in a dump do
+// carry mappings for one. Marking the address is the half that does not depend on either.
+const LID_SERVERS = ["lid", "hosted.lid"];
+
 // The LID user a jid addresses, or undefined when the jid is not a LID.
 function lidUser(jid: string | null | undefined): string | undefined {
   const decoded = splitJid(jid);
-  return decoded?.server === "lid" ? decoded.user : undefined;
+  return decoded && LID_SERVERS.includes(decoded.server)
+    ? decoded.user
+    : undefined;
 }
 
 // The LIDs this dump addresses a chat or a group author by that the index

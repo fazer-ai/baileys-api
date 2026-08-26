@@ -213,6 +213,28 @@ describe("restoring the addressing a dump strips", () => {
     });
   });
 
+  // A business-hosted account is addressed on `hosted.lid`, which `jidDecode` reads as a
+  // LID domain and `isLidUser` -- a plain `@lid` suffix test -- does not. Left out, its
+  // chats kept the exact shape this whole change exists to fix.
+  describe("the hosted form of a LID", () => {
+    const HOSTED = "235085806727321@hosted.lid";
+
+    it("marks a hosted chat LID-addressed like any other", () => {
+      const [message] = restoreAddressing([chatMessage(HOSTED)], new Map());
+
+      expect(message.key.addressingMode).toBe("lid");
+    });
+
+    it("takes a hosted mapping out of the event, which is the only place one arrives", () => {
+      const [message] = restoreAddressing(
+        [chatMessage(HOSTED)],
+        lidPnIndex([{ lid: HOSTED, pn: "5511999999999@hosted" }]),
+      );
+
+      expect(message.key.remoteJidAlt).toBe("5511999999999@hosted");
+    });
+  });
+
   describe("the mapping index", () => {
     it("keys by the LID user, so a device suffix still resolves", () => {
       const index = lidPnIndex([{ lid: "235085806727321:3@lid", pn: PN }]);
