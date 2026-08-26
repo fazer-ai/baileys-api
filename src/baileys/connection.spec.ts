@@ -66,6 +66,7 @@ describe("BaileysConnection", () => {
     mockSocket.groupFetchAllParticipating.mockClear();
     mockSocket.signalRepository.lidMapping.getPNForLID.mockClear();
     mockSocket.signalRepository.lidMapping.getLIDForPN.mockClear();
+    mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockClear();
 
     // Clear redis state
     (redis as any).__hashData.clear();
@@ -4635,6 +4636,127 @@ describe("BaileysConnection", () => {
       expect(
         payload.messages[0].message.imageMessage.jpegThumbnail,
       ).toBeUndefined();
+    });
+
+    // A dump's keys are raw protobuf: the addressing fields a live key carries
+    // do not exist there, so a LID-addressed chat arrives with the phone number
+    // nowhere in it and a client files the LID as one.
+    describe("the addressing a dump strips", () => {
+      const LID = "235085806727321@lid";
+      const PN = "5511999999999@s.whatsapp.net";
+
+      function lidMessage(id: string) {
+        return {
+          key: { id, remoteJid: LID, fromMe: false },
+          messageTimestamp: 1_700_000_000,
+          message: { conversation: `text ${id}` },
+        };
+      }
+
+      it("takes the mapping the event itself carries, without asking the store", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [lidMessage("A")],
+          lidPnMappings: [{ lid: LID, pn: PN }],
+          syncType: 2,
+        });
+
+        const [{ key }] = historyPayloads()[0].messages;
+        expect(key.remoteJidAlt).toBe(PN);
+        expect(key.addressingMode).toBe("lid");
+        expect(
+          mockSocket.signalRepository.lidMapping.getPNsForLIDs,
+        ).not.toHaveBeenCalled();
+      });
+
+      // The shape a real history notification arrives in: it is processed inside
+      // `ev.buffer()`, and the buffer rebuilds the event field by field from what it
+      // accumulated, keeping the chat records and dropping the derived mapping list.
+      it("takes the mapping off the chat records when the buffer dropped the list", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: LID, pnJid: PN }],
+          contacts: [],
+          messages: [lidMessage("A")],
+          syncType: 2,
+        });
+
+        const [{ key }] = historyPayloads()[0].messages;
+        expect(key.remoteJidAlt).toBe(PN);
+        expect(
+          mockSocket.signalRepository.lidMapping.getPNsForLIDs,
+        ).not.toHaveBeenCalled();
+      });
+
+      it("asks the store for what the event did not name", async () => {
+        await connection.connect();
+        mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockResolvedValueOnce(
+          [{ lid: LID, pn: PN }],
+        );
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [lidMessage("A"), lidMessage("B")],
+          syncType: 2,
+        });
+
+        const [{ key }] = historyPayloads()[0].messages;
+        expect(key.remoteJidAlt).toBe(PN);
+        // One batched read for the whole dump, not one per message.
+        expect(
+          mockSocket.signalRepository.lidMapping.getPNsForLIDs,
+        ).toHaveBeenCalledTimes(1);
+        expect(
+          mockSocket.signalRepository.lidMapping.getPNsForLIDs,
+        ).toHaveBeenCalledWith([LID]);
+      });
+
+      it("never asks about a dump that has no LID in it", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [historyMessage("A")],
+          syncType: 2,
+        });
+
+        expect(
+          mockSocket.signalRepository.lidMapping.getPNsForLIDs,
+        ).not.toHaveBeenCalled();
+      });
+
+      // The dump is the point. A store that cannot answer costs the phone
+      // numbers, never the messages -- and the keys still say they are LIDs,
+      // which is what stops the client filing one as a number.
+      it("still delivers the dump when the store throws", async () => {
+        await connection.connect();
+        mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockRejectedValueOnce(
+          new Error("store down"),
+        );
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [],
+          contacts: [],
+          messages: [lidMessage("A")],
+          syncType: 2,
+        });
+
+        const [{ key }] = historyPayloads()[0].messages;
+        expect(key.remoteJidAlt).toBeUndefined();
+        expect(key.addressingMode).toBe("lid");
+        expect(key.id).toBe("A");
+      });
     });
 
     it("drops the chat and contact lists, which nothing reads and which double the dump", async () => {

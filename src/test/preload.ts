@@ -547,6 +547,7 @@ function createMockSocket() {
       lidMapping: {
         getPNForLID: mock(async () => null),
         getLIDForPN: mock(async () => null),
+        getPNsForLIDs: mock(async () => null),
       },
     },
   };
