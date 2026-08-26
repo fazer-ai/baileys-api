@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { WAMessageKey } from "@whiskeysockets/baileys";
 import {
+  chatLidPnPairs,
   exhaustedChats,
   historyFrames,
   lidPnIndex,
@@ -232,6 +233,38 @@ describe("restoring the addressing a dump strips", () => {
       );
 
       expect(message.key.remoteJidAlt).toBe("5511999999999@hosted");
+    });
+  });
+
+  // The derived list is dropped by the event buffer, which is the path a real history
+  // notification takes, so the chat records are the only copy that always arrives.
+  describe("the pairs the chat records carry", () => {
+    it("pairs a LID-addressed chat with the phone jid on its record", () => {
+      expect(chatLidPnPairs([{ id: LID, pnJid: PN }])).toEqual([
+        { lid: LID, pn: PN },
+      ]);
+    });
+
+    it("pairs a phone-addressed chat with the LID on its record", () => {
+      expect(chatLidPnPairs([{ id: PN, lidJid: LID }])).toEqual([
+        { lid: LID, pn: PN },
+      ]);
+    });
+
+    it("says nothing about a chat whose record names only itself", () => {
+      expect(chatLidPnPairs([{ id: LID }, { id: PN }, {}])).toEqual([]);
+    });
+
+    // A group jid is neither address, and letting one in would file it as somebody's
+    // phone number -- the very thing this change exists to prevent.
+    it("never reads a group jid as a phone number", () => {
+      expect(chatLidPnPairs([{ id: "120363@g.us", lidJid: LID }])).toEqual([]);
+    });
+
+    it("carries a hosted chat, which is the only place its mapping arrives", () => {
+      expect(
+        chatLidPnPairs([{ id: "777@hosted.lid", pnJid: "5511@hosted" }]),
+      ).toEqual([{ lid: "777@hosted.lid", pn: "5511@hosted" }]);
     });
   });
 

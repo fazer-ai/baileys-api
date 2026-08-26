@@ -184,6 +184,50 @@ export function unresolvedLids(
   return [...lids];
 }
 
+// The servers a phone-addressed jid lives on, `hosted` being the business-hosted form.
+const PHONE_SERVERS = ["s.whatsapp.net", "c.us", "hosted"];
+
+// The LID↔phone pairs the dump's own chat records carry, which is where Baileys reads
+// `lidPnMappings` from in the first place.
+//
+// Read again from the records because the two do not always both arrive. A real history
+// notification is processed inside `ev.buffer()`, and the buffer rebuilds
+// `messaging-history.set` field by field out of what it accumulated -- chats, contacts,
+// messages, and no derived list -- so on that path `lidPnMappings` is simply absent and
+// the chat records are the only copy left. The derived list is still read where it does
+// arrive: it carries a `userReceipt` fallback for a LID chat whose record has no `pnJid`,
+// which nothing here could reconstruct.
+export function chatLidPnPairs(
+  chats: readonly {
+    id?: string | null;
+    pnJid?: string | null;
+    lidJid?: string | null;
+  }[],
+): LIDMapping[] {
+  const pairs: LIDMapping[] = [];
+  for (const chat of chats) {
+    const id = chat.id;
+    if (!id) {
+      continue;
+    }
+
+    if (lidUser(id)) {
+      if (chat.pnJid) {
+        pairs.push({ lid: id, pn: chat.pnJid });
+      }
+      // A chat keyed the other way names its own LID, and its messages can still be
+      // LID-addressed. Gated on the id being a phone address so a group's jid can never
+      // enter the index as one.
+    } else if (
+      chat.lidJid &&
+      PHONE_SERVERS.includes(splitJid(id)?.server ?? "")
+    ) {
+      pairs.push({ lid: chat.lidJid, pn: id });
+    }
+  }
+  return pairs;
+}
+
 // LID user to phone jid, merged from every source that holds part of it. The
 // first source to name a LID wins, so pass the ones that describe this dump
 // before the ones that merely remember it. Phone jids are normalized, because

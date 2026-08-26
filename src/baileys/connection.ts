@@ -4,6 +4,7 @@ import makeWASocket, {
   type AuthenticationState,
   type BaileysEventMap,
   Browsers,
+  type Chat,
   type ChatModification,
   type ConnectionState,
   DisconnectReason,
@@ -25,6 +26,7 @@ import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMe
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
 import {
   type BaileysHistoryFramePayload,
+  chatLidPnPairs,
   exhaustedChats,
   historyFrames,
   lidPnIndex,
@@ -2625,7 +2627,7 @@ export class BaileysConnection {
 
     let chunkIndex = 0;
     for (const frame of historyFrames(
-      await this.addressHistory(messages, data.lidPnMappings),
+      await this.addressHistory(messages, data.lidPnMappings, data.chats ?? []),
       config.webhook.historyFrameMaxBytes,
     )) {
       const payload: BaileysHistoryFramePayload = {
@@ -2668,12 +2670,21 @@ export class BaileysConnection {
   // whatever earlier traffic taught it. The store is asked only about the LIDs
   // the event left unnamed, and in one batched read for the whole dump.
   //
+  // Both of the event's own copies are read -- the derived list and the chat
+  // records it was derived from -- because the buffered path drops the first and
+  // the second is all a real history notification arrives with. See
+  // `chatLidPnPairs`.
+  //
   // A store that cannot be read costs the phone numbers it would have supplied,
   // not the dump: what the event carried still applies, and every LID-addressed
   // key is still marked as one, which is what keeps a client from reading the
   // address as a phone number.
-  private async addressHistory(messages: WAMessage[], mappings?: LIDMapping[]) {
-    const index = lidPnIndex(mappings);
+  private async addressHistory(
+    messages: WAMessage[],
+    mappings: LIDMapping[] | undefined,
+    chats: Chat[],
+  ) {
+    const index = lidPnIndex(mappings, chatLidPnPairs(chats));
     const missing = unresolvedLids(messages, index);
 
     if (missing.length > 0) {

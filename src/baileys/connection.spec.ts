@@ -4673,6 +4673,27 @@ describe("BaileysConnection", () => {
         ).not.toHaveBeenCalled();
       });
 
+      // The shape a real history notification arrives in: it is processed inside
+      // `ev.buffer()`, and the buffer rebuilds the event field by field from what it
+      // accumulated, keeping the chat records and dropping the derived mapping list.
+      it("takes the mapping off the chat records when the buffer dropped the list", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: LID, pnJid: PN }],
+          contacts: [],
+          messages: [lidMessage("A")],
+          syncType: 2,
+        });
+
+        const [{ key }] = historyPayloads()[0].messages;
+        expect(key.remoteJidAlt).toBe(PN);
+        expect(
+          mockSocket.signalRepository.lidMapping.getPNsForLIDs,
+        ).not.toHaveBeenCalled();
+      });
+
       it("asks the store for what the event did not name", async () => {
         await connection.connect();
         mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockResolvedValueOnce(
