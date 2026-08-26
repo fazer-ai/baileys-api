@@ -1,3 +1,47 @@
+diff --git a/lib/Signal/lid-mapping.js b/lib/Signal/lid-mapping.js
+index c99bdf522c6143055b28de6ce3bcefaeac936a3c..ba148cf97bd308c1980bdbc5af5d0dce35b22b04 100644
+--- a/lib/Signal/lid-mapping.js
++++ b/lib/Signal/lid-mapping.js
+@@ -1,5 +1,20 @@
+ import { LRUCache } from 'lru-cache';
+-import { isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary/index.js';
++import { isHostedLidUser, isHostedPnUser, isLidUser, isPnUser, jidDecode, jidNormalizedUser, WAJIDDomains } from '../WABinary/index.js';
++// A hosted account addresses itself on `hosted` / `hosted.lid`, and neither `isPnUser` nor
++// `isLidUser` recognises those: both are plain suffix tests for the non-hosted form. Every
++// other part of this file already handles the hosted domains -- `_getLIDsForPNsImpl` accepts
++// a hosted PN and builds a `hosted.lid` answer, and `addResolvedPair` below builds a `@hosted`
++// jid off `WAJIDDomains.HOSTED_LID`. So does the caller: `processHistoryMessage` derives
++// hosted pairs on purpose (`isHostedLidUser`, `isHostedPnUser`) and hands them straight to
++// `storeLIDPNMappings`. Only the two guards below were left on the narrow test, so every
++// hosted pair was warned away at the door and no hosted LID ever resolved to a phone number.
++//
++// The table is keyed by user rather than by jid, and a hosted and a plain LID for one account
++// share that user -- the domain says how the account is reached, not who it is. So the pairs
++// belong in the same table, and the reverse lookup rebuilds the right domain from the
++// `domainType` of the jid it was asked about.
++const isAnyLidUser = (jid) => isLidUser(jid) || isHostedLidUser(jid);
++const isAnyPnUser = (jid) => isPnUser(jid) || isHostedPnUser(jid);
+ export class LIDMappingStore {
+     constructor(keys, logger, pnToLIDFunc) {
+         this.mappingCache = new LRUCache({
+@@ -18,7 +33,7 @@ export class LIDMappingStore {
+             return;
+         const validatedPairs = [];
+         for (const { lid, pn } of pairs) {
+-            if (!((isLidUser(lid) && isPnUser(pn)) || (isPnUser(lid) && isLidUser(pn)))) {
++            if (!((isAnyLidUser(lid) && isAnyPnUser(pn)) || (isAnyPnUser(lid) && isAnyLidUser(pn)))) {
+                 this.logger.warn(`Invalid LID-PN mapping: ${lid}, ${pn}`);
+                 continue;
+             }
+@@ -232,7 +247,7 @@ export class LIDMappingStore {
+             return true;
+         };
+         for (const lid of lids) {
+-            if (!isLidUser(lid))
++            if (!isAnyLidUser(lid))
+                 continue;
+             const decoded = jidDecode(lid);
+             if (!decoded)
 diff --git a/lib/Socket/Client/websocket.js b/lib/Socket/Client/websocket.js
 index 311fb3ef977e3f8bd091650e2f484ce57f12e91c..b1d29fdf662b7afb2649ff876f359a3d172e8dbc 100644
 --- a/lib/Socket/Client/websocket.js

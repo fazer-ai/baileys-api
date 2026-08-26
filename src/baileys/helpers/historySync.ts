@@ -151,9 +151,11 @@ function splitJid(jid: string | null | undefined) {
 }
 
 // The two servers a LID lives on, `hosted.lid` being the business-hosted form. Both are
-// LID domains to `jidDecode`, but not to `isLidUser`, which is a plain `@lid` suffix test
-// -- so the mapping store never resolves a hosted LID, while the chat records in a dump do
-// carry mappings for one. Marking the address is the half that does not depend on either.
+// LID domains to `jidDecode`, but upstream's `isLidUser` is a plain `@lid` suffix test, and
+// it guarded the mapping store on both the write and the reverse read -- so a hosted pair
+// was warned away when the history handed it over and could never be read back. Patched;
+// see `hostedLidMapping.spec.ts`. Without it a hosted chat resolves only on the flush that
+// carries its own record, because the event buffer suppresses a record it has already seen.
 const LID_SERVERS = ["lid", "hosted.lid"];
 
 // The LID user a jid addresses, or undefined when the jid is not a LID.
