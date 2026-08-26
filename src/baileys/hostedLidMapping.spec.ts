@@ -140,6 +140,48 @@ describe("hosted LID mapping patch", () => {
     );
   });
 
+  // `handleMessage` tests `altServer === 'lid'` strictly, so a hosted alternate takes its
+  // else branch and a PN-addressed hosted message hands the pair over the other way round.
+  // Upstream decoded positionally, so widening the guard without this would persist those
+  // backwards -- worse than dropping them, since the LID would then read as a phone number.
+  it("stores a reversed hosted pair the right way round", async () => {
+    const table = makeTable();
+    const { store, warnings } = makeStore(table);
+
+    await store.storeLIDPNMappings([{ lid: HOSTED_PN, pn: HOSTED_LID }]);
+
+    expect(warnings).toEqual([]);
+    expect(await store.getPNForLID(HOSTED_LID)).toBe("5511999999999:0@hosted");
+  });
+
+  it("stores a reversed ordinary pair the right way round", async () => {
+    const table = makeTable();
+    const { store } = makeStore(table);
+
+    await store.storeLIDPNMappings([{ lid: PLAIN_PN, pn: PLAIN_LID }]);
+
+    expect(await store.getPNForLID(PLAIN_LID)).toBe(
+      "5511888888888:0@s.whatsapp.net",
+    );
+  });
+
+  it("refuses a pair that names two LIDs", async () => {
+    const { store, warnings } = makeStore(makeTable());
+
+    await store.storeLIDPNMappings([{ lid: HOSTED_LID, pn: PLAIN_LID }]);
+
+    expect(warnings).toHaveLength(1);
+    expect(await store.getPNForLID(HOSTED_LID)).toBeNull();
+  });
+
+  it("refuses a pair that names two phone numbers", async () => {
+    const { store, warnings } = makeStore(makeTable());
+
+    await store.storeLIDPNMappings([{ lid: HOSTED_PN, pn: PLAIN_PN }]);
+
+    expect(warnings).toHaveLength(1);
+  });
+
   it("still refuses a pair that is neither addressing", async () => {
     const { store, warnings } = makeStore(makeTable());
 

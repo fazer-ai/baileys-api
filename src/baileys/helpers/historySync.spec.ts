@@ -285,6 +285,20 @@ describe("restoring the addressing a dump strips", () => {
       expect(index.get("235085806727321")).toBe(PN);
     });
 
+    // A source that hands the pair over the other way round would otherwise index the LID
+    // as if it were the phone number, which is the exact shape this module exists to stop.
+    it("drops a pair whose phone side is not a phone address", () => {
+      const index = lidPnIndex([{ lid: LID, pn: "777888999@lid" }]);
+
+      expect(index.size).toBe(0);
+    });
+
+    it("drops a pair handed over reversed", () => {
+      const index = lidPnIndex([{ lid: PN, pn: LID }]);
+
+      expect(index.size).toBe(0);
+    });
+
     it("lets the earlier source win, which is the one describing this dump", () => {
       const index = lidPnIndex(
         [{ lid: LID, pn: PN }],

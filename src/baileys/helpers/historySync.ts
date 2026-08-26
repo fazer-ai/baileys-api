@@ -235,6 +235,12 @@ export function chatLidPnPairs(
 // before the ones that merely remember it. Phone jids are normalized, because
 // the mapping store answers with a device suffix (`:0`) that a live message
 // never carries.
+//
+// Both sides are checked against their domain, and a pair that fails either is dropped
+// rather than half-read. Which address is the LID and which is the phone is a fact about
+// the jid, never about the field it arrived in -- a pair handed over the other way round
+// would otherwise put a LID into `remoteJidAlt`, where a client reads it as a phone number.
+// That is the whole defect this module exists to close, arriving through the back door.
 export function lidPnIndex(
   ...sources: (readonly LIDMapping[] | null | undefined)[]
 ): Map<string, string> {
@@ -243,7 +249,10 @@ export function lidPnIndex(
     for (const { lid, pn } of source ?? []) {
       const user = lidUser(lid);
       const phone = splitJid(pn);
-      if (user && phone && !index.has(user)) {
+      if (!user || !phone || !PHONE_SERVERS.includes(phone.server)) {
+        continue;
+      }
+      if (!index.has(user)) {
         index.set(user, `${phone.user}@${phone.server}`);
       }
     }
