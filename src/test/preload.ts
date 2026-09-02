@@ -1,4 +1,5 @@
 import { afterEach, mock } from "bun:test";
+import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
 
 /**
  * Shared test preload — runs before every test file.
@@ -596,6 +597,13 @@ mock.module("@whiskeysockets/baileys", () => ({
   isJidNewsletter: (jid: string) => jid?.endsWith("@newsletter") ?? false,
   isJidBot: (jid: string) => jid?.endsWith("@bot") ?? false,
   isJidMetaAI: (jid: string) => jid?.endsWith("@lid") ?? false,
+  // Faithful enough for the callers that matter: strips the device suffix and
+  // the legacy c.us server, like 7.0.0-rc14's jidNormalizedUser.
+  jidNormalizedUser: (jid: string) => {
+    if (!jid) return "";
+    const [user, server] = jid.split("@");
+    return `${user?.split(":")[0]}@${server === "c.us" ? "s.whatsapp.net" : server}`;
+  },
   downloadContentFromMessage: mock(async () => {
     async function* generate() {
       yield Buffer.from("chunk1");
@@ -658,6 +666,14 @@ mock.module("@whiskeysockets/baileys", () => ({
     Message: {
       AppStateSyncKeyData: {
         fromObject: (obj: any) => ({ ...obj, __appStateSyncKey: true }),
+      },
+      // The real decoder, from the generated protobuf: an encrypted message
+      // edit is only proven decrypted by the plaintext parsing as a Message,
+      // and a stub would prove nothing. WAProto is a separate entry point, so
+      // reaching for it here does not recurse into this mock.
+      decode: (buffer: Uint8Array) => realProto.Message.decode(buffer),
+      SecretEncryptedMessage: {
+        SecretEncType: realProto.Message.SecretEncryptedMessage.SecretEncType,
       },
     },
   },

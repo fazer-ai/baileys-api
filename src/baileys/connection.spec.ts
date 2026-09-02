@@ -13,8 +13,11 @@ import {
 const fetchCalls: Array<{ url: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
 
+import { createCipheriv, randomBytes } from "node:crypto";
 import * as baileysModule from "@whiskeysockets/baileys";
 import { WAMessageStatus } from "@whiskeysockets/baileys";
+import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
+import { messageEditKey } from "@/baileys/helpers/decryptMessageEdit";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { clusterKeys } from "@/cluster/keys";
 import * as sendStallStore from "@/cluster/sendStallStore";
@@ -610,6 +613,177 @@ describe("BaileysConnection", () => {
         await new Promise((r) => setImmediate(r));
       }
       expect(fetchCalls.some((c) => c.body?.includes('"epoch"'))).toBe(false);
+    });
+  });
+
+  // WhatsApp stopped sending message edits as a plaintext protocolMessage and
+  // now encrypts them under the ORIGINAL message's secret. Baileys has no
+  // handler for that node, so without this the raw blob reaches the webhook as
+  // an ordinary message and every consumer renders it as unsupported content —
+  // while the edit itself is lost.
+  describe("encrypted message edits", () => {
+    const CHAT = "167392323834034@lid";
+    const CHAT_PN = "553499503261@s.whatsapp.net";
+    const ORIG_ID = "3EB078E05D8F792B76A79F";
+    const messageSecret = new Uint8Array(32).fill(11);
+
+    function original() {
+      return {
+        key: {
+          remoteJid: CHAT,
+          remoteJidAlt: CHAT_PN,
+          fromMe: false,
+          id: ORIG_ID,
+        },
+        messageTimestamp: 1788389210,
+        message: {
+          conversation: "oi",
+          messageContextInfo: { messageSecret },
+        },
+      };
+    }
+
+    // Seals a replacement body the way the sending client does: HKDF over the
+    // original's secret bound to both parties, then AES-256-GCM with the tag
+    // appended.
+    function edit(
+      text: string,
+      senders = { origMsgSender: CHAT, editSender: CHAT },
+    ) {
+      const encIv = randomBytes(12);
+      const key = messageEditKey({
+        ...senders,
+        origMsgId: ORIG_ID,
+        messageSecret,
+      });
+      const cipher = createCipheriv("aes-256-gcm", key, encIv);
+      cipher.setAAD(Buffer.alloc(0));
+      const body = Buffer.concat([
+        cipher.update(
+          realProto.Message.encode(
+            realProto.Message.fromObject({ conversation: text }),
+          ).finish(),
+        ),
+        cipher.final(),
+      ]);
+
+      return {
+        key: {
+          remoteJid: CHAT,
+          remoteJidAlt: CHAT_PN,
+          fromMe: false,
+          id: "edit-1",
+        },
+        messageTimestamp: 1788389216,
+        message: {
+          secretEncryptedMessage: {
+            targetMessageKey: {
+              remoteJid: "89572297961476@lid",
+              fromMe: true,
+              id: ORIG_ID,
+            },
+            encPayload: Buffer.concat([body, cipher.getAuthTag()]),
+            encIv,
+            secretEncType: 2,
+          },
+        },
+      };
+    }
+
+    async function deliver(messages: unknown[]) {
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages });
+      await new Promise((r) => setImmediate(r));
+    }
+
+    beforeEach(() => {
+      mockSocket.user = {
+        id: "5511999999999:12@s.whatsapp.net",
+        lid: "89572297961476@lid",
+      };
+    });
+
+    it("delivers the edit as a messages.update against the original", async () => {
+      await connection.connect();
+
+      await deliver([original()]);
+      await deliver([edit("oi editado")]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      const parsed = JSON.parse(update?.body as string);
+      expect(parsed.data[0].key.id).toBe(ORIG_ID);
+      expect(parsed.data[0].key.fromMe).toBe(false);
+      expect(
+        parsed.data[0].update.message.editedMessage.message.conversation,
+      ).toBe("oi editado");
+    });
+
+    it("does not forward the encrypted node as a message", async () => {
+      await connection.connect();
+
+      await deliver([original()]);
+      fetchCalls.length = 0;
+      await deliver([edit("oi editado")]);
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.upsert"')),
+      ).toBe(false);
+    });
+
+    // The batch is not all-or-nothing: a real message sharing the frame with an
+    // edit still has to arrive.
+    it("keeps the other messages in the same batch", async () => {
+      await connection.connect();
+
+      await deliver([original()]);
+      fetchCalls.length = 0;
+      await deliver([
+        edit("oi editado"),
+        {
+          key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+          message: { conversation: "outra" },
+        },
+      ]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const parsed = JSON.parse(upsert?.body as string);
+      expect(parsed.data.messages).toHaveLength(1);
+      expect(parsed.data.messages[0].key.id).toBe("other-1");
+    });
+
+    // The secret only ever arrives on the original message, so an edit whose
+    // original this instance never saw is undecryptable. Dropping it is still
+    // better than the bubble: there is no content to show either way.
+    it("drops an edit whose original it never saw", async () => {
+      await connection.connect();
+
+      await deliver([edit("oi editado")]);
+
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    // LID migration means the same person is addressed two ways and only one of
+    // them went into the derivation; the tag check makes trying both safe.
+    it("finds the key when the derivation used the phone-number JID", async () => {
+      await connection.connect();
+
+      await deliver([original()]);
+      await deliver([
+        edit("oi editado", { origMsgSender: CHAT_PN, editSender: CHAT_PN }),
+      ]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
     });
   });
 

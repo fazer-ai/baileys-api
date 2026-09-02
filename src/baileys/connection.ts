@@ -22,6 +22,7 @@ import makeWASocket, {
   type WAPresence,
 } from "@whiskeysockets/baileys";
 import { toDataURL } from "qrcode";
+import { decryptMessageEdit } from "@/baileys/helpers/decryptMessageEdit";
 import { downloadMediaFromMessages } from "@/baileys/helpers/downloadMediaFromMessages";
 import { fetchBaileysClientVersion } from "@/baileys/helpers/fetchBaileysClientVersion";
 import {
@@ -37,8 +38,23 @@ import {
   isTxMutexTimeout,
   txMutexTimeoutKey,
 } from "@/baileys/helpers/isTxMutexTimeout";
+import {
+  messageAuthorJids,
+  messageEditSenderCandidates,
+  type OwnJids,
+} from "@/baileys/helpers/messageEditSenders";
+import {
+  recallMessageSecret,
+  rememberMessageSecret,
+} from "@/baileys/helpers/messageSecretStore";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
+import {
+  decodeEditedMessage,
+  ownMessageSecret,
+  type SecretMessageEdit,
+  secretMessageEdit,
+} from "@/baileys/helpers/secretEncryptedMessageEdit";
 import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
 import {
   advanceImportCandidate,
@@ -2397,6 +2413,16 @@ export class BaileysConnection {
       messagesData = { ...data, messages: individualMessages };
     }
 
+    const remaining = await this.absorbSecretMessageEdits(
+      messagesData.messages,
+    );
+    if (remaining.length !== messagesData.messages.length) {
+      if (remaining.length === 0) {
+        return;
+      }
+      messagesData = { ...messagesData, messages: remaining };
+    }
+
     const payload: BaileysConnectionWebhookPayload = {
       event: "messages.upsert",
       data: messagesData,
@@ -2410,6 +2436,127 @@ export class BaileysConnection {
     }
 
     this.sendToWebhook(payload);
+  }
+
+  // Turns encrypted message edits back into the `messages.update` the rest of
+  // the world already understands, and files every message secret that arrives
+  // so the NEXT edit has something to decrypt with.
+  //
+  // Returns the messages that are still messages. An edit is not one: forwarded
+  // as an upsert it becomes a second bubble the consumer can only render as
+  // unsupported content, which is precisely the bug this exists to remove.
+  private async absorbSecretMessageEdits(
+    messages: WAMessage[],
+  ): Promise<WAMessage[]> {
+    const kept: WAMessage[] = [];
+
+    for (const message of messages) {
+      const edit = secretMessageEdit(message);
+      if (edit) {
+        await this.emitSecretMessageEdit(message, edit);
+        continue;
+      }
+
+      kept.push(message);
+      await this.rememberOwnMessageSecret(message);
+    }
+
+    return kept;
+  }
+
+  private async rememberOwnMessageSecret(message: WAMessage) {
+    const secret = ownMessageSecret(message);
+    const messageId = message.key?.id;
+    if (!secret || !messageId) {
+      return;
+    }
+
+    try {
+      await rememberMessageSecret(
+        this.phoneNumber,
+        messageId,
+        secret,
+        messageAuthorJids(message.key, this.ownJids()),
+      );
+    } catch (error) {
+      // A message we cannot file is a future edit we cannot decrypt, never a
+      // reason to drop the message itself.
+      logger.warn(
+        "[%s] [rememberOwnMessageSecret] failed messageId=%s\n%s",
+        this.phoneNumber,
+        messageId,
+        errorToString(error),
+      );
+    }
+  }
+
+  private async emitSecretMessageEdit(
+    message: WAMessage,
+    { targetKey, encPayload, encIv }: SecretMessageEdit,
+  ) {
+    const targetId = targetKey.id as string;
+    const stored = await recallMessageSecret(this.phoneNumber, targetId);
+    if (!stored) {
+      // The original never passed through this instance, or it did so more than
+      // MESSAGE_SECRET_TTL_SECONDS ago. Nothing to derive the key from.
+      logger.warn(
+        "[%s] [emitSecretMessageEdit] no stored secret for targetId=%s",
+        this.phoneNumber,
+        targetId,
+      );
+      return;
+    }
+
+    const decrypted = decryptMessageEdit({
+      encPayload,
+      encIv,
+      origMsgId: targetId,
+      messageSecret: stored.secret,
+      senderCandidates: messageEditSenderCandidates({
+        editKey: message.key,
+        targetKey,
+        me: this.ownJids(),
+        storedSenders: stored.senders,
+      }),
+    });
+
+    if (!decrypted) {
+      logger.warn(
+        "[%s] [emitSecretMessageEdit] no sender candidate decrypted targetId=%s",
+        this.phoneNumber,
+        targetId,
+      );
+      return;
+    }
+
+    logger.debug(
+      "[%s] [emitSecretMessageEdit] decrypted targetId=%s senders=%o",
+      this.phoneNumber,
+      targetId,
+      decrypted.senders,
+    );
+
+    // Same shape Baileys emits for a plaintext MESSAGE_EDIT: the edit's own key
+    // with the id swapped for the original's, so the consumer updates the
+    // message that was edited rather than creating a new one.
+    this.handleMessagesUpdate([
+      {
+        key: { ...message.key, id: targetId },
+        update: {
+          message: {
+            editedMessage: {
+              message: decodeEditedMessage(decrypted.plaintext),
+            },
+          },
+          messageTimestamp: message.messageTimestamp,
+        },
+      },
+    ]);
+  }
+
+  private ownJids(): OwnJids {
+    const user = this.socket?.user;
+    return { id: user?.id, lid: user?.lid };
   }
 
   private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
