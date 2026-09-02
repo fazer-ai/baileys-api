@@ -9,6 +9,7 @@ const {
   BAILEYS_HTTP_TIMEOUT_MS,
   BAILEYS_TX_ACQUIRE_TIMEOUT_MS,
   BAILEYS_TX_HOLD_WARN_MS,
+  BAILEYS_MESSAGE_SECRET_STORE_TIMEOUT_MS,
   BAILEYS_SEND_TIMEOUT_MS,
   BAILEYS_SEND_STALL_RESTART_ENABLED,
   BAILEYS_CLIENT_VERSION,
@@ -159,6 +160,18 @@ const config = {
       "BAILEYS_SEND_TIMEOUT_MS",
       BAILEYS_SEND_TIMEOUT_MS,
       45_000,
+    ),
+    // How long a message delivery may wait on the message-secret store. Filing
+    // a secret is a side effect of delivering a message, never a reason not to
+    // deliver it: with node-redis's offline queue a disconnect leaves the
+    // command pending until reconnection, and unbounded that would withhold the
+    // message itself and every edit queued behind its delivery slot. Recalling
+    // one is bounded from the other side, so a parked read cannot wedge the
+    // edit chain for good.
+    messageSecretStoreTimeoutMs: intFromEnv(
+      "BAILEYS_MESSAGE_SECRET_STORE_TIMEOUT_MS",
+      BAILEYS_MESSAGE_SECRET_STORE_TIMEOUT_MS,
+      5_000,
     ),
     // Whether a connection whose sends keep timing out may recreate its own
     // socket. Off by default: this kills a live socket on a heuristic, so it

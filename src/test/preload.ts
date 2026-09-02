@@ -415,6 +415,7 @@ mock.module("@/config", () => ({
       txHoldWarnMs: 30_000,
       audioPreprocessTimeoutMs: 20_000,
       sendTimeoutMs: 45_000,
+      messageSecretStoreTimeoutMs: 5_000,
       sendStallRestartEnabled: false,
       clientVersion: "default",
       overrideClientVersion: false,

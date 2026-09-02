@@ -2427,9 +2427,21 @@ export class BaileysConnection {
     // message it edits.
     const settled = this.beginMessageDelivery();
     try {
-      const { kept, edits } = await this.absorbSecretMessageEdits(
+      const { kept, edits } = this.splitSecretMessageEdits(
         messagesData.messages,
       );
+
+      // Queued before ANY await, so an edit's place in the chain is the order
+      // it arrived in. Queueing even one await later loses that: filing the
+      // batch's secrets suspends, and a callback carrying only an edit has no
+      // secrets to file, so it would overtake an edit seen earlier and its
+      // newer text would land first. The barrier is unaffected — it holds this
+      // callback's delivery slot, which stays open until the send below.
+      for (const { message, edit } of edits) {
+        this.queueSecretMessageEdit(message, edit);
+      }
+
+      await this.rememberOwnMessageSecrets(kept);
 
       if (kept.length > 0) {
         if (kept.length !== messagesData.messages.length) {
@@ -2449,10 +2461,6 @@ export class BaileysConnection {
         }
 
         await this.sendToWebhook(payload);
-      }
-
-      for (const { message, edit } of edits) {
-        this.queueSecretMessageEdit(message, edit);
       }
     } finally {
       settled();
@@ -2509,25 +2517,10 @@ export class BaileysConnection {
       });
   }
 
-  // Separates the encrypted edits out of a batch and files every message secret
-  // that arrives, so the NEXT edit has something to decrypt with.
-  //
-  // `kept` is the messages that are still messages. An edit is not one:
-  // forwarded as an upsert it becomes a second bubble the consumer can only
-  // render as unsupported content, which is precisely the bug this exists to
-  // remove. The edits are handed back rather than emitted here, because they
-  // may only go out after the batch that carries their originals.
-  private async absorbSecretMessageEdits(messages: WAMessage[]): Promise<{
-    kept: WAMessage[];
-    edits: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
-  }> {
-    const { kept, edits } = this.splitSecretMessageEdits(messages);
-
-    for (const message of kept) {
+  private async rememberOwnMessageSecrets(messages: WAMessage[]) {
+    for (const message of messages) {
       await this.rememberOwnMessageSecret(message);
     }
-
-    return { kept, edits };
   }
 
   // Applies a dump's encrypted edits to the messages inside that same dump, and
@@ -2548,13 +2541,12 @@ export class BaileysConnection {
   // the frames are out. That path races the importer's own write, which is
   // exactly why it is the fallback and not the rule: an edit that may not land
   // still beats one that certainly will not.
-  private async repairHistoryEdits(messages: WAMessage[]): Promise<{
+  private repairHistoryEdits(messages: WAMessage[]): {
     kept: WAMessage[];
     unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
-  }> {
+  } {
     const { kept, edits } = this.splitSecretMessageEdits(messages);
-    if (edits.length === 0 && kept.length === messages.length) {
-      await this.rememberHistorySecrets(kept);
+    if (edits.length === 0) {
       return { kept, unresolved: [] };
     }
 
@@ -2619,7 +2611,6 @@ export class BaileysConnection {
       }
     }
 
-    await this.rememberHistorySecrets(kept);
     return { kept, unresolved };
   }
 
@@ -2654,7 +2645,11 @@ export class BaileysConnection {
     }
 
     try {
-      await rememberMessageSecrets(this.phoneNumber, entries);
+      await withTimeout(
+        "rememberMessageSecrets",
+        config.baileys.messageSecretStoreTimeoutMs,
+        () => rememberMessageSecrets(this.phoneNumber, entries),
+      );
     } catch (error) {
       logger.warn(
         "[%s] [rememberHistorySecrets] failed for %d message(s)\n%s",
@@ -2692,11 +2687,16 @@ export class BaileysConnection {
     }
 
     try {
-      await rememberMessageSecret(
-        this.phoneNumber,
-        messageId,
-        secret,
-        messageAuthorJids(message.key, this.ownJids()),
+      await withTimeout(
+        "rememberMessageSecret",
+        config.baileys.messageSecretStoreTimeoutMs,
+        () =>
+          rememberMessageSecret(
+            this.phoneNumber,
+            messageId,
+            secret,
+            messageAuthorJids(message.key, this.ownJids()),
+          ),
       );
     } catch (error) {
       // A message we cannot file is a future edit we cannot decrypt, never a
@@ -2735,7 +2735,11 @@ export class BaileysConnection {
     { targetKey, encPayload, encIv }: SecretMessageEdit,
   ) {
     const targetId = targetKey.id as string;
-    const stored = await recallMessageSecret(this.phoneNumber, targetId);
+    const stored = await withTimeout(
+      "recallMessageSecret",
+      config.baileys.messageSecretStoreTimeoutMs,
+      () => recallMessageSecret(this.phoneNumber, targetId),
+    );
     if (!stored) {
       // The original never passed through this instance, or it did so more than
       // MESSAGE_SECRET_TTL_SECONDS ago. Nothing to derive the key from.
@@ -3020,8 +3024,15 @@ export class BaileysConnection {
       data.lidPnMappings,
       data.chats ?? [],
     );
-    const { kept: messages, unresolved } =
-      await this.repairHistoryEdits(addressed);
+    const { kept: messages, unresolved } = this.repairHistoryEdits(addressed);
+
+    // Same rule as the live path, for the same reason: the queue position is
+    // taken before the filing below suspends. The barrier still holds these
+    // behind this dump's frames, since the delivery slot the caller opened
+    // stays open until they are all out.
+    this.queueUnresolvedHistoryEdits(unresolved);
+
+    await this.rememberHistorySecrets(messages);
 
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no
@@ -3029,7 +3040,6 @@ export class BaileysConnection {
     // is more".
     const exhausted = exhaustedChats(data.chats ?? []);
     if (messages.length === 0 && exhausted.length === 0) {
-      this.queueUnresolvedHistoryEdits(unresolved);
       return;
     }
 
@@ -3080,8 +3090,6 @@ export class BaileysConnection {
         },
       });
     }
-
-    this.queueUnresolvedHistoryEdits(unresolved);
   }
 
   // Sends, as live updates, the dump edits whose targets were not in the dump.

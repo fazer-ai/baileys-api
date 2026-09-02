@@ -1045,6 +1045,71 @@ describe("BaileysConnection", () => {
       expect(texts).toEqual(["primeira", "segunda"]);
     });
 
+    // A callback carrying only an edit has no batch to wait for, so if the
+    // queue position were taken at send time it would reserve ahead of an edit
+    // seen earlier alongside a message — and the older text would land last and
+    // win.
+    it("keeps two edits in the order they arrived, not the order they were sent", async () => {
+      await connection.connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      // Not awaited: this callback still has a batch to deliver when the
+      // edit-only one below arrives.
+      const first = handler({
+        type: "notify",
+        messages: [
+          edit("primeira"),
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+            message: { conversation: "outra" },
+          },
+        ],
+      });
+      await handler({ type: "notify", messages: [edit("segunda")] });
+      await first;
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["primeira", "segunda"]);
+    });
+
+    // Filing a secret is a side effect of delivering a message, never a reason
+    // to withhold it: node-redis parks a command on its offline queue until it
+    // reconnects, and unbounded that would hold the message AND every edit
+    // queued behind its delivery slot.
+    it("still delivers the batch when the secret store never answers", async () => {
+      await connection.connect();
+      const realSet = (redis as any).set;
+      const realTimeout = config.baileys.messageSecretStoreTimeoutMs;
+      // Never settles, which is exactly what an offline queue does.
+      (redis as any).set = mock(() => new Promise(() => {}));
+      (config.baileys as any).messageSecretStoreTimeoutMs = 20;
+
+      try {
+        await deliver([original()]);
+      } finally {
+        (redis as any).set = realSet;
+        (config.baileys as any).messageSecretStoreTimeoutMs = realTimeout;
+      }
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(JSON.parse(upsert?.body as string).data.messages[0].key.id).toBe(
+        ORIG_ID,
+      );
+    });
+
     // A sync split across notifications can leave the original in an earlier
     // one. There is nothing left to repair in place by then, but the secret was
     // filed, so the edit is still readable and goes out as a live update.
