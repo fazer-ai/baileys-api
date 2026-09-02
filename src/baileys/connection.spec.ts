@@ -957,6 +957,130 @@ describe("BaileysConnection", () => {
       expect(updateAt).toBeGreaterThan(upsertAt);
     });
 
+    // Everything between the event and the send — filing secrets, downloading
+    // media — is time a competing callback can run in. Tracking the delivery
+    // only at send time leaves that whole span looking idle, and an edit that
+    // arrives inside it overtakes the message it edits.
+    it("holds an edit behind an upsert still busy before its send", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      let releaseFiling: (() => void) | undefined;
+      const slowFiling = new Promise<void>((resolve) => {
+        releaseFiling = resolve;
+      });
+      const realSet = (redis as any).set;
+      (redis as any).set = mock(async (...args: unknown[]) => {
+        await slowFiling;
+        return (realSet as any)(...args);
+      });
+
+      const first = handler({ type: "notify", messages: [original()] });
+      await new Promise((r) => setImmediate(r));
+      await handler({ type: "notify", messages: [edit("oi editado")] });
+      await new Promise((r) => setImmediate(r));
+
+      // The original has not even been sent yet, so nothing may have gone out.
+      expect(fetchCalls).toHaveLength(0);
+
+      releaseFiling?.();
+      await first;
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      (redis as any).set = realSet;
+
+      const upsertAt = fetchCalls.findIndex((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const updateAt = fetchCalls.findIndex((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(upsertAt).toBeGreaterThanOrEqual(0);
+      expect(updateAt).toBeGreaterThan(upsertAt);
+    });
+
+    // The chain has to advance on the DELIVERY, not on the call. Advancing on
+    // the call lets a second edit start while the first is still working
+    // through its retries, and the older text lands last and wins.
+    it("does not start the next edit while the previous one is still delivering", async () => {
+      await connection.connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      let releaseFirst: (() => void) | undefined;
+      const slowFirst = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let updates = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        if ((init?.body as string)?.includes('"event":"messages.update"')) {
+          updates += 1;
+          if (updates === 1) {
+            await slowFirst;
+          }
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      await deliver([edit("primeira")]);
+      await deliver([edit("segunda")]);
+      await new Promise((r) => setImmediate(r));
+
+      expect(updates).toBe(1);
+
+      releaseFirst?.();
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      globalThis.fetch = realFetch;
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["primeira", "segunda"]);
+    });
+
+    // A sync split across notifications can leave the original in an earlier
+    // one. There is nothing left to repair in place by then, but the secret was
+    // filed, so the edit is still readable and goes out as a live update.
+    it("sends a dump edit whose original arrived in an earlier dump", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        syncType: 3,
+      });
+      await new Promise((r) => setImmediate(r));
+      fetchCalls.length = 0;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [edit("oi editado")],
+        syncType: 3,
+        isLatest: true,
+      });
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
     // A dump is repaired in place rather than re-narrated as an update: an
     // importer decides its own ordering, so an update would race the very write
     // it targets.

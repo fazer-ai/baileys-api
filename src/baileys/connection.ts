@@ -305,10 +305,10 @@ export class BaileysConnection {
   private sessionEnded = false;
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
-  // Orders the encrypted message edits against each other and against the
-  // upserts carrying the messages they edit. See queueSecretMessageEdit.
+  // Orders the encrypted message edits against each other and against every
+  // delivery that carries the messages they edit. See queueSecretMessageEdit.
   private editDeliveryChain: Promise<void> = Promise.resolve();
-  private inFlightUpsertDeliveries = new Set<Promise<unknown>>();
+  private inFlightMessageDeliveries = new Set<Promise<void>>();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2421,66 +2421,81 @@ export class BaileysConnection {
       messagesData = { ...data, messages: individualMessages };
     }
 
-    const { kept, edits } = await this.absorbSecretMessageEdits(
-      messagesData.messages,
-    );
-
-    if (kept.length > 0) {
-      if (kept.length !== messagesData.messages.length) {
-        messagesData = { ...messagesData, messages: kept };
-      }
-
-      const payload: BaileysConnectionWebhookPayload = {
-        event: "messages.upsert",
-        data: messagesData,
-      };
-
-      const media = await downloadMediaFromMessages(messagesData.messages, {
-        includeMedia: this.includeMedia,
-      });
-      if (media) {
-        payload.extra = { media };
-      }
-
-      await this.deliverUpsert(payload);
-    }
-
-    for (const { message, edit } of edits) {
-      this.queueSecretMessageEdit(message, edit);
-    }
-  }
-
-  // Tracked, not just sent. An encrypted edit is an update to a message that
-  // arrived on an upsert, and the original need not be in the same batch — nor
-  // even in the same callback, since Baileys does not await its listeners and
-  // two upserts can be in flight at once. Awaiting inside one callback
-  // therefore orders nothing against the others, which is why the edits wait on
-  // this set rather than on their own batch alone.
-  private async deliverUpsert(payload: BaileysConnectionWebhookPayload) {
-    const delivery = this.sendToWebhook(payload);
-    this.inFlightUpsertDeliveries.add(delivery);
+    // Registered before the first await, not at send time. Filing secrets and
+    // downloading media both suspend, and an edit arriving in a callback that
+    // runs during either would find nothing in flight and overtake the very
+    // message it edits.
+    const settled = this.beginMessageDelivery();
     try {
-      await delivery;
+      const { kept, edits } = await this.absorbSecretMessageEdits(
+        messagesData.messages,
+      );
+
+      if (kept.length > 0) {
+        if (kept.length !== messagesData.messages.length) {
+          messagesData = { ...messagesData, messages: kept };
+        }
+
+        const payload: BaileysConnectionWebhookPayload = {
+          event: "messages.upsert",
+          data: messagesData,
+        };
+
+        const media = await downloadMediaFromMessages(messagesData.messages, {
+          includeMedia: this.includeMedia,
+        });
+        if (media) {
+          payload.extra = { media };
+        }
+
+        await this.sendToWebhook(payload);
+      }
+
+      for (const { message, edit } of edits) {
+        this.queueSecretMessageEdit(message, edit);
+      }
     } finally {
-      this.inFlightUpsertDeliveries.delete(delivery);
+      settled();
     }
   }
 
-  // Queues one edit behind every upsert delivery that had already started, and
+  // Opens a slot for one delivery of messages to the consumer, and answers with
+  // the function that closes it.
+  //
+  // The slot spans the whole callback rather than the webhook call, because an
+  // edit has to wait for the message it edits to be DELIVERED, and everything
+  // between the event and the send — decryption, secret filing, media download
+  // — is time in which a competing callback can run. Both routes a message
+  // reaches the consumer by open one: live upserts and history frames.
+  private beginMessageDelivery(): () => void {
+    let close!: () => void;
+    const slot = new Promise<void>((resolve) => {
+      close = resolve;
+    });
+    this.inFlightMessageDeliveries.add(slot);
+    return () => {
+      this.inFlightMessageDeliveries.delete(slot);
+      close();
+    };
+  }
+
+  // Queues one edit behind every message delivery that had already started, and
   // behind the edits queued before it.
   //
-  // Both halves are load-bearing. Without the barrier an update can reach the
-  // consumer before the message it edits and be rejected as targeting an
-  // unknown id, leaving the original unedited — this feature's own bug, by
-  // another door. Without the chain two edits to the same message can land out
-  // of order and the older text wins.
+  // Both halves are load-bearing, and each covers a failure the other does not.
+  // Without the barrier an update reaches the consumer before the message it
+  // edits and is rejected as targeting an unknown id, leaving the original
+  // unedited — this feature's own bug, by another door. Without the chain two
+  // edits to one message race, and since the chain only advances once a
+  // delivery has actually finished, a first edit that needed a webhook retry
+  // cannot be overtaken by a second that went out on the first attempt.
   //
   // The reservation is taken HERE, synchronously, for the reason
   // `stallReportChain` takes its own: the chain does not enter sendToWebhook
   // until a microtask, and a graceful shutdown reading inFlightWebhooks in
   // between would see nothing pending and exit on top of a queued edit.
   private queueSecretMessageEdit(message: WAMessage, edit: SecretMessageEdit) {
-    const barrier = [...this.inFlightUpsertDeliveries];
+    const barrier = [...this.inFlightMessageDeliveries];
     this._inFlightWebhooks += 1;
     this.editDeliveryChain = this.editDeliveryChain
       .catch(() => {})
@@ -2526,16 +2541,25 @@ export class BaileysConnection {
   // decrypted replacement lands the same content — an update event, by
   // contrast, would flag an already-current message as edited over itself.
   //
-  // An edit whose target is not in the dump is dropped: there is nothing here to
-  // repair, and the message it belongs to was imported long ago.
-  private async repairHistoryEdits(
-    messages: WAMessage[],
-  ): Promise<WAMessage[]> {
+  // An edit whose target is NOT in this dump gets handed back instead. A sync
+  // split across notifications can put the original in an earlier one, and by
+  // then there is nothing left here to repair — but its secret was filed, so
+  // the edit is still readable and the caller sends it as a live update once
+  // the frames are out. That path races the importer's own write, which is
+  // exactly why it is the fallback and not the rule: an edit that may not land
+  // still beats one that certainly will not.
+  private async repairHistoryEdits(messages: WAMessage[]): Promise<{
+    kept: WAMessage[];
+    unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
+  }> {
     const { kept, edits } = this.splitSecretMessageEdits(messages);
     if (edits.length === 0 && kept.length === messages.length) {
       await this.rememberHistorySecrets(kept);
-      return kept;
+      return { kept, unresolved: [] };
     }
+
+    const unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }> =
+      [];
 
     // Indexed from the dump itself, not from Redis: an edit replayed alongside
     // its original needs that original's secret, and one round trip per edit
@@ -2559,11 +2583,7 @@ export class BaileysConnection {
       const target = byId.get(targetId);
       const secret = secrets.get(targetId);
       if (!target || !secret) {
-        logger.warn(
-          "[%s] [repairHistoryEdits] no target in this dump for targetId=%s",
-          this.phoneNumber,
-          targetId,
-        );
+        unresolved.push({ message, edit });
         continue;
       }
 
@@ -2600,7 +2620,7 @@ export class BaileysConnection {
     }
 
     await this.rememberHistorySecrets(kept);
-    return kept;
+    return { kept, unresolved };
   }
 
   // Files only the messages a future edit could still target. WhatsApp closes
@@ -2759,7 +2779,7 @@ export class BaileysConnection {
     // Same shape Baileys emits for a plaintext MESSAGE_EDIT: the edit's own key
     // with the id swapped for the original's, so the consumer updates the
     // message that was edited rather than creating a new one.
-    this.handleMessagesUpdate([
+    await this.handleMessagesUpdate([
       {
         key: { ...message.key, id: targetId },
         update: {
@@ -2779,7 +2799,9 @@ export class BaileysConnection {
     return { id: user?.id, lid: user?.lid };
   }
 
-  private handleMessagesUpdate(data: BaileysEventMap["messages.update"]) {
+  private handleMessagesUpdate(
+    data: BaileysEventMap["messages.update"],
+  ): Promise<unknown> {
     // Edits, deletions and reactions are conversation activity too — a
     // connection seeing them must not look idle to the rebalancer.
     this.markTraffic();
@@ -2795,7 +2817,11 @@ export class BaileysConnection {
 
     this.trackOutgoingAck(data);
 
-    this.sendToWebhook(
+    // Returned, not fired and forgotten: the encrypted-edit chain advances on
+    // this promise, and a chain that advanced on the CALL would let a second
+    // edit start while the first was still working through its retries — the
+    // older text then landing last and winning.
+    return this.sendToWebhook(
       {
         event: "messages.update",
         data,
@@ -2977,12 +3003,25 @@ export class BaileysConnection {
     // the second JID form every stored author candidate needs. Filing before
     // the restore would record half the candidates, and a later edit derived
     // from the form we dropped would never verify.
+    // Opened before the first await for the same reason the upsert path opens
+    // one: a live edit arriving while this dump is being decoded must wait for
+    // the messages it may target to actually go out.
+    const settled = this.beginMessageDelivery();
+    try {
+      await this.deliverHistory(data);
+    } finally {
+      settled();
+    }
+  }
+
+  private async deliverHistory(data: BaileysEventMap["messaging-history.set"]) {
     const addressed = await this.addressHistory(
       data.messages ?? [],
       data.lidPnMappings,
       data.chats ?? [],
     );
-    const messages = await this.repairHistoryEdits(addressed);
+    const { kept: messages, unresolved } =
+      await this.repairHistoryEdits(addressed);
 
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no
@@ -2990,6 +3029,7 @@ export class BaileysConnection {
     // is more".
     const exhausted = exhaustedChats(data.chats ?? []);
     if (messages.length === 0 && exhausted.length === 0) {
+      this.queueUnresolvedHistoryEdits(unresolved);
       return;
     }
 
@@ -3039,6 +3079,20 @@ export class BaileysConnection {
           exhausted,
         },
       });
+    }
+
+    this.queueUnresolvedHistoryEdits(unresolved);
+  }
+
+  // Sends, as live updates, the dump edits whose targets were not in the dump.
+  // They go through the same chain as a live edit, so they queue behind this
+  // dump's own frames — which are still counted as in flight by the delivery
+  // slot the caller opened.
+  private queueUnresolvedHistoryEdits(
+    unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>,
+  ) {
+    for (const { message, edit } of unresolved) {
+      this.queueSecretMessageEdit(message, edit);
     }
   }
 
