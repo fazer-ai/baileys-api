@@ -58,10 +58,24 @@ export function secretMessageEdit(
  * The message secret a message publishes for its own future modifications
  * (edits, reactions, poll votes). Only present on messages that can be
  * modified, which is why the caller stores it opportunistically.
+ *
+ * Three homes, one per route a message can arrive by:
+ *
+ *  - the normalized content, for an ordinary live message;
+ *  - the outer `Message`, because a wrapper keeps its context outside itself —
+ *    an ephemeral message's `messageContextInfo` sits next to the wrapper, not
+ *    inside it, and normalizing walks straight past it;
+ *  - the `WebMessageInfo` itself, which is where a history dump puts it.
+ *
+ * A secret read from any of them decrypts the same edits; missing one just
+ * means the edits to those messages arrive undecryptable.
  */
 export function ownMessageSecret(message: WAMessage): Uint8Array | null {
-  const secret = normalizeMessageContent(message.message)?.messageContextInfo
-    ?.messageSecret;
+  const secret =
+    normalizeMessageContent(message.message)?.messageContextInfo
+      ?.messageSecret ||
+    message.message?.messageContextInfo?.messageSecret ||
+    message.messageSecret;
   return secret?.length ? secret : null;
 }
 

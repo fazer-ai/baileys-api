@@ -2413,47 +2413,61 @@ export class BaileysConnection {
       messagesData = { ...data, messages: individualMessages };
     }
 
-    const remaining = await this.absorbSecretMessageEdits(
+    const { kept, edits } = await this.absorbSecretMessageEdits(
       messagesData.messages,
     );
-    if (remaining.length !== messagesData.messages.length) {
-      if (remaining.length === 0) {
-        return;
+
+    if (kept.length > 0) {
+      if (kept.length !== messagesData.messages.length) {
+        messagesData = { ...messagesData, messages: kept };
       }
-      messagesData = { ...messagesData, messages: remaining };
+
+      const payload: BaileysConnectionWebhookPayload = {
+        event: "messages.upsert",
+        data: messagesData,
+      };
+
+      const media = await downloadMediaFromMessages(messagesData.messages, {
+        includeMedia: this.includeMedia,
+      });
+      if (media) {
+        payload.extra = { media };
+      }
+
+      // Awaited, unlike before, because the edits below are updates to messages
+      // the consumer has to have seen: an offline burst can consolidate an
+      // original and its edit into ONE upsert, and each webhook delivery runs
+      // its own retry loop with no ordering between them. An update that
+      // overtakes the message it edits is rejected as targeting an unknown id,
+      // and the original then lands unedited — the bug this feature exists to
+      // fix, arriving by a different door.
+      await this.sendToWebhook(payload);
     }
 
-    const payload: BaileysConnectionWebhookPayload = {
-      event: "messages.upsert",
-      data: messagesData,
-    };
-
-    const media = await downloadMediaFromMessages(messagesData.messages, {
-      includeMedia: this.includeMedia,
-    });
-    if (media) {
-      payload.extra = { media };
+    for (const { message, edit } of edits) {
+      await this.emitSecretMessageEdit(message, edit);
     }
-
-    this.sendToWebhook(payload);
   }
 
-  // Turns encrypted message edits back into the `messages.update` the rest of
-  // the world already understands, and files every message secret that arrives
-  // so the NEXT edit has something to decrypt with.
+  // Separates the encrypted edits out of a batch and files every message secret
+  // that arrives, so the NEXT edit has something to decrypt with.
   //
-  // Returns the messages that are still messages. An edit is not one: forwarded
-  // as an upsert it becomes a second bubble the consumer can only render as
-  // unsupported content, which is precisely the bug this exists to remove.
-  private async absorbSecretMessageEdits(
-    messages: WAMessage[],
-  ): Promise<WAMessage[]> {
+  // `kept` is the messages that are still messages. An edit is not one:
+  // forwarded as an upsert it becomes a second bubble the consumer can only
+  // render as unsupported content, which is precisely the bug this exists to
+  // remove. The edits are handed back rather than emitted here, because they
+  // may only go out after the batch that carries their originals.
+  private async absorbSecretMessageEdits(messages: WAMessage[]): Promise<{
+    kept: WAMessage[];
+    edits: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
+  }> {
     const kept: WAMessage[] = [];
+    const edits: Array<{ message: WAMessage; edit: SecretMessageEdit }> = [];
 
     for (const message of messages) {
       const edit = secretMessageEdit(message);
       if (edit) {
-        await this.emitSecretMessageEdit(message, edit);
+        edits.push({ message, edit });
         continue;
       }
 
@@ -2461,7 +2475,7 @@ export class BaileysConnection {
       await this.rememberOwnMessageSecret(message);
     }
 
-    return kept;
+    return { kept, edits };
   }
 
   private async rememberOwnMessageSecret(message: WAMessage) {
@@ -2491,6 +2505,26 @@ export class BaileysConnection {
   }
 
   private async emitSecretMessageEdit(
+    message: WAMessage,
+    edit: SecretMessageEdit,
+  ) {
+    try {
+      await this.decryptAndEmitMessageEdit(message, edit);
+    } catch (error) {
+      // Contained per edit. Redis can refuse the lookup and a decrypted payload
+      // can still fail to parse, and neither is a reason to lose the other
+      // edits in the batch — nor, before this was awaited after the upsert, the
+      // ordinary messages that rode in with them.
+      logger.warn(
+        "[%s] [emitSecretMessageEdit] failed targetId=%s\n%s",
+        this.phoneNumber,
+        edit.targetKey.id,
+        errorToString(error),
+      );
+    }
+  }
+
+  private async decryptAndEmitMessageEdit(
     message: WAMessage,
     { targetKey, encPayload, encIv }: SecretMessageEdit,
   ) {
@@ -2752,7 +2786,18 @@ export class BaileysConnection {
   private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
-    const messages = data.messages ?? [];
+    // A dump is the other route a message arrives by, so it is the other place
+    // its secret has to be filed: a reconnect can replay an original whose
+    // fifteen-minute edit window is still open, and the live edit that follows
+    // has nothing to decrypt with unless the dump was read for secrets too.
+    //
+    // The edits the dump itself carries are dropped rather than emitted. A dump
+    // is a replay of stored state, read by an importer that decides its own
+    // ordering, and injecting live-shaped updates into it would target messages
+    // the import has not written yet.
+    const { kept: messages } = await this.absorbSecretMessageEdits(
+      data.messages ?? [],
+    );
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no
     // chat record at all, so an empty list here means "no news", never "there

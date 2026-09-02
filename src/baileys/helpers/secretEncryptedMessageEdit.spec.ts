@@ -130,6 +130,30 @@ describe("ownMessageSecret", () => {
     ).toEqual(secret);
   });
 
+  // A wrapper keeps its context outside itself, so normalizing walks straight
+  // past the secret and every edit to a disappearing message stops decrypting.
+  it("reads the outer context of a wrapped message", () => {
+    const secret = new Uint8Array(32).fill(9);
+
+    expect(
+      ownMessageSecret(
+        upsert({
+          messageContextInfo: { messageSecret: secret },
+          ephemeralMessage: { message: { conversation: "oi" } },
+        }),
+      ),
+    ).toEqual(secret);
+  });
+
+  // A history dump puts it on the WebMessageInfo instead of in the content.
+  it("reads the secret a history dump carries on the message itself", () => {
+    const secret = new Uint8Array(32).fill(9);
+    const message = upsert({ conversation: "oi" });
+    message.messageSecret = secret;
+
+    expect(ownMessageSecret(message)).toEqual(secret);
+  });
+
   it("returns null when there is none", () => {
     expect(ownMessageSecret(upsert({ conversation: "oi" }))).toBeNull();
   });

@@ -785,6 +785,147 @@ describe("BaileysConnection", () => {
           .message.conversation,
       ).toBe("oi editado");
     });
+
+    // An offline burst consolidates a message and its edit into ONE upsert.
+    // Each webhook delivery runs its own retry loop with no ordering between
+    // them, so an update sent first can reach the consumer before the message
+    // it edits exists there — and be rejected as targeting an unknown id.
+    it("sends the batch before an edit of a message inside it", async () => {
+      await connection.connect();
+
+      await deliver([original(), edit("oi editado")]);
+
+      const upsertAt = fetchCalls.findIndex((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const updateAt = fetchCalls.findIndex((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(upsertAt).toBeGreaterThanOrEqual(0);
+      expect(updateAt).toBeGreaterThan(upsertAt);
+    });
+
+    // The lookup is the one step that talks to Redis, and it used to throw
+    // straight out of the batch loop: a disconnect at the wrong moment silently
+    // dropped every ordinary message that shared the frame with an edit.
+    it("keeps delivering the batch when the secret lookup fails", async () => {
+      await connection.connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+      // Swapped and restored by hand rather than with spyOn: the redis module is
+      // already a mock, and restoring a spy over one leaves it answering
+      // undefined for every later test in the file.
+      const realGet = (redis as any).get;
+      (redis as any).get = mock(async () => {
+        throw new Error("redis is down");
+      });
+
+      try {
+        await deliver([
+          edit("oi editado"),
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+            message: { conversation: "outra" },
+          },
+        ]);
+      } finally {
+        (redis as any).get = realGet;
+      }
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(JSON.parse(upsert?.body as string).data.messages[0].key.id).toBe(
+        "other-1",
+      );
+    });
+
+    // A wrapper keeps its context outside itself, so normalizing walks straight
+    // past the secret and every edit to a disappearing message stops decrypting.
+    it("files the secret of a message wrapped as ephemeral", async () => {
+      await connection.connect();
+      const wrapped = original();
+
+      await deliver([
+        {
+          ...wrapped,
+          message: {
+            messageContextInfo: { messageSecret },
+            ephemeralMessage: { message: { conversation: "oi" } },
+          },
+        },
+      ]);
+      await deliver([edit("oi editado")]);
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(true);
+    });
+
+    // A dump is the other route a message arrives by. A reconnect can replay an
+    // original whose edit window is still open, and the live edit that follows
+    // has nothing to decrypt with unless the dump was read for secrets too.
+    it("files the secret of a message that arrived in a history dump", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      // A dump carries the secret on the WebMessageInfo, not in the content.
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+            messageTimestamp: 1788389210,
+            message: { conversation: "oi" },
+            messageSecret,
+          },
+        ],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+      fetchCalls.length = 0;
+
+      await deliver([edit("oi editado")]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    it("keeps an encrypted edit out of the history frame", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+            messageTimestamp: 1788389210,
+            message: { conversation: "oi" },
+            messageSecret,
+          },
+          edit("oi editado"),
+        ],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].key.id).toBe(ORIG_ID);
+    });
   });
 
   describe("traffic tracking", () => {
