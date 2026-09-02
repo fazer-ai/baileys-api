@@ -28,6 +28,12 @@ export function messageSecretKey(phoneNumber: string, messageId: string) {
   return `${redisKeyPrefix}:${phoneNumber}:message-secret:${messageId}`;
 }
 
+export interface MessageSecretEntry {
+  messageId: string;
+  secret: Uint8Array;
+  senders: string[];
+}
+
 export async function rememberMessageSecret(
   phoneNumber: string,
   messageId: string,
@@ -42,6 +48,23 @@ export async function rememberMessageSecret(
     messageSecretKey(phoneNumber, messageId),
     JSON.stringify(payload),
     { expiration: { type: "EX", value: MESSAGE_SECRET_TTL_SECONDS } },
+  );
+}
+
+/**
+ * Files a whole batch at once. Written for a history dump, which can carry
+ * thousands of messages: awaiting each write in turn would put a Redis round
+ * trip between every message and the next, and hold the dump's delivery behind
+ * all of them. Fired together, the client pipelines them into one flush.
+ */
+export async function rememberMessageSecrets(
+  phoneNumber: string,
+  entries: MessageSecretEntry[],
+): Promise<void> {
+  await Promise.all(
+    entries.map(({ messageId, secret, senders }) =>
+      rememberMessageSecret(phoneNumber, messageId, secret, senders),
+    ),
   );
 }
 

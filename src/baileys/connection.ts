@@ -44,13 +44,17 @@ import {
   type OwnJids,
 } from "@/baileys/helpers/messageEditSenders";
 import {
+  MESSAGE_SECRET_TTL_SECONDS,
+  type MessageSecretEntry,
   recallMessageSecret,
   rememberMessageSecret,
+  rememberMessageSecrets,
 } from "@/baileys/helpers/messageSecretStore";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import {
   decodeEditedMessage,
+  messageTimestampSeconds,
   ownMessageSecret,
   type SecretMessageEdit,
   secretMessageEdit,
@@ -301,6 +305,10 @@ export class BaileysConnection {
   private sessionEnded = false;
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
+  // Orders the encrypted message edits against each other and against the
+  // upserts carrying the messages they edit. See queueSecretMessageEdit.
+  private editDeliveryChain: Promise<void> = Promise.resolve();
+  private inFlightUpsertDeliveries = new Set<Promise<unknown>>();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2434,19 +2442,56 @@ export class BaileysConnection {
         payload.extra = { media };
       }
 
-      // Awaited, unlike before, because the edits below are updates to messages
-      // the consumer has to have seen: an offline burst can consolidate an
-      // original and its edit into ONE upsert, and each webhook delivery runs
-      // its own retry loop with no ordering between them. An update that
-      // overtakes the message it edits is rejected as targeting an unknown id,
-      // and the original then lands unedited — the bug this feature exists to
-      // fix, arriving by a different door.
-      await this.sendToWebhook(payload);
+      await this.deliverUpsert(payload);
     }
 
     for (const { message, edit } of edits) {
-      await this.emitSecretMessageEdit(message, edit);
+      this.queueSecretMessageEdit(message, edit);
     }
+  }
+
+  // Tracked, not just sent. An encrypted edit is an update to a message that
+  // arrived on an upsert, and the original need not be in the same batch — nor
+  // even in the same callback, since Baileys does not await its listeners and
+  // two upserts can be in flight at once. Awaiting inside one callback
+  // therefore orders nothing against the others, which is why the edits wait on
+  // this set rather than on their own batch alone.
+  private async deliverUpsert(payload: BaileysConnectionWebhookPayload) {
+    const delivery = this.sendToWebhook(payload);
+    this.inFlightUpsertDeliveries.add(delivery);
+    try {
+      await delivery;
+    } finally {
+      this.inFlightUpsertDeliveries.delete(delivery);
+    }
+  }
+
+  // Queues one edit behind every upsert delivery that had already started, and
+  // behind the edits queued before it.
+  //
+  // Both halves are load-bearing. Without the barrier an update can reach the
+  // consumer before the message it edits and be rejected as targeting an
+  // unknown id, leaving the original unedited — this feature's own bug, by
+  // another door. Without the chain two edits to the same message can land out
+  // of order and the older text wins.
+  //
+  // The reservation is taken HERE, synchronously, for the reason
+  // `stallReportChain` takes its own: the chain does not enter sendToWebhook
+  // until a microtask, and a graceful shutdown reading inFlightWebhooks in
+  // between would see nothing pending and exit on top of a queued edit.
+  private queueSecretMessageEdit(message: WAMessage, edit: SecretMessageEdit) {
+    const barrier = [...this.inFlightUpsertDeliveries];
+    this._inFlightWebhooks += 1;
+    this.editDeliveryChain = this.editDeliveryChain
+      .catch(() => {})
+      .then(async () => {
+        await Promise.allSettled(barrier);
+        await this.emitSecretMessageEdit(message, edit);
+      })
+      .catch(() => {})
+      .finally(() => {
+        this._inFlightWebhooks -= 1;
+      });
   }
 
   // Separates the encrypted edits out of a batch and files every message secret
@@ -2461,6 +2506,149 @@ export class BaileysConnection {
     kept: WAMessage[];
     edits: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
   }> {
+    const { kept, edits } = this.splitSecretMessageEdits(messages);
+
+    for (const message of kept) {
+      await this.rememberOwnMessageSecret(message);
+    }
+
+    return { kept, edits };
+  }
+
+  // Applies a dump's encrypted edits to the messages inside that same dump, and
+  // files the secrets that can still matter later.
+  //
+  // Repaired in place rather than re-narrated as `messages.update`. A dump is a
+  // replay of stored state read by an importer that decides its own ordering,
+  // so an update would race the very write it targets. It is also the only
+  // choice that is right either way: whether the dump's row holds the message's
+  // original text or the text it was edited to, overwriting it with the
+  // decrypted replacement lands the same content — an update event, by
+  // contrast, would flag an already-current message as edited over itself.
+  //
+  // An edit whose target is not in the dump is dropped: there is nothing here to
+  // repair, and the message it belongs to was imported long ago.
+  private async repairHistoryEdits(
+    messages: WAMessage[],
+  ): Promise<WAMessage[]> {
+    const { kept, edits } = this.splitSecretMessageEdits(messages);
+    if (edits.length === 0 && kept.length === messages.length) {
+      await this.rememberHistorySecrets(kept);
+      return kept;
+    }
+
+    // Indexed from the dump itself, not from Redis: an edit replayed alongside
+    // its original needs that original's secret, and one round trip per edit
+    // would ask the network for something already in hand.
+    const secrets = new Map<string, Uint8Array>();
+    const byId = new Map<string, WAMessage>();
+    for (const message of kept) {
+      const id = message.key?.id;
+      if (!id) {
+        continue;
+      }
+      byId.set(id, message);
+      const secret = ownMessageSecret(message);
+      if (secret) {
+        secrets.set(id, secret);
+      }
+    }
+
+    for (const { message, edit } of edits) {
+      const targetId = edit.targetKey.id as string;
+      const target = byId.get(targetId);
+      const secret = secrets.get(targetId);
+      if (!target || !secret) {
+        logger.warn(
+          "[%s] [repairHistoryEdits] no target in this dump for targetId=%s",
+          this.phoneNumber,
+          targetId,
+        );
+        continue;
+      }
+
+      try {
+        const decrypted = decryptMessageEdit({
+          encPayload: edit.encPayload,
+          encIv: edit.encIv,
+          origMsgId: targetId,
+          messageSecret: secret,
+          senderCandidates: messageEditSenderCandidates({
+            editKey: message.key,
+            targetKey: edit.targetKey,
+            me: this.ownJids(),
+            storedSenders: messageAuthorJids(target.key, this.ownJids()),
+          }),
+        });
+        if (!decrypted) {
+          logger.warn(
+            "[%s] [repairHistoryEdits] no sender candidate decrypted targetId=%s",
+            this.phoneNumber,
+            targetId,
+          );
+          continue;
+        }
+        target.message = decodeEditedMessage(decrypted.plaintext);
+      } catch (error) {
+        logger.warn(
+          "[%s] [repairHistoryEdits] failed targetId=%s\n%s",
+          this.phoneNumber,
+          targetId,
+          errorToString(error),
+        );
+      }
+    }
+
+    await this.rememberHistorySecrets(kept);
+    return kept;
+  }
+
+  // Files only the messages a future edit could still target. WhatsApp closes
+  // the edit window minutes after sending, and a secret outlives its usefulness
+  // by MESSAGE_SECRET_TTL_SECONDS, so anything older than that can never
+  // decrypt anything: filing an archive's worth of them would spend a round
+  // trip per message, hold the dump behind all of them, and leave a keyspace
+  // nothing will ever read.
+  private async rememberHistorySecrets(messages: WAMessage[]) {
+    const oldest = Date.now() / 1000 - MESSAGE_SECRET_TTL_SECONDS;
+    const entries: MessageSecretEntry[] = [];
+
+    for (const message of messages) {
+      const messageId = message.key?.id;
+      const secret = messageId ? ownMessageSecret(message) : null;
+      if (!messageId || !secret) {
+        continue;
+      }
+      if (messageTimestampSeconds(message) < oldest) {
+        continue;
+      }
+      entries.push({
+        messageId,
+        secret,
+        senders: messageAuthorJids(message.key, this.ownJids()),
+      });
+    }
+
+    if (entries.length === 0) {
+      return;
+    }
+
+    try {
+      await rememberMessageSecrets(this.phoneNumber, entries);
+    } catch (error) {
+      logger.warn(
+        "[%s] [rememberHistorySecrets] failed for %d message(s)\n%s",
+        this.phoneNumber,
+        entries.length,
+        errorToString(error),
+      );
+    }
+  }
+
+  private splitSecretMessageEdits(messages: WAMessage[]): {
+    kept: WAMessage[];
+    edits: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
+  } {
     const kept: WAMessage[] = [];
     const edits: Array<{ message: WAMessage; edit: SecretMessageEdit }> = [];
 
@@ -2468,11 +2656,9 @@ export class BaileysConnection {
       const edit = secretMessageEdit(message);
       if (edit) {
         edits.push({ message, edit });
-        continue;
+      } else {
+        kept.push(message);
       }
-
-      kept.push(message);
-      await this.rememberOwnMessageSecret(message);
     }
 
     return { kept, edits };
@@ -2786,18 +2972,18 @@ export class BaileysConnection {
   private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
-    // A dump is the other route a message arrives by, so it is the other place
-    // its secret has to be filed: a reconnect can replay an original whose
-    // fifteen-minute edit window is still open, and the live edit that follows
-    // has nothing to decrypt with unless the dump was read for secrets too.
-    //
-    // The edits the dump itself carries are dropped rather than emitted. A dump
-    // is a replay of stored state, read by an importer that decides its own
-    // ordering, and injecting live-shaped updates into it would target messages
-    // the import has not written yet.
-    const { kept: messages } = await this.absorbSecretMessageEdits(
+    // Addressing first, secrets second, and the order is load-bearing: a dump's
+    // keys arrive without their `remoteJidAlt`/`participantAlt`, and those are
+    // the second JID form every stored author candidate needs. Filing before
+    // the restore would record half the candidates, and a later edit derived
+    // from the form we dropped would never verify.
+    const addressed = await this.addressHistory(
       data.messages ?? [],
+      data.lidPnMappings,
+      data.chats ?? [],
     );
+    const messages = await this.repairHistoryEdits(addressed);
+
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no
     // chat record at all, so an empty list here means "no news", never "there
@@ -2819,7 +3005,7 @@ export class BaileysConnection {
 
     let chunkIndex = 0;
     for (const frame of historyFrames(
-      await this.addressHistory(messages, data.lidPnMappings, data.chats ?? []),
+      messages,
       config.webhook.historyFrameMaxBytes,
     )) {
       const payload: BaileysHistoryFramePayload = {

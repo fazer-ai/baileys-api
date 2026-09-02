@@ -12,6 +12,23 @@ const MESSAGE_EDIT_ENC_TYPES: ReadonlySet<number | string> = new Set([
   "MESSAGE_EDIT",
 ]);
 
+/**
+ * The unix seconds on a message. A protobuf 64-bit field decodes either as a
+ * number or as a `{ low, high }` Long depending on how it came off the wire,
+ * and a dump mixes both.
+ */
+export function messageTimestampSeconds(message: WAMessage): number {
+  const timestamp = message.messageTimestamp;
+  if (typeof timestamp === "number") {
+    return timestamp;
+  }
+  if (timestamp && typeof timestamp === "object") {
+    const { low = 0, high = 0 } = timestamp as { low?: number; high?: number };
+    return high * 2 ** 32 + (low >>> 0);
+  }
+  return 0;
+}
+
 export interface SecretMessageEdit {
   targetKey: WAMessageKey;
   encPayload: Uint8Array;

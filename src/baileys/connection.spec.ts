@@ -18,6 +18,10 @@ import * as baileysModule from "@whiskeysockets/baileys";
 import { WAMessageStatus } from "@whiskeysockets/baileys";
 import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
 import { messageEditKey } from "@/baileys/helpers/decryptMessageEdit";
+import {
+  MESSAGE_SECRET_TTL_SECONDS,
+  messageSecretKey,
+} from "@/baileys/helpers/messageSecretStore";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { clusterKeys } from "@/cluster/keys";
 import * as sendStallStore from "@/cluster/sendStallStore";
@@ -643,6 +647,22 @@ describe("BaileysConnection", () => {
       };
     }
 
+    // The same message as a history dump delivers it: the secret on the
+    // WebMessageInfo rather than in the content, and no `remoteJidAlt` — a dump
+    // strips the addressing, which `addressHistory` puts back.
+    //
+    // The timestamp is relative to now because a dump's secrets are only filed
+    // while an edit could still target them; a fixed epoch would pass today and
+    // start failing an hour from now.
+    function dumped(ageSeconds = 60) {
+      return {
+        key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+        messageTimestamp: Math.floor(Date.now() / 1000) - ageSeconds,
+        message: { conversation: "oi" },
+        messageSecret,
+      };
+    }
+
     // Seals a replacement body the way the sending client does: HKDF over the
     // original's secret bound to both parties, then AES-256-GCM with the tag
     // appended.
@@ -873,14 +893,7 @@ describe("BaileysConnection", () => {
       await historyHandler({
         chats: [],
         contacts: [],
-        messages: [
-          {
-            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
-            messageTimestamp: 1788389210,
-            message: { conversation: "oi" },
-            messageSecret,
-          },
-        ],
+        messages: [dumped()],
         syncType: 3,
         isLatest: true,
       });
@@ -898,6 +911,128 @@ describe("BaileysConnection", () => {
       ).toBe("oi editado");
     });
 
+    // Baileys does not await its listeners, so two upsert callbacks can be in
+    // flight at once and awaiting inside one orders nothing against the other.
+    // The edit has to wait on the upsert deliveries that were already running,
+    // not just on its own batch.
+    it("holds an edit behind an upsert still in flight from an earlier callback", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      let releaseUpsert: (() => void) | undefined;
+      const slowUpsert = new Promise<void>((resolve) => {
+        releaseUpsert = resolve;
+      });
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        if ((init?.body as string)?.includes('"event":"messages.upsert"')) {
+          await slowUpsert;
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      // Not awaited: this is the callback that is still running when the next
+      // one arrives, which is the whole situation under test.
+      const first = handler({ type: "notify", messages: [original()] });
+      await new Promise((r) => setImmediate(r));
+      await handler({ type: "notify", messages: [edit("oi editado")] });
+      await new Promise((r) => setImmediate(r));
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+
+      releaseUpsert?.();
+      await first;
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      globalThis.fetch = realFetch;
+
+      const upsertAt = fetchCalls.findIndex((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const updateAt = fetchCalls.findIndex((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(updateAt).toBeGreaterThan(upsertAt);
+    });
+
+    // A dump is repaired in place rather than re-narrated as an update: an
+    // importer decides its own ordering, so an update would race the very write
+    // it targets.
+    it("applies an edit inside a dump to the message it edits", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(), edit("oi editado")],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("oi editado");
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // A full archive carries messages whose edit window closed long ago. Filing
+    // their secrets spends a round trip each and leaves a keyspace nothing can
+    // ever read.
+    it("does not file the secret of a message too old to still be edited", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(MESSAGE_SECRET_TTL_SECONDS + 60)],
+        syncType: 2,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      expect(
+        (redis as any).__stringData.has(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      ).toBe(false);
+    });
+
+    // A dump strips the addressing, and the second JID form is exactly what the
+    // stored author candidates are for. Filing before `addressHistory` restores
+    // it records half the candidates, and an edit derived from the form that
+    // was dropped never verifies.
+    it("files both JID forms of an author a dump addressed by LID alone", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        lidPnMappings: [{ lid: CHAT, pn: CHAT_PN }],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      const stored = JSON.parse(
+        (redis as any).__stringData.get(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      );
+      expect(stored.senders).toEqual([CHAT, CHAT_PN]);
+    });
+
     it("keeps an encrypted edit out of the history frame", async () => {
       await connection.connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
@@ -905,15 +1040,7 @@ describe("BaileysConnection", () => {
       await historyHandler({
         chats: [],
         contacts: [],
-        messages: [
-          {
-            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
-            messageTimestamp: 1788389210,
-            message: { conversation: "oi" },
-            messageSecret,
-          },
-          edit("oi editado"),
-        ],
+        messages: [dumped(), edit("oi editado")],
         syncType: 3,
         isLatest: true,
       });
