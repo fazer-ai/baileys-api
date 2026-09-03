@@ -639,7 +639,7 @@ describe("BaileysConnection", () => {
           fromMe: false,
           id: ORIG_ID,
         },
-        messageTimestamp: 1788389210,
+        messageTimestamp: Math.floor(Date.now() / 1000),
         message: {
           conversation: "oi",
           messageContextInfo: { messageSecret },
@@ -694,7 +694,7 @@ describe("BaileysConnection", () => {
           fromMe: false,
           id: "edit-1",
         },
-        messageTimestamp: 1788389216,
+        messageTimestamp: Math.floor(Date.now() / 1000),
         message: {
           secretEncryptedMessage: {
             targetMessageKey: {
@@ -713,7 +713,17 @@ describe("BaileysConnection", () => {
     async function deliver(messages: unknown[]) {
       const handler = mockEventHandlers.get("messages.upsert")!;
       await handler({ type: "notify", messages });
+      await drain();
+    }
+
+    // An edit is delivered outside the callback that saw it, so waiting a tick
+    // is not enough — wait for the connection to report nothing pending, which
+    // is the same count a graceful shutdown drains on.
+    async function drain() {
       await new Promise((r) => setImmediate(r));
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
     }
 
     beforeEach(() => {
@@ -806,23 +816,39 @@ describe("BaileysConnection", () => {
       ).toBe("oi editado");
     });
 
-    // An offline burst consolidates a message and its edit into ONE upsert.
-    // Each webhook delivery runs its own retry loop with no ordering between
-    // them, so an update sent first can reach the consumer before the message
-    // it edits exists there — and be rejected as targeting an unknown id.
-    it("sends the batch before an edit of a message inside it", async () => {
+    // The common case needs no ordering at all: an offline burst consolidates a
+    // message and its edit into one upsert, and the batch can simply repair
+    // itself. Delivering an update alongside the message it edits was what four
+    // rounds of barriers and chains were built to sequence.
+    it("applies an edit to a message in its own batch, with no update event", async () => {
       await connection.connect();
 
       await deliver([original(), edit("oi editado")]);
 
-      const upsertAt = fetchCalls.findIndex((c) =>
+      const upsert = fetchCalls.find((c) =>
         c.body?.includes('"event":"messages.upsert"'),
       );
-      const updateAt = fetchCalls.findIndex((c) =>
-        c.body?.includes('"event":"messages.update"'),
-      );
-      expect(upsertAt).toBeGreaterThanOrEqual(0);
-      expect(updateAt).toBeGreaterThan(upsertAt);
+      const messages = JSON.parse(upsert?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("oi editado");
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // An edit is delivered outside the callback that saw it, and recalling its
+    // secret suspends before sendToWebhook counts anything. A shutdown reading
+    // the count in that gap would exit on top of the edit.
+    it("counts a pending edit as work a graceful shutdown must drain", async () => {
+      await connection.connect();
+      await deliver([original()]);
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages: [edit("oi editado")] });
+
+      expect(connection.inFlightWebhooks).toBeGreaterThan(0);
+      await drain();
+      expect(connection.inFlightWebhooks).toBe(0);
     });
 
     // The lookup is the one step that talks to Redis, and it used to throw
@@ -911,178 +937,6 @@ describe("BaileysConnection", () => {
       ).toBe("oi editado");
     });
 
-    // Baileys does not await its listeners, so two upsert callbacks can be in
-    // flight at once and awaiting inside one orders nothing against the other.
-    // The edit has to wait on the upsert deliveries that were already running,
-    // not just on its own batch.
-    it("holds an edit behind an upsert still in flight from an earlier callback", async () => {
-      await connection.connect();
-      const handler = mockEventHandlers.get("messages.upsert")!;
-      let releaseUpsert: (() => void) | undefined;
-      const slowUpsert = new Promise<void>((resolve) => {
-        releaseUpsert = resolve;
-      });
-      const realFetch = globalThis.fetch;
-      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
-        if ((init?.body as string)?.includes('"event":"messages.upsert"')) {
-          await slowUpsert;
-        }
-        return realFetch(url, init);
-      }) as any;
-
-      // Not awaited: this is the callback that is still running when the next
-      // one arrives, which is the whole situation under test.
-      const first = handler({ type: "notify", messages: [original()] });
-      await new Promise((r) => setImmediate(r));
-      await handler({ type: "notify", messages: [edit("oi editado")] });
-      await new Promise((r) => setImmediate(r));
-
-      expect(
-        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
-      ).toBe(false);
-
-      releaseUpsert?.();
-      await first;
-      while (connection.inFlightWebhooks > 0) {
-        await new Promise((r) => setImmediate(r));
-      }
-      globalThis.fetch = realFetch;
-
-      const upsertAt = fetchCalls.findIndex((c) =>
-        c.body?.includes('"event":"messages.upsert"'),
-      );
-      const updateAt = fetchCalls.findIndex((c) =>
-        c.body?.includes('"event":"messages.update"'),
-      );
-      expect(updateAt).toBeGreaterThan(upsertAt);
-    });
-
-    // Everything between the event and the send — filing secrets, downloading
-    // media — is time a competing callback can run in. Tracking the delivery
-    // only at send time leaves that whole span looking idle, and an edit that
-    // arrives inside it overtakes the message it edits.
-    it("holds an edit behind an upsert still busy before its send", async () => {
-      await connection.connect();
-      const handler = mockEventHandlers.get("messages.upsert")!;
-      let releaseFiling: (() => void) | undefined;
-      const slowFiling = new Promise<void>((resolve) => {
-        releaseFiling = resolve;
-      });
-      const realSet = (redis as any).set;
-      (redis as any).set = mock(async (...args: unknown[]) => {
-        await slowFiling;
-        return (realSet as any)(...args);
-      });
-
-      const first = handler({ type: "notify", messages: [original()] });
-      await new Promise((r) => setImmediate(r));
-      await handler({ type: "notify", messages: [edit("oi editado")] });
-      await new Promise((r) => setImmediate(r));
-
-      // The original has not even been sent yet, so nothing may have gone out.
-      expect(fetchCalls).toHaveLength(0);
-
-      releaseFiling?.();
-      await first;
-      while (connection.inFlightWebhooks > 0) {
-        await new Promise((r) => setImmediate(r));
-      }
-      (redis as any).set = realSet;
-
-      const upsertAt = fetchCalls.findIndex((c) =>
-        c.body?.includes('"event":"messages.upsert"'),
-      );
-      const updateAt = fetchCalls.findIndex((c) =>
-        c.body?.includes('"event":"messages.update"'),
-      );
-      expect(upsertAt).toBeGreaterThanOrEqual(0);
-      expect(updateAt).toBeGreaterThan(upsertAt);
-    });
-
-    // The chain has to advance on the DELIVERY, not on the call. Advancing on
-    // the call lets a second edit start while the first is still working
-    // through its retries, and the older text lands last and wins.
-    it("does not start the next edit while the previous one is still delivering", async () => {
-      await connection.connect();
-      await deliver([original()]);
-      fetchCalls.length = 0;
-
-      let releaseFirst: (() => void) | undefined;
-      const slowFirst = new Promise<void>((resolve) => {
-        releaseFirst = resolve;
-      });
-      let updates = 0;
-      const realFetch = globalThis.fetch;
-      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
-        if ((init?.body as string)?.includes('"event":"messages.update"')) {
-          updates += 1;
-          if (updates === 1) {
-            await slowFirst;
-          }
-        }
-        return realFetch(url, init);
-      }) as any;
-
-      await deliver([edit("primeira")]);
-      await deliver([edit("segunda")]);
-      await new Promise((r) => setImmediate(r));
-
-      expect(updates).toBe(1);
-
-      releaseFirst?.();
-      while (connection.inFlightWebhooks > 0) {
-        await new Promise((r) => setImmediate(r));
-      }
-      globalThis.fetch = realFetch;
-
-      const texts = fetchCalls
-        .filter((c) => c.body?.includes('"event":"messages.update"'))
-        .map(
-          (c) =>
-            JSON.parse(c.body).data[0].update.message.editedMessage.message
-              .conversation,
-        );
-      expect(texts).toEqual(["primeira", "segunda"]);
-    });
-
-    // A callback carrying only an edit has no batch to wait for, so if the
-    // queue position were taken at send time it would reserve ahead of an edit
-    // seen earlier alongside a message — and the older text would land last and
-    // win.
-    it("keeps two edits in the order they arrived, not the order they were sent", async () => {
-      await connection.connect();
-      await deliver([original()]);
-      fetchCalls.length = 0;
-
-      const handler = mockEventHandlers.get("messages.upsert")!;
-      // Not awaited: this callback still has a batch to deliver when the
-      // edit-only one below arrives.
-      const first = handler({
-        type: "notify",
-        messages: [
-          edit("primeira"),
-          {
-            key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
-            message: { conversation: "outra" },
-          },
-        ],
-      });
-      await handler({ type: "notify", messages: [edit("segunda")] });
-      await first;
-      while (connection.inFlightWebhooks > 0) {
-        await new Promise((r) => setImmediate(r));
-      }
-
-      const texts = fetchCalls
-        .filter((c) => c.body?.includes('"event":"messages.update"'))
-        .map(
-          (c) =>
-            JSON.parse(c.body).data[0].update.message.editedMessage.message
-              .conversation,
-        );
-      expect(texts).toEqual(["primeira", "segunda"]);
-    });
-
     // Filing a secret is a side effect of delivering a message, never a reason
     // to withhold it: node-redis parks a command on its offline queue until it
     // reconnects, and unbounded that would hold the message AND every edit
@@ -1123,7 +977,7 @@ describe("BaileysConnection", () => {
         messages: [dumped()],
         syncType: 3,
       });
-      await new Promise((r) => setImmediate(r));
+      await drain();
       fetchCalls.length = 0;
 
       await historyHandler({
@@ -1133,9 +987,7 @@ describe("BaileysConnection", () => {
         syncType: 3,
         isLatest: true,
       });
-      while (connection.inFlightWebhooks > 0) {
-        await new Promise((r) => setImmediate(r));
-      }
+      await drain();
 
       const update = fetchCalls.find((c) =>
         c.body?.includes('"event":"messages.update"'),
@@ -1160,7 +1012,7 @@ describe("BaileysConnection", () => {
         syncType: 3,
         isLatest: true,
       });
-      await new Promise((r) => setImmediate(r));
+      await drain();
 
       const frame = fetchCalls.find((c) =>
         c.body?.includes('"event":"messaging-history.set"'),
@@ -1187,7 +1039,7 @@ describe("BaileysConnection", () => {
         syncType: 2,
         isLatest: true,
       });
-      await new Promise((r) => setImmediate(r));
+      await drain();
 
       expect(
         (redis as any).__stringData.has(
@@ -1212,7 +1064,7 @@ describe("BaileysConnection", () => {
         syncType: 3,
         isLatest: true,
       });
-      await new Promise((r) => setImmediate(r));
+      await drain();
 
       const stored = JSON.parse(
         (redis as any).__stringData.get(
@@ -1233,7 +1085,7 @@ describe("BaileysConnection", () => {
         syncType: 3,
         isLatest: true,
       });
-      await new Promise((r) => setImmediate(r));
+      await drain();
 
       const frame = fetchCalls.find((c) =>
         c.body?.includes('"event":"messaging-history.set"'),

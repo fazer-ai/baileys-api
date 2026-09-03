@@ -47,7 +47,6 @@ import {
   MESSAGE_SECRET_TTL_SECONDS,
   type MessageSecretEntry,
   recallMessageSecret,
-  rememberMessageSecret,
   rememberMessageSecrets,
 } from "@/baileys/helpers/messageSecretStore";
 import { normalizeBrazilPhoneNumber } from "@/baileys/helpers/normalizeBrazilPhoneNumber";
@@ -305,10 +304,6 @@ export class BaileysConnection {
   private sessionEnded = false;
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
-  // Orders the encrypted message edits against each other and against every
-  // delivery that carries the messages they edit. See queueSecretMessageEdit.
-  private editDeliveryChain: Promise<void> = Promise.resolve();
-  private inFlightMessageDeliveries = new Set<Promise<void>>();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2421,127 +2416,64 @@ export class BaileysConnection {
       messagesData = { ...data, messages: individualMessages };
     }
 
-    // Registered before the first await, not at send time. Filing secrets and
-    // downloading media both suspend, and an edit arriving in a callback that
-    // runs during either would find nothing in flight and overtake the very
-    // message it edits.
-    const settled = this.beginMessageDelivery();
-    try {
-      const { kept, edits } = this.splitSecretMessageEdits(
-        messagesData.messages,
-      );
+    // Same two steps as a history dump, and deliberately the same code: repair
+    // what this batch can repair itself, file the secrets a later edit will
+    // need, and let anything left over go out as an ordinary update.
+    const { kept, unresolved } = this.repairSecretMessageEdits(
+      messagesData.messages,
+    );
+    await this.rememberMessageSecretsFor(kept);
 
-      // Queued before ANY await, so an edit's place in the chain is the order
-      // it arrived in. Queueing even one await later loses that: filing the
-      // batch's secrets suspends, and a callback carrying only an edit has no
-      // secrets to file, so it would overtake an edit seen earlier and its
-      // newer text would land first. The barrier is unaffected — it holds this
-      // callback's delivery slot, which stays open until the send below.
-      for (const { message, edit } of edits) {
-        this.queueSecretMessageEdit(message, edit);
+    if (kept.length > 0) {
+      if (kept.length !== messagesData.messages.length) {
+        messagesData = { ...messagesData, messages: kept };
       }
 
-      await this.rememberOwnMessageSecrets(kept);
+      const payload: BaileysConnectionWebhookPayload = {
+        event: "messages.upsert",
+        data: messagesData,
+      };
 
-      if (kept.length > 0) {
-        if (kept.length !== messagesData.messages.length) {
-          messagesData = { ...messagesData, messages: kept };
-        }
-
-        const payload: BaileysConnectionWebhookPayload = {
-          event: "messages.upsert",
-          data: messagesData,
-        };
-
-        const media = await downloadMediaFromMessages(messagesData.messages, {
-          includeMedia: this.includeMedia,
-        });
-        if (media) {
-          payload.extra = { media };
-        }
-
-        await this.sendToWebhook(payload);
+      const media = await downloadMediaFromMessages(messagesData.messages, {
+        includeMedia: this.includeMedia,
+      });
+      if (media) {
+        payload.extra = { media };
       }
-    } finally {
-      settled();
+
+      await this.sendToWebhook(payload);
     }
+
+    this.emitUnresolvedEdits(unresolved);
   }
 
-  // Opens a slot for one delivery of messages to the consumer, and answers with
-  // the function that closes it.
+  // Sends the edits this batch could not apply itself, exactly the way Baileys
+  // sends a plaintext one: fire and forget, in arrival order, no queue.
   //
-  // The slot spans the whole callback rather than the webhook call, because an
-  // edit has to wait for the message it edits to be DELIVERED, and everything
-  // between the event and the send — decryption, secret filing, media download
-  // — is time in which a competing callback can run. Both routes a message
-  // reaches the consumer by open one: live upserts and history frames.
-  private beginMessageDelivery(): () => void {
-    let close!: () => void;
-    const slot = new Promise<void>((resolve) => {
-      close = resolve;
-    });
-    this.inFlightMessageDeliveries.add(slot);
-    return () => {
-      this.inFlightMessageDeliveries.delete(slot);
-      close();
-    };
-  }
-
-  // Queues one edit behind every message delivery that had already started, and
-  // behind the edits queued before it.
-  //
-  // Both halves are load-bearing, and each covers a failure the other does not.
-  // Without the barrier an update reaches the consumer before the message it
-  // edits and is rejected as targeting an unknown id, leaving the original
-  // unedited — this feature's own bug, by another door. Without the chain two
-  // edits to one message race, and since the chain only advances once a
-  // delivery has actually finished, a first edit that needed a webhook retry
-  // cannot be overtaken by a second that went out on the first attempt.
-  //
-  // The reservation is taken HERE, synchronously, for the reason
-  // `stallReportChain` takes its own: the chain does not enter sendToWebhook
-  // until a microtask, and a graceful shutdown reading inFlightWebhooks in
-  // between would see nothing pending and exit on top of a queued edit.
-  private queueSecretMessageEdit(message: WAMessage, edit: SecretMessageEdit) {
-    const barrier = [...this.inFlightMessageDeliveries];
-    this._inFlightWebhooks += 1;
-    this.editDeliveryChain = this.editDeliveryChain
-      .catch(() => {})
-      .then(async () => {
-        await Promise.allSettled(barrier);
-        await this.emitSecretMessageEdit(message, edit);
-      })
-      .catch(() => {})
-      .finally(() => {
+  // There is deliberately no ordering machinery around this. An edit whose
+  // original is still being written by the consumer is answered 404, and
+  // `awaitResponse` puts the delivery back through the retry loop — the
+  // ordering is already in the protocol, and four rounds of hand-built
+  // barriers, chains and delivery slots only added ways to lose a message that
+  // the retry never had. After decryption this IS a plaintext edit, so it is
+  // delivered as one and inherits exactly the guarantees the provider already
+  // gives every other edit.
+  private emitUnresolvedEdits(
+    unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>,
+  ) {
+    for (const { message, edit } of unresolved) {
+      // Reserved synchronously, for the reason `stallReportChain` reserves its
+      // own: recalling the secret and decrypting both suspend before
+      // sendToWebhook increments anything, and a SIGTERM landing in that gap
+      // would read nothing pending and exit on top of the edit.
+      this._inFlightWebhooks += 1;
+      void this.emitSecretMessageEdit(message, edit).finally(() => {
         this._inFlightWebhooks -= 1;
       });
-  }
-
-  private async rememberOwnMessageSecrets(messages: WAMessage[]) {
-    for (const message of messages) {
-      await this.rememberOwnMessageSecret(message);
     }
   }
 
-  // Applies a dump's encrypted edits to the messages inside that same dump, and
-  // files the secrets that can still matter later.
-  //
-  // Repaired in place rather than re-narrated as `messages.update`. A dump is a
-  // replay of stored state read by an importer that decides its own ordering,
-  // so an update would race the very write it targets. It is also the only
-  // choice that is right either way: whether the dump's row holds the message's
-  // original text or the text it was edited to, overwriting it with the
-  // decrypted replacement lands the same content — an update event, by
-  // contrast, would flag an already-current message as edited over itself.
-  //
-  // An edit whose target is NOT in this dump gets handed back instead. A sync
-  // split across notifications can put the original in an earlier one, and by
-  // then there is nothing left here to repair — but its secret was filed, so
-  // the edit is still readable and the caller sends it as a live update once
-  // the frames are out. That path races the importer's own write, which is
-  // exactly why it is the fallback and not the rule: an edit that may not land
-  // still beats one that certainly will not.
-  private repairHistoryEdits(messages: WAMessage[]): {
+  private repairSecretMessageEdits(messages: WAMessage[]): {
     kept: WAMessage[];
     unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
   } {
@@ -2594,7 +2526,7 @@ export class BaileysConnection {
         });
         if (!decrypted) {
           logger.warn(
-            "[%s] [repairHistoryEdits] no sender candidate decrypted targetId=%s",
+            "[%s] [repairSecretMessageEdits] no sender candidate decrypted targetId=%s",
             this.phoneNumber,
             targetId,
           );
@@ -2603,7 +2535,7 @@ export class BaileysConnection {
         target.message = decodeEditedMessage(decrypted.plaintext);
       } catch (error) {
         logger.warn(
-          "[%s] [repairHistoryEdits] failed targetId=%s\n%s",
+          "[%s] [repairSecretMessageEdits] failed targetId=%s\n%s",
           this.phoneNumber,
           targetId,
           errorToString(error),
@@ -2620,7 +2552,10 @@ export class BaileysConnection {
   // decrypt anything: filing an archive's worth of them would spend a round
   // trip per message, hold the dump behind all of them, and leave a keyspace
   // nothing will ever read.
-  private async rememberHistorySecrets(messages: WAMessage[]) {
+  private async rememberMessageSecretsFor(
+    messages: WAMessage[],
+    { onlyRecent = false }: { onlyRecent?: boolean } = {},
+  ) {
     const oldest = Date.now() / 1000 - MESSAGE_SECRET_TTL_SECONDS;
     const entries: MessageSecretEntry[] = [];
 
@@ -2630,7 +2565,7 @@ export class BaileysConnection {
       if (!messageId || !secret) {
         continue;
       }
-      if (messageTimestampSeconds(message) < oldest) {
+      if (onlyRecent && messageTimestampSeconds(message) < oldest) {
         continue;
       }
       entries.push({
@@ -2652,7 +2587,7 @@ export class BaileysConnection {
       );
     } catch (error) {
       logger.warn(
-        "[%s] [rememberHistorySecrets] failed for %d message(s)\n%s",
+        "[%s] [rememberMessageSecretsFor] failed for %d message(s)\n%s",
         this.phoneNumber,
         entries.length,
         errorToString(error),
@@ -2677,37 +2612,6 @@ export class BaileysConnection {
     }
 
     return { kept, edits };
-  }
-
-  private async rememberOwnMessageSecret(message: WAMessage) {
-    const secret = ownMessageSecret(message);
-    const messageId = message.key?.id;
-    if (!secret || !messageId) {
-      return;
-    }
-
-    try {
-      await withTimeout(
-        "rememberMessageSecret",
-        config.baileys.messageSecretStoreTimeoutMs,
-        () =>
-          rememberMessageSecret(
-            this.phoneNumber,
-            messageId,
-            secret,
-            messageAuthorJids(message.key, this.ownJids()),
-          ),
-      );
-    } catch (error) {
-      // A message we cannot file is a future edit we cannot decrypt, never a
-      // reason to drop the message itself.
-      logger.warn(
-        "[%s] [rememberOwnMessageSecret] failed messageId=%s\n%s",
-        this.phoneNumber,
-        messageId,
-        errorToString(error),
-      );
-    }
   }
 
   private async emitSecretMessageEdit(
@@ -3007,32 +2911,17 @@ export class BaileysConnection {
     // the second JID form every stored author candidate needs. Filing before
     // the restore would record half the candidates, and a later edit derived
     // from the form we dropped would never verify.
-    // Opened before the first await for the same reason the upsert path opens
-    // one: a live edit arriving while this dump is being decoded must wait for
-    // the messages it may target to actually go out.
-    const settled = this.beginMessageDelivery();
-    try {
-      await this.deliverHistory(data);
-    } finally {
-      settled();
-    }
-  }
-
-  private async deliverHistory(data: BaileysEventMap["messaging-history.set"]) {
     const addressed = await this.addressHistory(
       data.messages ?? [],
       data.lidPnMappings,
       data.chats ?? [],
     );
-    const { kept: messages, unresolved } = this.repairHistoryEdits(addressed);
-
-    // Same rule as the live path, for the same reason: the queue position is
-    // taken before the filing below suspends. The barrier still holds these
-    // behind this dump's frames, since the delivery slot the caller opened
-    // stays open until they are all out.
-    this.queueUnresolvedHistoryEdits(unresolved);
-
-    await this.rememberHistorySecrets(messages);
+    const { kept: messages, unresolved: unresolvedEdits } =
+      this.repairSecretMessageEdits(addressed);
+    // Only the dump is filtered by age: a live message is current by
+    // definition, and dropping one whose timestamp reads oddly would silently
+    // cost the edit that follows it.
+    await this.rememberMessageSecretsFor(messages, { onlyRecent: true });
 
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no
@@ -3040,6 +2929,7 @@ export class BaileysConnection {
     // is more".
     const exhausted = exhaustedChats(data.chats ?? []);
     if (messages.length === 0 && exhausted.length === 0) {
+      this.emitUnresolvedEdits(unresolvedEdits);
       return;
     }
 
@@ -3090,18 +2980,11 @@ export class BaileysConnection {
         },
       });
     }
-  }
 
-  // Sends, as live updates, the dump edits whose targets were not in the dump.
-  // They go through the same chain as a live edit, so they queue behind this
-  // dump's own frames — which are still counted as in flight by the delivery
-  // slot the caller opened.
-  private queueUnresolvedHistoryEdits(
-    unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>,
-  ) {
-    for (const { message, edit } of unresolved) {
-      this.queueSecretMessageEdit(message, edit);
-    }
+    // After the frames: the dump is what carries the originals these could not
+    // be applied to, and a consumer that has not seen them yet answers 404.
+    // That answer is retried, which is the whole reason this needs no queue.
+    this.emitUnresolvedEdits(unresolvedEdits);
   }
 
   // Restores the addressing a dump strips (see historySync.ts), from the two
