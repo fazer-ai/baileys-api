@@ -1579,6 +1579,114 @@ describe("BaileysConnection", () => {
       ).toBe("legivel");
     });
 
+    // A 404 puts an edit in the retry ladder for a minute. A batch repairing the
+    // same message meanwhile has already sent the newer text, and the guard
+    // cannot cancel a delivery that already started, only refuse the next one.
+    it("abandons an edit whose retry was overtaken by a repaired batch", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realRetries = config.webhook.retryPolicy.maxRetries;
+      (config.webhook.retryPolicy as any).maxRetries = 3;
+      let releaseFirst: (() => void) | undefined;
+      const firstAttempt = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let attempts = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        if ((init?.body as string)?.includes('"event":"messages.update"')) {
+          attempts += 1;
+          if (attempts === 1) {
+            await firstAttempt;
+          }
+          // The consumer has not written the original yet.
+          return new Response("", { status: 404 });
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      try {
+        const retrying = handler({
+          type: "notify",
+          messages: [edit("primeira", undefined, { id: "edit-1" })],
+        });
+        await new Promise((r) => setImmediate(r));
+        expect(attempts).toBe(1);
+
+        // Repaired in place, so the newer text is already on its way out.
+        await handler({
+          type: "notify",
+          messages: [original(), edit("segunda", undefined, { id: "edit-2" })],
+        });
+
+        releaseFirst?.();
+        await retrying;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+        (config.webhook.retryPolicy as any).maxRetries = realRetries;
+      }
+
+      // The first attempt happened before it could be known to be obsolete; no
+      // retry of it may follow.
+      expect(attempts).toBe(1);
+    });
+
+    // Two dumps whose edits are stamped in the same second are separated only by
+    // the order they arrived in, and the addressing lookup destroys that order:
+    // whichever dump resolves its LIDs first reaches the queue first.
+    it("keeps the later dump's edit when a stalled one carries the same second", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      let releaseAddressing: (() => void) | undefined;
+      mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockImplementationOnce(
+        async () => {
+          await new Promise<void>((resolve) => {
+            releaseAddressing = resolve;
+          });
+          return null;
+        },
+      );
+
+      const at = Math.floor(Date.now() / 1000);
+      const stamp = (message: any) => ({ ...message, messageTimestamp: at });
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      const stalled = historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [stamp(edit("primeira", undefined, { id: "edit-1" }))],
+        syncType: 3,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [stamp(edit("segunda", undefined, { id: "edit-2" }))],
+        syncType: 3,
+        isLatest: true,
+      });
+
+      releaseAddressing?.();
+      await stalled;
+      await drain();
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["segunda"]);
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.

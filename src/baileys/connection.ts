@@ -176,6 +176,19 @@ export class BaileysSendStalledError extends Error {
   }
 }
 
+/** An edit's place in its target's history: when it was made, then which event
+ * brought it. The second term only ever separates a tie in the first. */
+interface EditPosition {
+  at: number;
+  seq: number;
+}
+
+interface UnresolvedEdit {
+  message: WAMessage;
+  edit: SecretMessageEdit;
+  position: EditPosition;
+}
+
 export class BaileysConnection {
   private LOGGER_OMIT_KEYS: ReadonlyArray<string> = [
     "qr",
@@ -314,7 +327,13 @@ export class BaileysConnection {
   private secretIntake: Promise<unknown> = Promise.resolve();
   // When each edited message was last edited, as far as this connection has
   // delivered. See claimEditPosition.
-  private editedAt = new Map<string, number>();
+  private editedAt = new Map<string, EditPosition>();
+  // Increments once per event this connection takes in, read synchronously at
+  // the top of each handler. It is the tie-break for edits stamped in the same
+  // second: the timestamp cannot separate them, but the order WhatsApp handed
+  // them to us can, and that order is only knowable before the handler starts
+  // awaiting things.
+  private eventSeq = 0;
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2395,6 +2414,9 @@ export class BaileysConnection {
   }
 
   private async handleMessagesUpsert(data: BaileysEventMap["messages.upsert"]) {
+    // Taken before anything can suspend, so it records the order WhatsApp
+    // handed us the events rather than the order they finished being processed.
+    const seq = ++this.eventSeq;
     this.markTraffic();
     if (data.type === "notify") {
       for (const msg of data.messages) {
@@ -2438,6 +2460,7 @@ export class BaileysConnection {
     const releaseIntake = this.beginSecretIntake();
     const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
       messagesData.messages,
+      { seq },
     );
     // Enqueued here, before the first await: the queue orders edits by the
     // moment they are put on it, and everything below can suspend. Two upsert
@@ -2501,9 +2524,7 @@ export class BaileysConnection {
   // Hence the queue — and only the queue. It orders edits against each other,
   // touches nothing else on the connection, and holds the in-flight
   // reservation for the span, which is the piece a graceful shutdown needs.
-  private emitUnresolvedEdits(
-    unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>,
-  ) {
+  private emitUnresolvedEdits(unresolved: UnresolvedEdit[]) {
     if (unresolved.length === 0) {
       return;
     }
@@ -2523,8 +2544,8 @@ export class BaileysConnection {
     this.editDeliveryQueue = this.editDeliveryQueue
       .catch(() => {})
       .then(async () => {
-        for (const { message, edit } of unresolved) {
-          await this.emitSecretMessageEdit(message, edit);
+        for (const { message, edit, position } of unresolved) {
+          await this.emitSecretMessageEdit(message, edit, position);
         }
       })
       .catch(() => {})
@@ -2573,20 +2594,21 @@ export class BaileysConnection {
    * cost more than it bought, so the guard is on the outcome instead: an edit
    * older than one already applied changes nothing, whichever way it got here.
    *
-   * Strictly older, not older-or-equal: two edits stamped in the same second
-   * carry no order of their own, and `editDeliveryQueue` is what keeps those in
-   * the order they arrived.
+   * Ordered by the edit's timestamp and then by the event it arrived on, which
+   * is what separates two edits stamped in the same second. Without the second
+   * term the guard would have to let both through and trust the delivery order,
+   * and the delivery order is precisely what a dump's addressing lookup
+   * reshuffles.
    */
-  private claimEditPosition(targetId: string, editedAt: number): boolean {
-    const applied = this.editedAt.get(targetId);
-    if (applied !== undefined && editedAt < applied) {
+  private claimEditPosition(targetId: string, position: EditPosition): boolean {
+    if (this.editSuperseded(targetId, position)) {
       return false;
     }
 
     // Re-inserted rather than updated in place, so the map's own order stays
     // least-recently-claimed first and the eviction below takes the right one.
     this.editedAt.delete(targetId);
-    this.editedAt.set(targetId, Math.max(editedAt, applied ?? editedAt));
+    this.editedAt.set(targetId, position);
     if (this.editedAt.size > BaileysConnection.EDIT_POSITION_MEMORY) {
       const oldest = this.editedAt.keys().next();
       if (!oldest.done) {
@@ -2596,12 +2618,31 @@ export class BaileysConnection {
     return true;
   }
 
+  /**
+   * Whether something newer than this edit has already been applied.
+   *
+   * Read again between a delivery's retries, not only before it starts: an edit
+   * answered 404 sits in the retry ladder for a minute, and a batch that
+   * repaired the same message in the meantime has already sent the newer text.
+   * The retry would then land last and put the older text back.
+   */
+  private editSuperseded(targetId: string, position: EditPosition): boolean {
+    const applied = this.editedAt.get(targetId);
+    if (!applied) {
+      return false;
+    }
+    if (position.at !== applied.at) {
+      return position.at < applied.at;
+    }
+    return position.seq < applied.seq;
+  }
+
   private repairSecretMessageEdits(
     messages: WAMessage[],
-    { history = false }: { history?: boolean } = {},
+    { history = false, seq }: { history?: boolean; seq: number },
   ): {
     kept: WAMessage[];
-    unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
+    unresolved: Array<UnresolvedEdit>;
     secrets: MessageSecretEntry[];
   } {
     const { kept, edits } = this.splitSecretMessageEdits(messages);
@@ -2623,8 +2664,7 @@ export class BaileysConnection {
       return { kept, unresolved: [], secrets };
     }
 
-    const unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }> =
-      [];
+    const unresolved: UnresolvedEdit[] = [];
 
     // Indexed from this batch, not from Redis: an edit arriving alongside its
     // original needs that original's secret, and a round trip per edit would
@@ -2647,8 +2687,9 @@ export class BaileysConnection {
       const targetId = edit.targetKey.id as string;
       const target = byId.get(targetId);
       const secret = secretById.get(targetId);
+      const position = { at: messageTimestampSeconds(message), seq };
       if (!target || !secret) {
-        unresolved.push({ message, edit });
+        unresolved.push({ message, edit, position });
         continue;
       }
 
@@ -2675,12 +2716,10 @@ export class BaileysConnection {
             this.phoneNumber,
             targetId,
           );
-          unresolved.push({ message, edit });
+          unresolved.push({ message, edit, position });
           continue;
         }
-        if (
-          !this.claimEditPosition(targetId, messageTimestampSeconds(message))
-        ) {
+        if (!this.claimEditPosition(targetId, position)) {
           continue;
         }
         target.message = replaceInnerContent(
@@ -2784,9 +2823,10 @@ export class BaileysConnection {
   private async emitSecretMessageEdit(
     message: WAMessage,
     edit: SecretMessageEdit,
+    position: EditPosition,
   ) {
     try {
-      await this.decryptAndEmitMessageEdit(message, edit);
+      await this.decryptAndEmitMessageEdit(message, edit, position);
     } catch (error) {
       // Contained per edit. Redis can refuse the lookup and a decrypted payload
       // can still fail to parse, and neither is a reason to lose the other
@@ -2804,6 +2844,7 @@ export class BaileysConnection {
   private async decryptAndEmitMessageEdit(
     message: WAMessage,
     { targetKey, encPayload, encIv }: SecretMessageEdit,
+    position: EditPosition,
   ) {
     const targetId = targetKey.id as string;
 
@@ -2875,7 +2916,7 @@ export class BaileysConnection {
     // decrypting: an edit that cannot be read changes nothing, and letting it
     // take the position would reject a later, older edit that CAN be read as
     // superseded by an update nobody ever received.
-    if (!this.claimEditPosition(targetId, messageTimestampSeconds(message))) {
+    if (!this.claimEditPosition(targetId, position)) {
       logger.debug(
         "[%s] [emitSecretMessageEdit] superseded targetId=%s",
         this.phoneNumber,
@@ -2887,19 +2928,27 @@ export class BaileysConnection {
     // Same shape Baileys emits for a plaintext MESSAGE_EDIT: the edit's own key
     // with the id swapped for the original's, so the consumer updates the
     // message that was edited rather than creating a new one.
-    await this.handleMessagesUpdate([
-      {
-        key: { ...message.key, id: targetId },
-        update: {
-          message: {
-            editedMessage: {
-              message: decodeEditedMessage(decrypted.plaintext),
+    await this.handleMessagesUpdate(
+      [
+        {
+          key: { ...message.key, id: targetId },
+          update: {
+            message: {
+              editedMessage: {
+                message: decodeEditedMessage(decrypted.plaintext),
+              },
             },
+            messageTimestamp: message.messageTimestamp,
           },
-          messageTimestamp: message.messageTimestamp,
         },
-      },
-    ]);
+      ],
+      // Re-checked between retries: a 404 puts this delivery in the retry ladder
+      // for a minute, and a batch that repaired the same message meanwhile has
+      // already sent the newer text. Without this, the retry lands last and puts
+      // the older text back. It cannot cover a request already on the wire; that
+      // last sliver is the consumer's to settle, and is what #393 is about.
+      { stillWanted: () => !this.editSuperseded(targetId, position) },
+    );
   }
 
   // Remembered rather than read fresh every time, because a handoff clears the
@@ -2925,6 +2974,7 @@ export class BaileysConnection {
 
   private handleMessagesUpdate(
     data: BaileysEventMap["messages.update"],
+    options?: { stillWanted?: () => boolean },
   ): Promise<unknown> {
     // Edits, deletions and reactions are conversation activity too — a
     // connection seeing them must not look idle to the rebalancer.
@@ -2952,6 +3002,7 @@ export class BaileysConnection {
       },
       {
         awaitResponse: true,
+        stillWanted: options?.stillWanted,
       },
     );
   }
@@ -3122,6 +3173,11 @@ export class BaileysConnection {
   private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
+    // Read here, before the addressing round trip below: two dumps whose edits
+    // are stamped in the same second are separated only by the order they
+    // arrived in, and after the await that order is gone.
+    const seq = ++this.eventSeq;
+
     // Opened before the addressing round trip below, which is the window the
     // whole gate exists for: a live edit arriving while this dump is still
     // resolving LIDs would look its key up, find the dump had not filed it yet
@@ -3147,7 +3203,7 @@ export class BaileysConnection {
         );
         const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
           addressed,
-          { history: true },
+          { history: true, seq },
         );
         messages = kept;
         // Same reason as the live path: enqueued before the write below, so the
@@ -3467,6 +3523,7 @@ export class BaileysConnection {
     payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;
+      stillWanted?: () => boolean;
     },
   ) {
     // connection.update events carry the lease epoch so the client can
@@ -3495,6 +3552,12 @@ export class BaileysConnection {
     payload: BaileysConnectionWebhookPayload,
     options?: {
       awaitResponse?: boolean;
+      /**
+       * Asked again before every attempt. Answering false abandons the delivery,
+       * for a payload that has been made obsolete while it was being retried.
+       * Absent means "always wanted", which is every other caller.
+       */
+      stillWanted?: () => boolean;
     },
   ) {
     let sanitizedPayload: Record<string, unknown> | null = null;
@@ -3529,6 +3592,16 @@ export class BaileysConnection {
     let delay = retryInterval;
 
     while (attempt <= maxRetries) {
+      if (options?.stillWanted && !options.stillWanted()) {
+        logger.info(
+          "[%s] [sendToWebhook] [ABANDONED] event=%s attempt=%d",
+          this.phoneNumber,
+          payload.event,
+          attempt,
+        );
+        return;
+      }
+
       const { response, error } = await this.sendPayloadToWebhook(
         webhookUrl,
         serializedBody,
