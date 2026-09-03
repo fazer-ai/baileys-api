@@ -17,3 +17,9 @@ swagger.json: Restore the actual send-message conflict response
 # Third round in a row on hosted LIDs; declined at the point the fix stopped being a
 # rule and started being a cache: https://github.com/fazer-ai/baileys-api/pull/386
 src/baileys/*.ts: Preserve hosted mappings across history events
+# Ordering across a connection handoff: editDeliveryQueue and editedAt are
+# connection-local, and a handoff leaves the old connection draining while the
+# new one runs. Deliberately not fixed here; the reasoning, the cost of a shared
+# guard and the correction path (the consumer, which knows what it applied) are
+# in fazer-ai/baileys-api#393.
+src/baileys/connection.ts: Preserve edit ordering across connection handoffs
