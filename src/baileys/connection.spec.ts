@@ -1807,6 +1807,31 @@ describe("BaileysConnection", () => {
       ).toBe(false);
     });
 
+    // The position map is capped, and a history sync touches far more messages
+    // than the cap. Evicting a target whose delivery is still retrying makes the
+    // retry read "nothing applied yet", which is the one answer that lets it
+    // overwrite the newer text.
+    it("keeps the position of a message whose delivery is still running", async () => {
+      await connect();
+      const held = new Promise<void>(() => {});
+      (connection as any).editDeliveries.set(ORIG_ID, held);
+      const position = { at: 1, seq: 1, rank: 0 };
+      (connection as any).claimEditPosition(ORIG_ID, position);
+
+      for (let i = 0; i < 2000; i += 1) {
+        (connection as any).claimEditPosition(`other-${i}`, {
+          at: 2,
+          seq: 2 + i,
+          rank: 0,
+        });
+      }
+
+      expect((connection as any).editedAt.has(ORIG_ID)).toBe(true);
+      expect(
+        (connection as any).editSuperseded(ORIG_ID, { at: 0, seq: 0, rank: 0 }),
+      ).toBe(true);
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.

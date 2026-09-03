@@ -2646,9 +2646,17 @@ export class BaileysConnection {
     this.editedAt.delete(targetId);
     this.editedAt.set(targetId, position);
     if (this.editedAt.size > BaileysConnection.EDIT_POSITION_MEMORY) {
-      const oldest = this.editedAt.keys().next();
-      if (!oldest.done) {
-        this.editedAt.delete(oldest.value);
+      for (const candidate of this.editedAt.keys()) {
+        // A message still being delivered keeps its position no matter how old
+        // the claim is: the retry consults it before every attempt, and a
+        // position that was evicted reads as "nothing applied yet", which is
+        // precisely the answer that lets a stale retry through. A history sync
+        // touching thousands of messages would otherwise do this routinely.
+        if (this.editDeliveries.has(candidate)) {
+          continue;
+        }
+        this.editedAt.delete(candidate);
+        break;
       }
     }
     return true;
