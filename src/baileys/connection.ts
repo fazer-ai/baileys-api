@@ -731,6 +731,9 @@ export class BaileysConnection {
 
     try {
       this.socket = makeWASocket(socketOptions);
+      // An existing session hands back its account JIDs immediately. Read them
+      // now so they outlive the socket; see ownJidsSeen.
+      this.ownJids();
       this.currentTxToken = txToken;
       // The new socket carries a new keystore and a new mutex map. Bumping here
       // (and only here) is what makes every stamped watchdog reading below
@@ -2505,6 +2508,13 @@ export class BaileysConnection {
       return;
     }
 
+    // Read while the socket is certainly still there: the loop below runs on a
+    // later tick, and a handoff clears the socket in between. A connection whose
+    // first edit targets a message an EARLIER connection filed has never called
+    // ownJids yet, so without this the cache would be empty exactly when the
+    // socket is gone, and a fromMe edit would derive no candidate at all.
+    this.ownJids();
+
     // Reserved synchronously, for the reason `stallReportChain` reserves its
     // own: the queue does not reach sendToWebhook until a microtask, and a
     // SIGTERM landing in that gap would read nothing pending and exit on top of
@@ -2540,7 +2550,11 @@ export class BaileysConnection {
     const open = new Promise<void>((resolve) => {
       close = resolve;
     });
-    this.secretIntake = Promise.all([this.secretIntake, open]);
+    // Flattened to void, not left as the Promise.all result: the aggregate
+    // resolves to an array holding the PREVIOUS aggregate's value, so a
+    // long-lived connection would nest one array per event handled and keep
+    // every one of them alive. Nothing ever reads the value.
+    this.secretIntake = Promise.all([this.secretIntake, open]).then(() => {});
     return close;
   }
 

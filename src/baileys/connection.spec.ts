@@ -1450,6 +1450,65 @@ describe("BaileysConnection", () => {
       ).toBe("oi editado");
     });
 
+    // The connection that filed the secret is not always the one that delivers
+    // the edit. A fresh connection whose first edit targets an earlier
+    // connection's message has never read its own JIDs, so if it only reads
+    // them after the awaits it reads them from a socket a handoff already took.
+    it("derives a fromMe edit's key on a connection that saw nothing before it", async () => {
+      await connect();
+      // Filed by an earlier connection: the store is all this one inherits.
+      const own = "89572297961476@lid";
+      (redis as any).__stringData.set(
+        messageSecretKey("+5511999999999", ORIG_ID),
+        JSON.stringify({
+          secret: Buffer.from(messageSecret).toString("base64"),
+          senders: [],
+        }),
+      );
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      const delivery = handler({
+        type: "notify",
+        messages: [
+          {
+            ...edit("oi editado", { origMsgSender: own, editSender: own }),
+            key: { remoteJid: CHAT, fromMe: true, id: "edit-1" },
+          },
+        ],
+      });
+      (connection as any).socket = undefined;
+      await delivery;
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // The intake chain aggregates, and an aggregate resolves to a value holding
+    // the previous one. Left unflattened it nests one array per event handled
+    // and keeps every one alive for the life of the connection.
+    it("does not accumulate a value across intakes", async () => {
+      await connect();
+
+      for (let i = 0; i < 5; i += 1) {
+        await deliver([
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: `plain-${i}` },
+            messageTimestamp: Math.floor(Date.now() / 1000),
+            message: { conversation: "oi" },
+          },
+        ]);
+      }
+
+      await expect((connection as any).secretIntake).resolves.toBeUndefined();
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.
