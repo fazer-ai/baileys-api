@@ -2427,6 +2427,16 @@ export class BaileysConnection {
     const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
       messagesData.messages,
     );
+    // Enqueued here, before the first await: the queue orders edits by the
+    // moment they are put on it, and everything below can suspend. Two upsert
+    // callbacks run concurrently -- Baileys does not await ours -- so an older
+    // edit sitting behind a slow secret write would otherwise reach the queue
+    // after a newer one that arrived later, and the older text would win.
+    //
+    // Nothing is lost by going first: these are the edits whose original is NOT
+    // in this batch, so this batch is not what the consumer is missing, and an
+    // original it has not written yet answers 404 and is retried.
+    this.emitUnresolvedEdits(unresolved);
 
     // Reserved here, synchronously, and held until the batch is out. Between
     // this line and the send sit a Redis write and a media download, and both
@@ -2459,8 +2469,6 @@ export class BaileysConnection {
     } finally {
       this._inFlightWebhooks -= 1;
     }
-
-    this.emitUnresolvedEdits(unresolved);
   }
 
   // Sends the edits this batch could not apply itself, one at a time.
@@ -2516,7 +2524,14 @@ export class BaileysConnection {
     // messages afterwards: applying an edit in place replaces the content that
     // holds the secret, so re-reading a repaired message finds nothing and the
     // NEXT edit to it would arrive undecryptable.
-    const secrets = this.collectMessageSecrets(kept, { history });
+    //
+    // `all` and `fresh` differ only for an archive. Filing a secret whose
+    // message can no longer be edited is waste, but an archive can carry an
+    // original AND its edit in the same batch, and that edit is decryptable
+    // right here from a secret nothing would ever store. Age decides what is
+    // worth keeping, never what this batch can read.
+    const { all, fresh } = this.collectMessageSecrets(kept);
+    const secrets = history ? fresh : all;
 
     if (edits.length === 0) {
       return { kept, unresolved: [], secrets };
@@ -2530,7 +2545,7 @@ export class BaileysConnection {
     // ask the network for something already in hand.
     const byId = new Map<string, WAMessage>();
     const secretById = new Map<string, Uint8Array>();
-    for (const entry of secrets) {
+    for (const entry of all) {
       secretById.set(entry.messageId, entry.secret);
     }
     for (const message of kept) {
@@ -2597,16 +2612,13 @@ export class BaileysConnection {
   // nothing will ever read.
   // The secrets on these messages, as store entries. Split from the write so
   // the read can happen before an in-place repair overwrites what it reads.
-  private collectMessageSecrets(
-    messages: WAMessage[],
-    { history = false }: { history?: boolean } = {},
-  ): MessageSecretEntry[] {
-    // Only a dump is filtered by age: a live message is current by definition,
-    // and dropping one whose timestamp reads oddly would silently cost the edit
-    // that follows it. This is the age half of `history`; the other half is the
-    // array order, which orderEditsOldestFirst reads.
+  private collectMessageSecrets(messages: WAMessage[]): {
+    all: MessageSecretEntry[];
+    fresh: MessageSecretEntry[];
+  } {
     const oldest = Date.now() / 1000 - MESSAGE_SECRET_TTL_SECONDS;
-    const entries: MessageSecretEntry[] = [];
+    const all: MessageSecretEntry[] = [];
+    const fresh: MessageSecretEntry[] = [];
 
     for (const message of messages) {
       const messageId = message.key?.id;
@@ -2614,17 +2626,21 @@ export class BaileysConnection {
       if (!messageId || !secret) {
         continue;
       }
-      if (history && messageTimestampSeconds(message) < oldest) {
-        continue;
-      }
-      entries.push({
+      const entry: MessageSecretEntry = {
         messageId,
         secret,
         senders: messageAuthorJids(message.key, this.ownJids()),
-      });
+      };
+      all.push(entry);
+      // A live message is current by definition, so only a dump ever splits
+      // here: an archive reaches back past any replay window, and filing those
+      // secrets leaves a keyspace nothing will read.
+      if (messageTimestampSeconds(message) >= oldest) {
+        fresh.push(entry);
+      }
     }
 
-    return entries;
+    return { all, fresh };
   }
 
   private async fileMessageSecrets(entries: MessageSecretEntry[]) {
@@ -2976,6 +2992,12 @@ export class BaileysConnection {
       unresolved: unresolvedEdits,
       secrets,
     } = this.repairSecretMessageEdits(addressed, { history: true });
+    // Same reason as the live path: enqueued before the awaits below, so the
+    // queue's order is the order the dumps were handled in rather than whichever
+    // one finished writing first. The one await this cannot get in front of is
+    // `addressHistory` above, which has to run before anything can be decrypted;
+    // two dumps carrying edits of the SAME message can still cross there.
+    this.emitUnresolvedEdits(unresolvedEdits);
 
     // Same reservation, same reason as the live path: the Redis write below is
     // a stall this connection has to survive being drained through, and until
@@ -2987,11 +3009,6 @@ export class BaileysConnection {
     } finally {
       this._inFlightWebhooks -= 1;
     }
-
-    // After the frames: the dump is what carries the originals these could not
-    // be applied to, and a consumer that has not seen them yet answers 404.
-    // That answer is retried, which is the whole reason this needs no queue.
-    this.emitUnresolvedEdits(unresolvedEdits);
   }
 
   private async deliverHistoryFrames(

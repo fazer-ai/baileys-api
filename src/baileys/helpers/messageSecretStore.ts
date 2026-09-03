@@ -40,12 +40,26 @@ export interface MessageSecretEntry {
   senders: string[];
 }
 
+// node-redis parks a command on an offline queue while the connection is down
+// and replays it on reconnect. `withTimeout` stops us AWAITING the command; it
+// cannot cancel it, so every message that publishes a secret would leave one
+// more command, promise and encoded payload parked there, growing for as long
+// as the outage lasts. A secret we cannot file is a future edit we cannot read,
+// which is the degradation a failed write already accepts.
+function storeUnavailable() {
+  return !redis.isReady;
+}
+
 export async function rememberMessageSecret(
   phoneNumber: string,
   messageId: string,
   secret: Uint8Array,
   senders: string[],
 ): Promise<void> {
+  if (storeUnavailable()) {
+    return;
+  }
+
   const payload: StoredMessageSecret = {
     secret: Buffer.from(secret).toString("base64"),
     senders,
@@ -67,6 +81,10 @@ export async function rememberMessageSecrets(
   phoneNumber: string,
   entries: MessageSecretEntry[],
 ): Promise<void> {
+  if (storeUnavailable()) {
+    return;
+  }
+
   await Promise.all(
     entries.map(({ messageId, secret, senders }) =>
       rememberMessageSecret(phoneNumber, messageId, secret, senders),
@@ -78,6 +96,10 @@ export async function recallMessageSecret(
   phoneNumber: string,
   messageId: string,
 ): Promise<{ secret: Buffer; senders: string[] } | null> {
+  if (storeUnavailable()) {
+    return null;
+  }
+
   const raw = await redis.get(messageSecretKey(phoneNumber, messageId));
   if (!raw) {
     return null;

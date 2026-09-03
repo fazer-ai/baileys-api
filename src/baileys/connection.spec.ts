@@ -1205,6 +1205,119 @@ describe("BaileysConnection", () => {
       expect(connection.inFlightWebhooks).toBe(0);
     });
 
+    // An archive reaches back past the window in which a secret is worth
+    // storing, but it can carry an original AND its edit in the same batch, and
+    // that edit is decryptable right there. Letting the retention filter shrink
+    // the in-batch map loses an edit whose key was in hand.
+    it("applies an in-batch edit to an original too old to file", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [edit("oi editado"), dumped(MESSAGE_SECRET_TTL_SECONDS + 60)],
+        syncType: 2,
+        isLatest: true,
+      });
+      await drain();
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("oi editado");
+      // Still not worth storing: nothing can edit it again.
+      expect(
+        (redis as any).__stringData.has(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      ).toBe(false);
+    });
+
+    // Baileys does not await our handler, so two upserts run concurrently. The
+    // queue orders by the moment an edit is put on it, and everything after the
+    // split can suspend: an older edit behind a slow secret write would reach
+    // the queue after a newer edit that arrived later, and the older text wins.
+    it("queues an edit ahead of a later one even when its batch stalls", async () => {
+      await connection.connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realSet = (redis as any).set;
+      let releaseSet: (() => void) | undefined;
+      (redis as any).set = mock(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseSet = resolve;
+          }),
+      );
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      try {
+        // Carries a secret of its own, so its batch parks on the slow write.
+        const stalls = handler({
+          type: "notify",
+          messages: [
+            {
+              key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+              message: {
+                conversation: "outra",
+                messageContextInfo: { messageSecret },
+              },
+            },
+            edit("primeira", undefined, { id: "edit-1" }),
+          ],
+        });
+        await new Promise((r) => setImmediate(r));
+
+        await handler({
+          type: "notify",
+          messages: [edit("segunda", undefined, { id: "edit-2" })],
+        });
+
+        releaseSet?.();
+        await stalls;
+      } finally {
+        (redis as any).set = realSet;
+      }
+      await drain();
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["primeira", "segunda"]);
+    });
+
+    // node-redis parks commands on an offline queue while the connection is
+    // down and replays them on reconnect. withTimeout stops us awaiting; it
+    // cannot cancel, so a long outage would retain one command per message.
+    it("does not queue a secret write while the store is disconnected", async () => {
+      await connection.connect();
+      const before = (redis as any).set.mock.calls.length;
+      (redis as any).isReady = false;
+
+      try {
+        await deliver([original()]);
+      } finally {
+        (redis as any).isReady = true;
+      }
+
+      expect((redis as any).set.mock.calls.length).toBe(before);
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(JSON.parse(upsert?.body as string).data.messages[0].key.id).toBe(
+        ORIG_ID,
+      );
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.

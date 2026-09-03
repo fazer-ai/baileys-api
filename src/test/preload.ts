@@ -22,6 +22,9 @@ const multiCommands: Array<{ op: string; args: any[] }> = [];
 const expirations = new Map<string, { type: string; value: number }>();
 
 const mockRedis = {
+  // The real client flips this false while the connection is down; callers use
+  // it to skip a write instead of parking it on the offline queue.
+  isReady: true,
   __hashData: hashData,
   __stringData: stringData,
   __multiCommands: multiCommands,
