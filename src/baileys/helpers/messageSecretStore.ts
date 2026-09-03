@@ -35,6 +35,25 @@ function storeUnavailable() {
   return !redis.isReady;
 }
 
+/**
+ * Writes the fields and the lifetime together.
+ *
+ * A script rather than a MULTI, and the reason is the abort signal rather than
+ * atomicity: node-redis 6 queues a transaction's commands through
+ * `_executeMulti`, which passes only `chainId` and `typeMapping`, so the signal
+ * never reaches them and an unbounded write is exactly what the guards above
+ * exist to prevent. EVAL is one ordinary command, so it carries the signal, and
+ * a script is atomic by definition.
+ *
+ * The alternative -- HSET then EXPIRE as two commands -- can leave a hash whose
+ * expiry never landed, which is a key nothing will ever delete.
+ */
+export const MESSAGE_SECRET_WRITE_SCRIPT = `
+redis.call('HSET', KEYS[1], unpack(ARGV, 2))
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return 1
+`.trim();
+
 // Aborting removes the command from the client's pending queue and rejects it,
 // so nothing is retained past the deadline the caller was willing to wait.
 function bounded() {
@@ -92,14 +111,15 @@ export async function rememberMessageSecret(
     }
   }
 
-  // One transaction, not two commands: a hash that was created and then failed
-  // to get its expiry is a key nothing will ever delete, and the whole point of
-  // filing these per message is that they age out on their own.
-  await bounded()
-    .multi()
-    .hSet(key, fields)
-    .expire(key, MESSAGE_SECRET_TTL_SECONDS)
-    .exec();
+  const args = [String(MESSAGE_SECRET_TTL_SECONDS)];
+  for (const [field, value] of Object.entries(fields)) {
+    args.push(field, value);
+  }
+
+  await bounded().eval(MESSAGE_SECRET_WRITE_SCRIPT, {
+    keys: [key],
+    arguments: args,
+  });
 }
 
 /**

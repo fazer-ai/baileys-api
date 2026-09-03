@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import redis from "@/lib/redis";
 import {
   MESSAGE_SECRET_TTL_SECONDS,
+  MESSAGE_SECRET_WRITE_SCRIPT,
   messageSecretKey,
   recallMessageSecret,
   rememberMessageSecret,
@@ -40,16 +41,18 @@ describe("messageSecretStore", () => {
 
   // A hash created by a write whose EXPIRE never landed is a key nothing will
   // ever delete, which is the whole failure the TTL exists to prevent. One
-  // transaction, so the entry and its lifetime stand or fall together.
-  it("writes the entry and its expiry in one transaction", async () => {
-    const before = (redis as any).multi.mock.calls.length;
+  // command, so the entry and its lifetime stand or fall together -- and a
+  // script rather than a transaction, because node-redis queues a MULTI's
+  // commands without the abort signal and an unbounded write is the other
+  // failure this store guards against.
+  it("writes the entry and its expiry as one abortable command", async () => {
+    const before = (redis as any).eval.mock.calls.length;
 
     await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, []);
 
-    expect((redis as any).multi.mock.calls.length).toBe(before + 1);
-    const ops = (redis as any).__multiCommands.map((c: any) => c.op);
-    expect(ops).toContain("hSet");
-    expect(ops).toContain("expire");
+    expect((redis as any).eval.mock.calls.length).toBe(before + 1);
+    expect(MESSAGE_SECRET_WRITE_SCRIPT).toContain("HSET");
+    expect(MESSAGE_SECRET_WRITE_SCRIPT).toContain("EXPIRE");
   });
 
   // Per-message keys with no expiry would grow the keyspace by every message

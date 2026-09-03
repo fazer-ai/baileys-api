@@ -1,5 +1,6 @@
 import { afterEach, mock } from "bun:test";
 import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
+import { MESSAGE_SECRET_WRITE_SCRIPT } from "@/baileys/helpers/messageSecretStore";
 
 /**
  * Shared test preload — runs before every test file.
@@ -163,6 +164,22 @@ const mockRedis = {
     ) => {
       const keys = options?.keys ?? [];
       const args = options?.arguments ?? [];
+
+      // Message-secret write: KEYS=[key], ARGV=[ttl, field, value, ...].
+      // Matched on the script's own source rather than a marker, so the day it
+      // changes shape this stops claiming it and the specs say so instead of
+      // quietly testing the old behaviour.
+      if (script.trim() === MESSAGE_SECRET_WRITE_SCRIPT) {
+        const [key] = keys;
+        const [ttl, ...fields] = args;
+        if (!hashData.has(key)) hashData.set(key, new Map());
+        const hash = hashData.get(key) as Map<string, string>;
+        for (let i = 0; i + 1 < fields.length; i += 2) {
+          hash.set(fields[i], fields[i + 1]);
+        }
+        expirations.set(key, { type: "EX", value: Number(ttl) });
+        return 1;
+      }
 
       // steal-if-stale idempotency lock (compare-and-set): KEYS=[key],
       // ARGV=[expected, new, ttl]. Reclaims an orphaned "processing" marker

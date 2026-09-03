@@ -176,11 +176,21 @@ export class BaileysSendStalledError extends Error {
   }
 }
 
-/** An edit's place in its target's history: when it was made, then which event
- * brought it. The second term only ever separates a tie in the first. */
+/**
+ * An edit's place in its target's history: when it was made, then which event
+ * brought it, then where it sat inside that event. Each term only ever
+ * separates a tie in the one before it.
+ *
+ * The third exists because one batch can carry two edits of the same message
+ * stamped in the same second, and they do not necessarily take the same route
+ * out: the newer can decrypt in place while the older falls back to the stored
+ * sender forms and leaves as an update. Without a rank the older one would not
+ * look superseded, and would revert the message.
+ */
 interface EditPosition {
   at: number;
   seq: number;
+  rank: number;
 }
 
 interface UnresolvedEdit {
@@ -2660,7 +2670,10 @@ export class BaileysConnection {
     if (position.at !== applied.at) {
       return position.at < applied.at;
     }
-    return position.seq < applied.seq;
+    if (position.seq !== applied.seq) {
+      return position.seq < applied.seq;
+    }
+    return position.rank < applied.rank;
   }
 
   private repairSecretMessageEdits(
@@ -2707,13 +2720,14 @@ export class BaileysConnection {
       }
     }
 
-    for (const { message, edit } of orderEditsOldestFirst(edits, {
-      newestFirst: history,
-    })) {
+    // Ranked by the order they were just sorted into, which is the order they
+    // are applied in.
+    const ordered = orderEditsOldestFirst(edits, { newestFirst: history });
+    for (const [rank, { message, edit }] of ordered.entries()) {
       const targetId = edit.targetKey.id as string;
       const target = byId.get(targetId);
       const secret = secretById.get(targetId);
-      const position = { at: messageTimestampSeconds(message), seq };
+      const position = { at: messageTimestampSeconds(message), seq, rank };
       if (!target || !secret) {
         unresolved.push({ message, edit, position });
         continue;

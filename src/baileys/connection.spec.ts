@@ -20,6 +20,7 @@ import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
 import { messageEditKey } from "@/baileys/helpers/decryptMessageEdit";
 import {
   MESSAGE_SECRET_TTL_SECONDS,
+  MESSAGE_SECRET_WRITE_SCRIPT,
   messageSecretKey,
 } from "@/baileys/helpers/messageSecretStore";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
@@ -730,32 +731,28 @@ describe("BaileysConnection", () => {
     // An edit is delivered outside the callback that saw it, so waiting a tick
     // is not enough — wait for the connection to report nothing pending, which
     // is the same count a graceful shutdown drains on.
-    // The store writes through a transaction, so what has to be held is exec,
-    // not the command that was queued into it.
+    // The store writes through one Lua call, so that is what has to be held.
+    // Other scripts keep running: this suite's connection code uses them too.
     function stallSecretStore(): {
       release: () => void;
       restore: () => void;
     } {
-      const realMulti = (redis as any).multi;
+      const realEval = (redis as any).eval;
       let release: (() => void) | undefined;
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      (redis as any).multi = mock(() => {
-        const chain: any = {
-          hSet: () => chain,
-          expire: () => chain,
-          exec: async () => {
-            await held;
-            return [];
-          },
-        };
-        return chain;
+      (redis as any).eval = mock(async (script: string, options?: unknown) => {
+        if (script.trim() === MESSAGE_SECRET_WRITE_SCRIPT) {
+          await held;
+          return 1;
+        }
+        return realEval(script, options);
       });
       return {
         release: () => release?.(),
         restore: () => {
-          (redis as any).multi = realMulti;
+          (redis as any).eval = realEval;
         },
       };
     }
@@ -1319,7 +1316,7 @@ describe("BaileysConnection", () => {
     // cannot cancel, so a long outage would retain one command per message.
     it("does not queue a secret write while the store is disconnected", async () => {
       await connect();
-      const before = (redis as any).multi.mock.calls.length;
+      const before = (redis as any).eval.mock.calls.length;
       (redis as any).isReady = false;
 
       try {
@@ -1328,7 +1325,7 @@ describe("BaileysConnection", () => {
         (redis as any).isReady = true;
       }
 
-      expect((redis as any).multi.mock.calls.length).toBe(before);
+      expect((redis as any).eval.mock.calls.length).toBe(before);
       const upsert = fetchCalls.find((c) =>
         c.body?.includes('"event":"messages.upsert"'),
       );
@@ -1764,6 +1761,50 @@ describe("BaileysConnection", () => {
       } finally {
         globalThis.fetch = realFetch;
       }
+    });
+
+    // One batch can carry two edits of the same message stamped in the same
+    // second, and they do not have to leave by the same route: the newer can
+    // decrypt in place while the older falls back to the stored sender forms
+    // and goes out as an update. Ranked only by (timestamp, event) the older
+    // one does not look superseded, and it reverts the message.
+    it("does not let a deferred edit revert a newer one from its own batch", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const at = Math.floor(Date.now() / 1000);
+      const stamp = (message: any) => ({ ...message, messageTimestamp: at });
+      // Encrypted under a form only the store knows, so it cannot be applied in
+      // place and is handed to the unresolved path.
+      const deferred = stamp(
+        edit(
+          "primeira",
+          { origMsgSender: CHAT_PN, editSender: CHAT },
+          {
+            id: "edit-1",
+            targetKey: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+          },
+        ),
+      );
+      const inBatch = stamp(edit("segunda", undefined, { id: "edit-2" }));
+
+      await deliver([
+        { ...dumped(), key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID } },
+        deferred,
+        inBatch,
+      ]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(
+        JSON.parse(upsert?.body as string).data.messages[0].message
+          .conversation,
+      ).toBe("segunda");
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
     });
 
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
