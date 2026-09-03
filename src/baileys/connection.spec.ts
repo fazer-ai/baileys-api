@@ -669,6 +669,10 @@ describe("BaileysConnection", () => {
     function edit(
       text: string,
       senders = { origMsgSender: CHAT, editSender: CHAT },
+      {
+        id = "edit-1",
+        ageSeconds = 0,
+      }: { id?: string; ageSeconds?: number } = {},
     ) {
       const encIv = randomBytes(12);
       const key = messageEditKey({
@@ -692,9 +696,9 @@ describe("BaileysConnection", () => {
           remoteJid: CHAT,
           remoteJidAlt: CHAT_PN,
           fromMe: false,
-          id: "edit-1",
+          id,
         },
-        messageTimestamp: Math.floor(Date.now() / 1000),
+        messageTimestamp: Math.floor(Date.now() / 1000) - ageSeconds,
         message: {
           secretEncryptedMessage: {
             targetMessageKey: {
@@ -1133,6 +1137,129 @@ describe("BaileysConnection", () => {
           messageSecretKey("+5511999999999", ORIG_ID),
         ),
       ).toBe(false);
+    });
+
+    // Filing the secret is a side effect the delivery sits behind, and it talks
+    // to Redis. Until this reservation existed the count stayed at zero for the
+    // whole write: a handoff or SIGTERM landing on a slow Redis dropped this
+    // connection from the drain set and exited on top of the message.
+    it("counts a batch waiting on the secret store as work to drain", async () => {
+      await connection.connect();
+      const realSet = (redis as any).set;
+      let releaseSet: (() => void) | undefined;
+      (redis as any).set = mock(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseSet = resolve;
+          }),
+      );
+
+      try {
+        const handler = mockEventHandlers.get("messages.upsert")!;
+        const delivery = handler({ type: "notify", messages: [original()] });
+        await new Promise((r) => setImmediate(r));
+
+        expect(connection.inFlightWebhooks).toBeGreaterThan(0);
+
+        releaseSet?.();
+        await delivery;
+      } finally {
+        (redis as any).set = realSet;
+      }
+
+      await drain();
+      expect(connection.inFlightWebhooks).toBe(0);
+    });
+
+    it("counts a dump waiting on the secret store as work to drain", async () => {
+      await connection.connect();
+      const realSet = (redis as any).set;
+      let releaseSet: (() => void) | undefined;
+      (redis as any).set = mock(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseSet = resolve;
+          }),
+      );
+
+      try {
+        const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+        const delivery = historyHandler({
+          chats: [],
+          contacts: [],
+          messages: [dumped()],
+          syncType: 3,
+          isLatest: true,
+        });
+        await new Promise((r) => setImmediate(r));
+
+        expect(connection.inFlightWebhooks).toBeGreaterThan(0);
+
+        releaseSet?.();
+        await delivery;
+      } finally {
+        (redis as any).set = realSet;
+      }
+
+      await drain();
+      expect(connection.inFlightWebhooks).toBe(0);
+    });
+
+    // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
+    // "the most recent message in the chat"), so walking it straight applies the
+    // newest replacement and then overwrites it with an older one.
+    it("applies the newest edit last when a dump carries two of them", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [
+          edit("segunda", undefined, { id: "edit-2" }),
+          edit("primeira", undefined, { id: "edit-1", ageSeconds: 30 }),
+          dumped(60),
+        ],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("segunda");
+    });
+
+    // A disappearing message keeps its content inside `ephemeralMessage` and its
+    // context outside it. Assigning the replacement over the whole `message`
+    // drops the wrapper, and the consumer reads what looks like an ordinary,
+    // non-disappearing message.
+    it("keeps the disappearing-message wrapper when repairing in place", async () => {
+      await connection.connect();
+      const wrapped = original();
+
+      await deliver([
+        {
+          ...wrapped,
+          message: {
+            messageContextInfo: { messageSecret },
+            ephemeralMessage: { message: { conversation: "oi" } },
+          },
+        },
+        edit("oi editado"),
+      ]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const messages = JSON.parse(upsert?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.ephemeralMessage.message.conversation).toBe(
+        "oi editado",
+      );
     });
 
     // A dump strips the addressing, and the second JID form is exactly what the

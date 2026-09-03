@@ -54,7 +54,9 @@ import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import {
   decodeEditedMessage,
   messageTimestampSeconds,
+  orderEditsOldestFirst,
   ownMessageSecret,
+  replaceInnerContent,
   type SecretMessageEdit,
   secretMessageEdit,
 } from "@/baileys/helpers/secretEncryptedMessageEdit";
@@ -2425,26 +2427,37 @@ export class BaileysConnection {
     const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
       messagesData.messages,
     );
-    await this.fileMessageSecrets(secrets);
 
-    if (kept.length > 0) {
-      if (kept.length !== messagesData.messages.length) {
-        messagesData = { ...messagesData, messages: kept };
+    // Reserved here, synchronously, and held until the batch is out. Between
+    // this line and the send sit a Redis write and a media download, and both
+    // can stall: a handoff or SIGTERM landing on either reads inFlightWebhooks
+    // as zero, leaves this connection out of drainingWebhooks and exits on top
+    // of messages that were never delivered.
+    this._inFlightWebhooks += 1;
+    try {
+      await this.fileMessageSecrets(secrets);
+
+      if (kept.length > 0) {
+        if (kept.length !== messagesData.messages.length) {
+          messagesData = { ...messagesData, messages: kept };
+        }
+
+        const payload: BaileysConnectionWebhookPayload = {
+          event: "messages.upsert",
+          data: messagesData,
+        };
+
+        const media = await downloadMediaFromMessages(messagesData.messages, {
+          includeMedia: this.includeMedia,
+        });
+        if (media) {
+          payload.extra = { media };
+        }
+
+        await this.sendToWebhook(payload);
       }
-
-      const payload: BaileysConnectionWebhookPayload = {
-        event: "messages.upsert",
-        data: messagesData,
-      };
-
-      const media = await downloadMediaFromMessages(messagesData.messages, {
-        includeMedia: this.includeMedia,
-      });
-      if (media) {
-        payload.extra = { media };
-      }
-
-      await this.sendToWebhook(payload);
+    } finally {
+      this._inFlightWebhooks -= 1;
     }
 
     this.emitUnresolvedEdits(unresolved);
@@ -2491,7 +2504,7 @@ export class BaileysConnection {
 
   private repairSecretMessageEdits(
     messages: WAMessage[],
-    { onlyRecent = false }: { onlyRecent?: boolean } = {},
+    { history = false }: { history?: boolean } = {},
   ): {
     kept: WAMessage[];
     unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
@@ -2503,7 +2516,7 @@ export class BaileysConnection {
     // messages afterwards: applying an edit in place replaces the content that
     // holds the secret, so re-reading a repaired message finds nothing and the
     // NEXT edit to it would arrive undecryptable.
-    const secrets = this.collectMessageSecrets(kept, { onlyRecent });
+    const secrets = this.collectMessageSecrets(kept, { history });
 
     if (edits.length === 0) {
       return { kept, unresolved: [], secrets };
@@ -2527,7 +2540,9 @@ export class BaileysConnection {
       }
     }
 
-    for (const { message, edit } of edits) {
+    for (const { message, edit } of orderEditsOldestFirst(edits, {
+      newestFirst: history,
+    })) {
       const targetId = edit.targetKey.id as string;
       const target = byId.get(targetId);
       const secret = secretById.get(targetId);
@@ -2557,7 +2572,10 @@ export class BaileysConnection {
           );
           continue;
         }
-        target.message = decodeEditedMessage(decrypted.plaintext);
+        target.message = replaceInnerContent(
+          target.message,
+          decodeEditedMessage(decrypted.plaintext),
+        );
       } catch (error) {
         logger.warn(
           "[%s] [repairSecretMessageEdits] failed targetId=%s\n%s",
@@ -2581,11 +2599,12 @@ export class BaileysConnection {
   // the read can happen before an in-place repair overwrites what it reads.
   private collectMessageSecrets(
     messages: WAMessage[],
-    { onlyRecent = false }: { onlyRecent?: boolean } = {},
+    { history = false }: { history?: boolean } = {},
   ): MessageSecretEntry[] {
     // Only a dump is filtered by age: a live message is current by definition,
     // and dropping one whose timestamp reads oddly would silently cost the edit
-    // that follows it.
+    // that follows it. This is the age half of `history`; the other half is the
+    // array order, which orderEditsOldestFirst reads.
     const oldest = Date.now() / 1000 - MESSAGE_SECRET_TTL_SECONDS;
     const entries: MessageSecretEntry[] = [];
 
@@ -2595,7 +2614,7 @@ export class BaileysConnection {
       if (!messageId || !secret) {
         continue;
       }
-      if (onlyRecent && messageTimestampSeconds(message) < oldest) {
+      if (history && messageTimestampSeconds(message) < oldest) {
         continue;
       }
       entries.push({
@@ -2956,16 +2975,35 @@ export class BaileysConnection {
       kept: messages,
       unresolved: unresolvedEdits,
       secrets,
-    } = this.repairSecretMessageEdits(addressed, { onlyRecent: true });
-    await this.fileMessageSecrets(secrets);
+    } = this.repairSecretMessageEdits(addressed, { history: true });
 
+    // Same reservation, same reason as the live path: the Redis write below is
+    // a stall this connection has to survive being drained through, and until
+    // the first frame reaches sendToWebhook nothing else is holding it.
+    this._inFlightWebhooks += 1;
+    try {
+      await this.fileMessageSecrets(secrets);
+      await this.deliverHistoryFrames(data, messages);
+    } finally {
+      this._inFlightWebhooks -= 1;
+    }
+
+    // After the frames: the dump is what carries the originals these could not
+    // be applied to, and a consumer that has not seen them yet answers 404.
+    // That answer is retried, which is the whole reason this needs no queue.
+    this.emitUnresolvedEdits(unresolvedEdits);
+  }
+
+  private async deliverHistoryFrames(
+    data: BaileysEventMap["messaging-history.set"],
+    messages: WAMessage[],
+  ) {
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no
     // chat record at all, so an empty list here means "no news", never "there
     // is more".
     const exhausted = exhaustedChats(data.chats ?? []);
     if (messages.length === 0 && exhausted.length === 0) {
-      this.emitUnresolvedEdits(unresolvedEdits);
       return;
     }
 
@@ -3016,11 +3054,6 @@ export class BaileysConnection {
         },
       });
     }
-
-    // After the frames: the dump is what carries the originals these could not
-    // be applied to, and a consumer that has not seen them yet answers 404.
-    // That answer is retried, which is the whole reason this needs no queue.
-    this.emitUnresolvedEdits(unresolvedEdits);
   }
 
   // Restores the addressing a dump strips (see historySync.ts), from the two

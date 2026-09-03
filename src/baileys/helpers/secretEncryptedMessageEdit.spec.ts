@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
 import {
   decodeEditedMessage,
+  orderEditsOldestFirst,
   ownMessageSecret,
+  replaceInnerContent,
   secretMessageEdit,
 } from "./secretEncryptedMessageEdit";
 
@@ -198,5 +200,106 @@ describe("decodeEditedMessage", () => {
     );
 
     expect(decoded.conversation).toBe("oi editado");
+  });
+});
+
+describe("replaceInnerContent", () => {
+  it("replaces the content of a bare message", () => {
+    expect(
+      replaceInnerContent({ conversation: "oi" }, { conversation: "editado" }),
+    ).toEqual({ conversation: "editado" });
+  });
+
+  // The wrapper is what tells the consumer the message disappears, and the
+  // context next to it is where the secret for the NEXT edit lives.
+  it("keeps the wrapper and the outer context", () => {
+    const secret = new Uint8Array(32).fill(9);
+
+    expect(
+      replaceInnerContent(
+        {
+          messageContextInfo: { messageSecret: secret },
+          ephemeralMessage: { message: { conversation: "oi" } },
+        },
+        { conversation: "editado" },
+      ),
+    ).toEqual({
+      messageContextInfo: { messageSecret: secret },
+      ephemeralMessage: { message: { conversation: "editado" } },
+    });
+  });
+
+  it("replaces at the bottom of a nested wrapper", () => {
+    expect(
+      replaceInnerContent(
+        {
+          ephemeralMessage: {
+            message: { viewOnceMessageV2: { message: { conversation: "oi" } } },
+          },
+        },
+        { conversation: "editado" },
+      ),
+    ).toEqual({
+      ephemeralMessage: {
+        message: {
+          viewOnceMessageV2: { message: { conversation: "editado" } },
+        },
+      },
+    });
+  });
+
+  it("fills a wrapper that carries no content", () => {
+    expect(
+      replaceInnerContent(
+        { ephemeralMessage: {} },
+        { conversation: "editado" },
+      ),
+    ).toEqual({ ephemeralMessage: { message: { conversation: "editado" } } });
+  });
+
+  it("returns the replacement when there is nothing to keep", () => {
+    expect(replaceInnerContent(null, { conversation: "editado" })).toEqual({
+      conversation: "editado",
+    });
+  });
+});
+
+describe("orderEditsOldestFirst", () => {
+  const at = (seconds: number, label: string) => ({
+    label,
+    message: { messageTimestamp: seconds } as any,
+  });
+
+  it("sorts by the time the edit was made", () => {
+    expect(
+      orderEditsOldestFirst([at(30, "b"), at(10, "a"), at(50, "c")]).map(
+        (e) => e.label,
+      ),
+    ).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps arrival order for edits stamped in the same second", () => {
+    expect(
+      orderEditsOldestFirst([at(10, "a"), at(10, "b")]).map((e) => e.label),
+    ).toEqual(["a", "b"]);
+  });
+
+  // A history array is built newest-first, so equal stamps there mean the
+  // opposite of what they mean live.
+  it("reverses ties when the array was built newest-first", () => {
+    expect(
+      orderEditsOldestFirst([at(10, "b"), at(10, "a")], {
+        newestFirst: true,
+      }).map((e) => e.label),
+    ).toEqual(["a", "b"]);
+  });
+
+  it("reads a Long timestamp", () => {
+    expect(
+      orderEditsOldestFirst([
+        { label: "b", message: { messageTimestamp: { low: 30, high: 0 } } },
+        { label: "a", message: { messageTimestamp: { low: 10, high: 0 } } },
+      ] as any).map((e: any) => e.label),
+    ).toEqual(["a", "b"]);
   });
 });

@@ -111,3 +111,94 @@ export function decodeEditedMessage(plaintext: Uint8Array): proto.IMessage {
     decoded
   );
 }
+
+// The same chain `normalizeMessageContent` walks, in the same order. Kept as a
+// local list rather than reused from Baileys because Baileys only exposes the
+// walk, not the path it took, and the path is what has to be rebuilt.
+const WRAPPER_KEYS = [
+  "ephemeralMessage",
+  "viewOnceMessage",
+  "documentWithCaptionMessage",
+  "viewOnceMessageV2",
+  "viewOnceMessageV2Extension",
+  "editedMessage",
+  "associatedChildMessage",
+  "groupStatusMessage",
+  "groupStatusMessageV2",
+] as const;
+
+/**
+ * Puts `replacement` where the message's real content sits, keeping whatever
+ * wrapped it.
+ *
+ * A disappearing message arrives as `ephemeralMessage: { message: ... }`, and
+ * its `messageContextInfo` sits on the OUTER object, next to the wrapper.
+ * Assigning the decoded edit over the whole `message` would drop both: the
+ * consumer would receive what looks like an ordinary, non-disappearing message,
+ * and the secret the next edit needs would go with it.
+ *
+ * An unwrapped message has no outer anything, so there the replacement simply
+ * is the new content.
+ */
+export function replaceInnerContent(
+  outer: proto.IMessage | null | undefined,
+  replacement: proto.IMessage,
+): proto.IMessage {
+  if (!outer) {
+    return replacement;
+  }
+
+  let deepest: { message?: proto.IMessage | null } | null = null;
+  let content: proto.IMessage = outer;
+
+  // Bounded like Baileys' own walk, so a payload that wraps itself cannot spin.
+  for (let depth = 0; depth < 5; depth += 1) {
+    const key = WRAPPER_KEYS.find(
+      (candidate) => (content as Record<string, unknown>)[candidate],
+    );
+    if (!key) {
+      break;
+    }
+    deepest = content[key] as { message?: proto.IMessage | null };
+    content = deepest.message ?? {};
+  }
+
+  if (!deepest) {
+    return replacement;
+  }
+
+  deepest.message = replacement;
+  return outer;
+}
+
+/**
+ * The edits in the order they were made, oldest first.
+ *
+ * Two edits of one message are last-one-wins, so applying them in the wrong
+ * order leaves the older text standing. A history dump makes that the DEFAULT
+ * rather than an edge case: Baileys builds each chat's array newest-first (it
+ * keeps `msgs[0]` as "the most recent message in the chat"), so walking it
+ * straight applies the newest replacement and then overwrites it with an older
+ * one. The same reversal then rides into the unresolved queue, which emits in
+ * the order it was given.
+ *
+ * `newestFirst` is the tie-break, not the sort: messages stamped in the same
+ * second carry no ordering of their own, so the only thing left to go on is
+ * which way the array they came in was built.
+ */
+export function orderEditsOldestFirst<T extends { message: WAMessage }>(
+  edits: T[],
+  { newestFirst = false }: { newestFirst?: boolean } = {},
+): T[] {
+  const indexed = edits.map((entry, index) => ({ entry, index }));
+  indexed.sort((a, b) => {
+    const byTime =
+      messageTimestampSeconds(a.entry.message) -
+      messageTimestampSeconds(b.entry.message);
+    if (byTime !== 0) {
+      return byTime;
+    }
+    return newestFirst ? b.index - a.index : a.index - b.index;
+  });
+  return indexed.map(({ entry }) => entry);
+}
