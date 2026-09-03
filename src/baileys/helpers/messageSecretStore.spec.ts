@@ -8,6 +8,7 @@ import {
 } from "./messageSecretStore";
 
 const stringData = (redis as any).__stringData as Map<string, string>;
+const hashData = (redis as any).__hashData as Map<string, Map<string, string>>;
 const expirations = (redis as any).__expirations as Map<
   string,
   { type: string; value: number }
@@ -20,6 +21,7 @@ const SECRET = Buffer.alloc(32, 3);
 describe("messageSecretStore", () => {
   afterEach(() => {
     stringData.clear();
+    hashData.clear();
     expirations.clear();
   });
 
@@ -58,14 +60,29 @@ describe("messageSecretStore", () => {
     expect(await recallMessageSecret(PHONE, "unknown")).toBeNull();
   });
 
-  it("answers null instead of throwing on a corrupt entry", async () => {
-    stringData.set(messageSecretKey(PHONE, MESSAGE_ID), "not json");
+  // An older build of this feature stored a JSON string under the same key, and
+  // those entries outlive a rollback by up to the TTL. Reading one answers
+  // WRONGTYPE, which is unreadable, which is the same as absent.
+  it("answers null instead of throwing on an entry it cannot read", async () => {
+    const real = (redis as any).hGetAll;
+    (redis as any).hGetAll = async () => {
+      throw new Error(
+        "WRONGTYPE Operation against a key holding the wrong kind of value",
+      );
+    };
 
-    expect(await recallMessageSecret(PHONE, MESSAGE_ID)).toBeNull();
+    try {
+      expect(await recallMessageSecret(PHONE, MESSAGE_ID)).toBeNull();
+    } finally {
+      (redis as any).hGetAll = real;
+    }
   });
 
   it("answers null on an entry with no secret", async () => {
-    stringData.set(messageSecretKey(PHONE, MESSAGE_ID), JSON.stringify({}));
+    hashData.set(
+      messageSecretKey(PHONE, MESSAGE_ID),
+      new Map([["jid:167392323834034@lid", "1"]]),
+    );
 
     expect(await recallMessageSecret(PHONE, MESSAGE_ID)).toBeNull();
   });
@@ -82,7 +99,20 @@ describe("messageSecretStore", () => {
     await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid]);
 
     const stored = await recallMessageSecret(PHONE, MESSAGE_ID);
-    expect(stored?.senders).toEqual([lid, pn]);
+    expect(stored?.senders.sort()).toEqual([lid, pn].sort());
+  });
+
+  // The merge is Redis's own, not a read-modify-write: setting fields only adds,
+  // so a poorer copy can neither publish itself first nor lose the richer form
+  // if the connection drops between two writes.
+  it("never reads the entry back to merge it", async () => {
+    const reads = (redis as any).hGetAll.mock.calls.length;
+
+    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [
+      "167392323834034@lid",
+    ]);
+
+    expect((redis as any).hGetAll.mock.calls.length).toBe(reads);
   });
 
   // A timeout only stops us awaiting; the command stays on node-redis's queue
@@ -105,15 +135,5 @@ describe("messageSecretStore", () => {
 
     expect(seen).toHaveLength(2);
     expect(seen.every((signal) => signal instanceof AbortSignal)).toBe(true);
-  });
-
-  it("does not rewrite when the new copy already covers the old", async () => {
-    const lid = "167392323834034@lid";
-    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid]);
-    const writes = (redis as any).set.mock.calls.length;
-
-    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid]);
-
-    expect((redis as any).set.mock.calls.length).toBe(writes + 1);
   });
 });

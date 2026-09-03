@@ -319,9 +319,8 @@ export class BaileysConnection {
   private sessionEnded = false;
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
-  // Serializes encrypted-edit deliveries against each other. See
-  // emitUnresolvedEdits.
-  private editDeliveryQueue: Promise<void> = Promise.resolve();
+  // One delivery chain per edited message. See enqueueEditDelivery.
+  private editDeliveries = new Map<string, Promise<void>>();
   // Secrets this connection has taken in but not yet filed. See
   // beginSecretIntake.
   private secretIntake: Promise<unknown> = Promise.resolve();
@@ -2510,7 +2509,7 @@ export class BaileysConnection {
     }
   }
 
-  // Sends the edits this batch could not apply itself, one at a time.
+  // Sends the edits this batch could not apply itself.
   //
   // Nothing here waits on the upserts: an edit whose original the consumer has
   // not written yet is answered 404 and `awaitResponse` puts the delivery back
@@ -2521,37 +2520,64 @@ export class BaileysConnection {
   // What the protocol does NOT give is order between two edits of the SAME
   // message: once the target exists both are answered 200, so a first edit
   // working through a retry can land after a second and the older text wins.
-  // Hence the queue — and only the queue. It orders edits against each other,
-  // touches nothing else on the connection, and holds the in-flight
-  // reservation for the span, which is the piece a graceful shutdown needs.
+  // Hence the chains — one per message, and only per message. A single chain
+  // for the connection would have one edit's retry ladder, minutes long,
+  // holding back every other chat's edits for an ordering none of them need.
   private emitUnresolvedEdits(unresolved: UnresolvedEdit[]) {
     if (unresolved.length === 0) {
       return;
     }
 
-    // Read while the socket is certainly still there: the loop below runs on a
-    // later tick, and a handoff clears the socket in between. A connection whose
-    // first edit targets a message an EARLIER connection filed has never called
-    // ownJids yet, so without this the cache would be empty exactly when the
-    // socket is gone, and a fromMe edit would derive no candidate at all.
+    // Read while the socket is certainly still there: the deliveries below run
+    // on a later tick, and a handoff clears the socket in between. A connection
+    // whose first edit targets a message an EARLIER connection filed has never
+    // called ownJids yet, so without this the cache would be empty exactly when
+    // the socket is gone, and a fromMe edit would derive no candidate at all.
     this.ownJids();
 
     // Reserved synchronously, for the reason `stallReportChain` reserves its
-    // own: the queue does not reach sendToWebhook until a microtask, and a
-    // SIGTERM landing in that gap would read nothing pending and exit on top of
-    // these edits.
+    // own: nothing reaches sendToWebhook until a microtask, and a SIGTERM
+    // landing in that gap would read nothing pending and exit on top of these
+    // edits.
     this._inFlightWebhooks += 1;
-    this.editDeliveryQueue = this.editDeliveryQueue
-      .catch(() => {})
-      .then(async () => {
-        for (const { message, edit, position } of unresolved) {
-          await this.emitSecretMessageEdit(message, edit, position);
-        }
-      })
+    const deliveries = unresolved.map(({ message, edit, position }) =>
+      this.enqueueEditDelivery(edit.targetKey.id as string, () =>
+        this.emitSecretMessageEdit(message, edit, position),
+      ),
+    );
+    Promise.all(deliveries)
       .catch(() => {})
       .finally(() => {
         this._inFlightWebhooks -= 1;
       });
+  }
+
+  /**
+   * Runs `work` after whatever is already queued for the same message.
+   *
+   * Two edits of one message have to be delivered in order; two edits of
+   * different messages have nothing to do with each other. The chains are
+   * therefore per target, and each removes itself once it drains, so nothing
+   * has to cap or evict them.
+   */
+  private enqueueEditDelivery(
+    targetId: string,
+    work: () => Promise<void>,
+  ): Promise<void> {
+    const previous = this.editDeliveries.get(targetId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(work)
+      .catch(() => {});
+    this.editDeliveries.set(targetId, next);
+    next.finally(() => {
+      // Only if nothing queued behind us in the meantime; that chain is now the
+      // one to wait on.
+      if (this.editDeliveries.get(targetId) === next) {
+        this.editDeliveries.delete(targetId);
+      }
+    });
+    return next;
   }
 
   /**

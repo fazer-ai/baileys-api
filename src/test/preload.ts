@@ -33,9 +33,34 @@ const mockRedis = {
   __multiCommands: multiCommands,
   __expirations: expirations,
 
-  hSet: mock(async (key: string, field: string, value: string) => {
-    if (!hashData.has(key)) hashData.set(key, new Map());
-    hashData.get(key)?.set(field, value);
+  // node-redis takes either one field/value pair or an object of them; both
+  // reach the same hash.
+  hSet: mock(
+    async (
+      key: string,
+      fieldOrFields: string | Record<string, string>,
+      value?: string,
+    ) => {
+      if (!hashData.has(key)) hashData.set(key, new Map());
+      const hash = hashData.get(key) as Map<string, string>;
+      if (typeof fieldOrFields === "string") {
+        hash.set(fieldOrFields, value as string);
+        return 1;
+      }
+      for (const [field, fieldValue] of Object.entries(fieldOrFields)) {
+        hash.set(field, fieldValue);
+      }
+      return Object.keys(fieldOrFields).length;
+    },
+  ),
+  hGetAll: mock(async (key: string) => {
+    return Object.fromEntries(hashData.get(key) ?? new Map());
+  }),
+  // Time is NOT simulated: this records the lifetime so a spec can assert it,
+  // and keys never actually expire.
+  expire: mock(async (key: string, seconds: number) => {
+    if (!hashData.has(key) && !stringData.has(key)) return 0;
+    expirations.set(key, { type: "EX", value: seconds });
     return 1;
   }),
   hGet: mock(async (key: string, field: string) => {

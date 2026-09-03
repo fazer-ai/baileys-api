@@ -686,7 +686,9 @@ describe("BaileysConnection", () => {
       const encIv = randomBytes(12);
       const key = messageEditKey({
         ...senders,
-        origMsgId: ORIG_ID,
+        // The derivation is bound to the message being edited, so it follows
+        // the target key rather than the default one.
+        origMsgId: targetKey.id as string,
         messageSecret,
       });
       const cipher = createCipheriv("aes-256-gcm", key, encIv);
@@ -946,7 +948,7 @@ describe("BaileysConnection", () => {
       await drain();
 
       expect(
-        (redis as any).__stringData.has(
+        (redis as any).__hashData.has(
           messageSecretKey("+5511999999999", ORIG_ID),
         ),
       ).toBe(true);
@@ -1044,16 +1046,16 @@ describe("BaileysConnection", () => {
     // queued behind its delivery slot.
     it("still delivers the batch when the secret store never answers", async () => {
       await connect();
-      const realSet = (redis as any).set;
+      const realSet = (redis as any).hSet;
       const realTimeout = config.baileys.messageSecretStoreTimeoutMs;
       // Never settles, which is exactly what an offline queue does.
-      (redis as any).set = mock(() => new Promise(() => {}));
+      (redis as any).hSet = mock(() => new Promise(() => {}));
       (config.baileys as any).messageSecretStoreTimeoutMs = 20;
 
       try {
         await deliver([original()]);
       } finally {
-        (redis as any).set = realSet;
+        (redis as any).hSet = realSet;
         (config.baileys as any).messageSecretStoreTimeoutMs = realTimeout;
       }
 
@@ -1142,7 +1144,7 @@ describe("BaileysConnection", () => {
       await drain();
 
       expect(
-        (redis as any).__stringData.has(
+        (redis as any).__hashData.has(
           messageSecretKey("+5511999999999", ORIG_ID),
         ),
       ).toBe(false);
@@ -1154,9 +1156,9 @@ describe("BaileysConnection", () => {
     // connection from the drain set and exited on top of the message.
     it("counts a batch waiting on the secret store as work to drain", async () => {
       await connect();
-      const realSet = (redis as any).set;
+      const realSet = (redis as any).hSet;
       let releaseSet: (() => void) | undefined;
-      (redis as any).set = mock(
+      (redis as any).hSet = mock(
         () =>
           new Promise<void>((resolve) => {
             releaseSet = resolve;
@@ -1173,7 +1175,7 @@ describe("BaileysConnection", () => {
         releaseSet?.();
         await delivery;
       } finally {
-        (redis as any).set = realSet;
+        (redis as any).hSet = realSet;
       }
 
       await drain();
@@ -1182,9 +1184,9 @@ describe("BaileysConnection", () => {
 
     it("counts a dump waiting on the secret store as work to drain", async () => {
       await connect();
-      const realSet = (redis as any).set;
+      const realSet = (redis as any).hSet;
       let releaseSet: (() => void) | undefined;
-      (redis as any).set = mock(
+      (redis as any).hSet = mock(
         () =>
           new Promise<void>((resolve) => {
             releaseSet = resolve;
@@ -1207,7 +1209,7 @@ describe("BaileysConnection", () => {
         releaseSet?.();
         await delivery;
       } finally {
-        (redis as any).set = realSet;
+        (redis as any).hSet = realSet;
       }
 
       await drain();
@@ -1239,7 +1241,7 @@ describe("BaileysConnection", () => {
       expect(messages[0].message.conversation).toBe("oi editado");
       // Still not worth storing: nothing can edit it again.
       expect(
-        (redis as any).__stringData.has(
+        (redis as any).__hashData.has(
           messageSecretKey("+5511999999999", ORIG_ID),
         ),
       ).toBe(false);
@@ -1254,9 +1256,9 @@ describe("BaileysConnection", () => {
       await deliver([original()]);
       fetchCalls.length = 0;
 
-      const realSet = (redis as any).set;
+      const realSet = (redis as any).hSet;
       let releaseSet: (() => void) | undefined;
-      (redis as any).set = mock(
+      (redis as any).hSet = mock(
         () =>
           new Promise<void>((resolve) => {
             releaseSet = resolve;
@@ -1290,7 +1292,7 @@ describe("BaileysConnection", () => {
         releaseSet?.();
         await stalls;
       } finally {
-        (redis as any).set = realSet;
+        (redis as any).hSet = realSet;
       }
       await drain();
 
@@ -1309,7 +1311,7 @@ describe("BaileysConnection", () => {
     // cannot cancel, so a long outage would retain one command per message.
     it("does not queue a secret write while the store is disconnected", async () => {
       await connect();
-      const before = (redis as any).set.mock.calls.length;
+      const before = (redis as any).hSet.mock.calls.length;
       (redis as any).isReady = false;
 
       try {
@@ -1318,7 +1320,7 @@ describe("BaileysConnection", () => {
         (redis as any).isReady = true;
       }
 
-      expect((redis as any).set.mock.calls.length).toBe(before);
+      expect((redis as any).hSet.mock.calls.length).toBe(before);
       const upsert = fetchCalls.find((c) =>
         c.body?.includes('"event":"messages.upsert"'),
       );
@@ -1463,12 +1465,9 @@ describe("BaileysConnection", () => {
       await connect();
       // Filed by an earlier connection: the store is all this one inherits.
       const own = "89572297961476@lid";
-      (redis as any).__stringData.set(
+      (redis as any).__hashData.set(
         messageSecretKey("+5511999999999", ORIG_ID),
-        JSON.stringify({
-          secret: Buffer.from(messageSecret).toString("base64"),
-          senders: [],
-        }),
+        new Map([["secret", Buffer.from(messageSecret).toString("base64")]]),
       );
 
       const handler = mockEventHandlers.get("messages.upsert")!;
@@ -1687,6 +1686,78 @@ describe("BaileysConnection", () => {
       expect(texts).toEqual(["segunda"]);
     });
 
+    // Ordering is only owed to two edits of the SAME message. A single chain for
+    // the connection would put one edit's retry ladder, minutes long, in front
+    // of every other chat's edits, for an ordering none of them need.
+    it("delivers an edit for another message while one is stuck retrying", async () => {
+      await connect();
+      const OTHER_ID = "3EB0AAAAAAAAAAAAAAAAAA";
+      await deliver([
+        original(),
+        { ...original(), key: { ...original().key, id: OTHER_ID } },
+      ]);
+      fetchCalls.length = 0;
+
+      let releaseStuck: (() => void) | undefined;
+      const stuck = new Promise<void>((resolve) => {
+        releaseStuck = resolve;
+      });
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        const body = init?.body as string;
+        if (
+          body?.includes('"event":"messages.update"') &&
+          body.includes(ORIG_ID)
+        ) {
+          await stuck;
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      try {
+        const blocked = handler({
+          type: "notify",
+          messages: [edit("presa", undefined, { id: "edit-1" })],
+        });
+        await new Promise((r) => setImmediate(r));
+
+        await handler({
+          type: "notify",
+          messages: [
+            edit("livre", undefined, {
+              id: "edit-2",
+              targetKey: {
+                remoteJid: "89572297961476@lid",
+                fromMe: true,
+                id: OTHER_ID,
+              },
+            }),
+          ],
+        });
+        // Still stuck, and the other message's edit is already out. Polled
+        // rather than waited on: the stuck chain never settles, so there is no
+        // promise to await, only a bound on how long the free one may take.
+        const updates = () =>
+          fetchCalls.filter((c) =>
+            c.body?.includes('"event":"messages.update"'),
+          );
+        for (let tick = 0; tick < 50 && updates().length === 0; tick += 1) {
+          await new Promise((r) => setImmediate(r));
+        }
+        const delivered = fetchCalls
+          .filter((c) => c.body?.includes('"event":"messages.update"'))
+          .map((c) => JSON.parse(c.body).data[0].key.id);
+        expect(delivered).toEqual([OTHER_ID]);
+
+        releaseStuck?.();
+        await blocked;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.
@@ -1762,11 +1833,16 @@ describe("BaileysConnection", () => {
       });
       await drain();
 
-      const stored = JSON.parse(
-        (redis as any).__stringData.get(
-          messageSecretKey("+5511999999999", ORIG_ID),
-        ),
-      );
+      const stored = {
+        senders: [
+          ...((redis as any).__hashData.get(
+            messageSecretKey("+5511999999999", ORIG_ID),
+          ) as Map<string, string>),
+        ]
+          .map(([field]) => field)
+          .filter((field) => field.startsWith("jid:"))
+          .map((field) => field.slice("jid:".length)),
+      };
       expect(stored.senders).toEqual([CHAT, CHAT_PN]);
     });
 

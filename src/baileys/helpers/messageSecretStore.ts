@@ -15,31 +15,10 @@ const redisKeyPrefix = "@baileys-api:connections";
 // secret at all.
 export const MESSAGE_SECRET_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-export interface StoredMessageSecret {
-  /** base64 of the original message's messageContextInfo.messageSecret */
-  secret: string;
-  /**
-   * JIDs the original message's author was addressed by, most authoritative
-   * first. More than one because a chat mid-LID-migration reports the same
-   * person as `<lid>@lid` and `<phone>@s.whatsapp.net`, and only one of them
-   * is the string WhatsApp fed into the key derivation.
-   */
-  senders: string[];
-}
-
-// Keyed by message id alone, deliberately: the edit's targetMessageKey carries
-// the chat jid as the EDITOR sees it (our own lid), which never matches the jid
-// we filed the original under. Ids are random per message and the key is
-// already scoped to one connection, so the id is identity enough.
-export function messageSecretKey(phoneNumber: string, messageId: string) {
-  return `${redisKeyPrefix}:${phoneNumber}:message-secret:${messageId}`;
-}
-
-export interface MessageSecretEntry {
-  messageId: string;
-  secret: Uint8Array;
-  senders: string[];
-}
+/** Hash field holding the base64 of the message's own messageSecret. */
+const SECRET_FIELD = "secret";
+/** Prefix of the hash fields holding the author's JID forms, one per field. */
+const SENDER_FIELD_PREFIX = "jid:";
 
 // node-redis parks a command on an offline queue while the connection is down
 // and replays it on reconnect, so every message that publishes a secret would
@@ -64,6 +43,35 @@ function bounded() {
   );
 }
 
+// Keyed by message id alone, deliberately: the edit's targetMessageKey carries
+// the chat jid as the EDITOR sees it (our own lid), which never matches the jid
+// we filed the original under. Ids are random per message and the key is
+// already scoped to one connection, so the id is identity enough.
+export function messageSecretKey(phoneNumber: string, messageId: string) {
+  return `${redisKeyPrefix}:${phoneNumber}:message-secret:${messageId}`;
+}
+
+export interface MessageSecretEntry {
+  messageId: string;
+  secret: Uint8Array;
+  senders: string[];
+}
+
+/**
+ * Files a message's secret and the JID forms its author was addressed by.
+ *
+ * A hash whose sender JIDs are one field each, rather than a JSON value, and
+ * the shape is the whole point: the same message arrives by more than one route
+ * and they do not address its author equally well, so a dump whose LID mapping
+ * was unknown carries one form where the live copy carried two. Writing a value
+ * means read, merge, write, which is neither atomic against a concurrent writer
+ * nor safe to interrupt: the poorer list is published first and a disconnect
+ * between the two writes loses the richer one for good. Setting fields only ever
+ * adds, so the union is what Redis itself does and there is nothing to lose.
+ *
+ * The secret is not merged, it is simply written: it belongs to the message and
+ * is identical on every copy.
+ */
 export async function rememberMessageSecret(
   phoneNumber: string,
   messageId: string,
@@ -75,58 +83,18 @@ export async function rememberMessageSecret(
   }
 
   const key = messageSecretKey(phoneNumber, messageId);
-  const payload: StoredMessageSecret = {
-    secret: Buffer.from(secret).toString("base64"),
-    senders,
+  const fields: Record<string, string> = {
+    [SECRET_FIELD]: Buffer.from(secret).toString("base64"),
   };
+  for (const jid of senders) {
+    if (jid) {
+      fields[`${SENDER_FIELD_PREFIX}${jid}`] = "1";
+    }
+  }
+
   const client = bounded();
-
-  // GET on the write, so the round trip that stores also reports what it
-  // replaced. The same message arrives by more than one route and they do not
-  // address its author equally well: a dump whose LID mapping was unknown
-  // carries one JID form where the live copy carried two. Overwriting the
-  // richer record with the poorer one leaves a later edit, encrypted under the
-  // form that was dropped, with no candidate that verifies.
-  const previous = await client.set(key, JSON.stringify(payload), {
-    expiration: { type: "EX", value: MESSAGE_SECRET_TTL_SECONDS },
-    GET: true,
-  });
-
-  const merged = mergeSenders(previous, senders);
-  if (!merged) {
-    return;
-  }
-
-  await client.set(key, JSON.stringify({ ...payload, senders: merged }), {
-    expiration: { type: "EX", value: MESSAGE_SECRET_TTL_SECONDS },
-  });
-}
-
-/**
- * The union of the stored author JIDs and the ones just written, or null when
- * the write already covers everything that was there.
- *
- * Only the candidate list is merged, never the secret: the secret is the
- * message's own and identical on every copy, so the fresh one always stands.
- */
-function mergeSenders(
-  previous: string | null | undefined,
-  senders: string[],
-): string[] | null {
-  if (!previous) {
-    return null;
-  }
-
-  let stored: string[];
-  try {
-    const parsed = JSON.parse(previous) as StoredMessageSecret;
-    stored = Array.isArray(parsed?.senders) ? parsed.senders : [];
-  } catch {
-    return null;
-  }
-
-  const missing = stored.filter((jid) => jid && !senders.includes(jid));
-  return missing.length > 0 ? [...senders, ...missing] : null;
+  await client.hSet(key, fields);
+  await client.expire(key, MESSAGE_SECRET_TTL_SECONDS);
 }
 
 /**
@@ -158,21 +126,26 @@ export async function recallMessageSecret(
     return null;
   }
 
-  const raw = await bounded().get(messageSecretKey(phoneNumber, messageId));
-  if (!raw) {
+  let stored: Record<string, string> | undefined;
+  try {
+    stored = await bounded().hGetAll(messageSecretKey(phoneNumber, messageId));
+  } catch {
+    // Includes WRONGTYPE, which is what a key left by an older build of this
+    // feature answers. Unreadable is the same as absent here.
     return null;
   }
 
-  try {
-    const parsed = JSON.parse(raw) as StoredMessageSecret;
-    if (!parsed?.secret) {
-      return null;
-    }
-    return {
-      secret: Buffer.from(parsed.secret, "base64"),
-      senders: Array.isArray(parsed.senders) ? parsed.senders : [],
-    };
-  } catch {
+  const encoded = stored?.[SECRET_FIELD];
+  if (!encoded) {
     return null;
   }
+
+  // Unordered, unlike the list this used to store. The order was only ever a
+  // hint about which form to try first, and trying a wrong one costs a failed
+  // GCM tag check over a handful of candidates.
+  const senders = Object.keys(stored)
+    .filter((field) => field.startsWith(SENDER_FIELD_PREFIX))
+    .map((field) => field.slice(SENDER_FIELD_PREFIX.length));
+
+  return { secret: Buffer.from(encoded, "base64"), senders };
 }
