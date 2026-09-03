@@ -8,3 +8,10 @@
 # shared detail is declared, which rewrites the whole spec and belongs in its own PR:
 # https://github.com/fazer-ai/baileys-api/issues/374
 swagger.json: Restore the actual send-message conflict response
+
+# Ordering across a connection handoff: editDeliveryQueue and editedAt are
+# connection-local, and a handoff leaves the old connection draining while the
+# new one runs. Deliberately not fixed here; the reasoning, the cost of a shared
+# guard and the correction path (the consumer, which knows what it applied) are
+# in fazer-ai/baileys-api#393.
+src/baileys/connection.ts: Preserve edit ordering across connection handoffs

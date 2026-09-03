@@ -1,4 +1,6 @@
 import { afterEach, mock } from "bun:test";
+import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
+import { MESSAGE_SECRET_WRITE_SCRIPT } from "@/baileys/helpers/messageSecretStore";
 
 /**
  * Shared test preload — runs before every test file.
@@ -21,14 +23,45 @@ const multiCommands: Array<{ op: string; args: any[] }> = [];
 const expirations = new Map<string, { type: string; value: number }>();
 
 const mockRedis = {
+  // The real client flips this false while the connection is down; callers use
+  // it to skip a write instead of parking it on the offline queue.
+  isReady: true,
+  // The real client returns a view of itself that carries the signal; every
+  // command below is the same mock either way.
+  withAbortSignal: (_signal: AbortSignal) => mockRedis,
   __hashData: hashData,
   __stringData: stringData,
   __multiCommands: multiCommands,
   __expirations: expirations,
 
-  hSet: mock(async (key: string, field: string, value: string) => {
-    if (!hashData.has(key)) hashData.set(key, new Map());
-    hashData.get(key)?.set(field, value);
+  // node-redis takes either one field/value pair or an object of them; both
+  // reach the same hash.
+  hSet: mock(
+    async (
+      key: string,
+      fieldOrFields: string | Record<string, string>,
+      value?: string,
+    ) => {
+      if (!hashData.has(key)) hashData.set(key, new Map());
+      const hash = hashData.get(key) as Map<string, string>;
+      if (typeof fieldOrFields === "string") {
+        hash.set(fieldOrFields, value as string);
+        return 1;
+      }
+      for (const [field, fieldValue] of Object.entries(fieldOrFields)) {
+        hash.set(field, fieldValue);
+      }
+      return Object.keys(fieldOrFields).length;
+    },
+  ),
+  hGetAll: mock(async (key: string) => {
+    return Object.fromEntries(hashData.get(key) ?? new Map());
+  }),
+  // Time is NOT simulated: this records the lifetime so a spec can assert it,
+  // and keys never actually expire.
+  expire: mock(async (key: string, seconds: number) => {
+    if (!hashData.has(key) && !stringData.has(key)) return 0;
+    expirations.set(key, { type: "EX", value: seconds });
     return 1;
   }),
   hGet: mock(async (key: string, field: string) => {
@@ -76,10 +109,13 @@ const mockRedis = {
         EX?: number;
         condition?: "NX" | "XX";
         expiration?: { type: string; value: number };
+        GET?: boolean;
       },
     ) => {
       const nx = options?.NX || options?.condition === "NX";
       if (nx && stringData.has(key)) return null;
+      // SET ... GET answers with the value it replaced, null if there was none.
+      const previous = options?.GET ? (stringData.get(key) ?? null) : null;
       stringData.set(key, value);
       if (options?.expiration) {
         expirations.set(key, options.expiration);
@@ -90,7 +126,7 @@ const mockRedis = {
       } else {
         expirations.delete(key);
       }
-      return "OK";
+      return options?.GET ? previous : "OK";
     },
   ),
   incr: mock(async (key: string) => {
@@ -128,6 +164,22 @@ const mockRedis = {
     ) => {
       const keys = options?.keys ?? [];
       const args = options?.arguments ?? [];
+
+      // Message-secret write: KEYS=[key], ARGV=[ttl, field, value, ...].
+      // Matched on the script's own source rather than a marker, so the day it
+      // changes shape this stops claiming it and the specs say so instead of
+      // quietly testing the old behaviour.
+      if (script.trim() === MESSAGE_SECRET_WRITE_SCRIPT) {
+        const [key] = keys;
+        const [ttl, ...fields] = args;
+        if (!hashData.has(key)) hashData.set(key, new Map());
+        const hash = hashData.get(key) as Map<string, string>;
+        for (let i = 0; i + 1 < fields.length; i += 2) {
+          hash.set(fields[i], fields[i + 1]);
+        }
+        expirations.set(key, { type: "EX", value: Number(ttl) });
+        return 1;
+      }
 
       // steal-if-stale idempotency lock (compare-and-set): KEYS=[key],
       // ARGV=[expected, new, ttl]. Reclaims an orphaned "processing" marker
@@ -293,36 +345,72 @@ const mockRedis = {
       commands.push(cmd);
       multiCommands.push(cmd);
     };
-    return {
-      hSet: (key: string, field: string, value: string) => {
-        queue({ op: "hSet", args: [key, field, value] });
+    const chain = {
+      hSet: (
+        key: string,
+        fieldOrFields: string | Record<string, string>,
+        value?: string,
+      ) => {
+        queue({ op: "hSet", args: [key, fieldOrFields, value] });
+        return chain;
+      },
+      expire: (key: string, seconds: number) => {
+        queue({ op: "expire", args: [key, seconds] });
+        return chain;
       },
       hDel: (key: string, field: string) => {
         queue({ op: "hDel", args: [key, field] });
+        return chain;
       },
       hGet: (key: string, field: string) => {
         queue({ op: "hGet", args: [key, field] });
+        return chain;
       },
-      execAsPipeline: mock(async () => {
-        const results: any[] = [];
-        for (const cmd of commands) {
-          if (cmd.op === "hSet") {
-            const [key, field, value] = cmd.args;
-            if (!hashData.has(key)) hashData.set(key, new Map());
-            hashData.get(key)?.set(field, value);
-            results.push(1);
-          } else if (cmd.op === "hDel") {
-            const [key, field] = cmd.args;
-            hashData.get(key)?.delete(field);
-            results.push(1);
-          } else if (cmd.op === "hGet") {
-            const [key, field] = cmd.args;
-            results.push(hashData.get(key)?.get(field) ?? null);
-          }
-        }
-        return results;
-      }),
+      // MULTI/EXEC and a plain pipeline run the same commands here; only the
+      // real server tells them apart, and no spec asserts on that difference.
+      exec: mock(async () => runQueued()),
+      execAsPipeline: mock(async () => runQueued()),
     };
+
+    function runQueued() {
+      const results: any[] = [];
+      for (const cmd of commands) {
+        if (cmd.op === "hSet") {
+          const [key, fieldOrFields, value] = cmd.args;
+          if (!hashData.has(key)) hashData.set(key, new Map());
+          const hash = hashData.get(key) as Map<string, string>;
+          if (typeof fieldOrFields === "string") {
+            hash.set(fieldOrFields, value);
+            results.push(1);
+          } else {
+            for (const [field, fieldValue] of Object.entries(
+              fieldOrFields as Record<string, string>,
+            )) {
+              hash.set(field, fieldValue);
+            }
+            results.push(Object.keys(fieldOrFields).length);
+          }
+        } else if (cmd.op === "expire") {
+          const [key, seconds] = cmd.args;
+          if (hashData.has(key) || stringData.has(key)) {
+            expirations.set(key, { type: "EX", value: seconds });
+            results.push(1);
+          } else {
+            results.push(0);
+          }
+        } else if (cmd.op === "hDel") {
+          const [key, field] = cmd.args;
+          hashData.get(key)?.delete(field);
+          results.push(1);
+        } else if (cmd.op === "hGet") {
+          const [key, field] = cmd.args;
+          results.push(hashData.get(key)?.get(field) ?? null);
+        }
+      }
+      return results;
+    }
+
+    return chain;
   }),
 };
 
@@ -414,6 +502,7 @@ mock.module("@/config", () => ({
       txHoldWarnMs: 30_000,
       audioPreprocessTimeoutMs: 20_000,
       sendTimeoutMs: 45_000,
+      messageSecretStoreTimeoutMs: 5_000,
       sendStallRestartEnabled: false,
       clientVersion: "default",
       overrideClientVersion: false,
@@ -596,6 +685,13 @@ mock.module("@whiskeysockets/baileys", () => ({
   isJidNewsletter: (jid: string) => jid?.endsWith("@newsletter") ?? false,
   isJidBot: (jid: string) => jid?.endsWith("@bot") ?? false,
   isJidMetaAI: (jid: string) => jid?.endsWith("@lid") ?? false,
+  // Faithful enough for the callers that matter: strips the device suffix and
+  // the legacy c.us server, like 7.0.0-rc14's jidNormalizedUser.
+  jidNormalizedUser: (jid: string) => {
+    if (!jid) return "";
+    const [user, server] = jid.split("@");
+    return `${user?.split(":")[0]}@${server === "c.us" ? "s.whatsapp.net" : server}`;
+  },
   downloadContentFromMessage: mock(async () => {
     async function* generate() {
       yield Buffer.from("chunk1");
@@ -658,6 +754,14 @@ mock.module("@whiskeysockets/baileys", () => ({
     Message: {
       AppStateSyncKeyData: {
         fromObject: (obj: any) => ({ ...obj, __appStateSyncKey: true }),
+      },
+      // The real decoder, from the generated protobuf: an encrypted message
+      // edit is only proven decrypted by the plaintext parsing as a Message,
+      // and a stub would prove nothing. WAProto is a separate entry point, so
+      // reaching for it here does not recurse into this mock.
+      decode: (buffer: Uint8Array) => realProto.Message.decode(buffer),
+      SecretEncryptedMessage: {
+        SecretEncType: realProto.Message.SecretEncryptedMessage.SecretEncType,
       },
     },
   },

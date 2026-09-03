@@ -13,8 +13,16 @@ import {
 const fetchCalls: Array<{ url: string; body: string }> = [];
 const originalFetch = globalThis.fetch;
 
+import { createCipheriv, randomBytes } from "node:crypto";
 import * as baileysModule from "@whiskeysockets/baileys";
 import { WAMessageStatus } from "@whiskeysockets/baileys";
+import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
+import { messageEditKey } from "@/baileys/helpers/decryptMessageEdit";
+import {
+  MESSAGE_SECRET_TTL_SECONDS,
+  MESSAGE_SECRET_WRITE_SCRIPT,
+  messageSecretKey,
+} from "@/baileys/helpers/messageSecretStore";
 import { preprocessAudio } from "@/baileys/helpers/preprocessAudio";
 import { clusterKeys } from "@/cluster/keys";
 import * as sendStallStore from "@/cluster/sendStallStore";
@@ -610,6 +618,1510 @@ describe("BaileysConnection", () => {
         await new Promise((r) => setImmediate(r));
       }
       expect(fetchCalls.some((c) => c.body?.includes('"epoch"'))).toBe(false);
+    });
+  });
+
+  // WhatsApp stopped sending message edits as a plaintext protocolMessage and
+  // now encrypts them under the ORIGINAL message's secret. Baileys has no
+  // handler for that node, so without this the raw blob reaches the webhook as
+  // an ordinary message and every consumer renders it as unsupported content —
+  // while the edit itself is lost.
+  describe("encrypted message edits", () => {
+    const CHAT = "167392323834034@lid";
+    const CHAT_PN = "553499503261@s.whatsapp.net";
+    const ORIG_ID = "3EB078E05D8F792B76A79F";
+    const messageSecret = new Uint8Array(32).fill(11);
+
+    function original() {
+      return {
+        key: {
+          remoteJid: CHAT,
+          remoteJidAlt: CHAT_PN,
+          fromMe: false,
+          id: ORIG_ID,
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          conversation: "oi",
+          messageContextInfo: { messageSecret },
+        },
+      };
+    }
+
+    // The same message as a history dump delivers it: the secret on the
+    // WebMessageInfo rather than in the content, and no `remoteJidAlt` — a dump
+    // strips the addressing, which `addressHistory` puts back.
+    //
+    // The timestamp is relative to now because a dump's secrets are only filed
+    // while an edit could still target them; a fixed epoch would pass today and
+    // start failing an hour from now.
+    function dumped(ageSeconds = 60) {
+      return {
+        key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+        messageTimestamp: Math.floor(Date.now() / 1000) - ageSeconds,
+        message: { conversation: "oi" },
+        messageSecret,
+      };
+    }
+
+    // Seals a replacement body the way the sending client does: HKDF over the
+    // original's secret bound to both parties, then AES-256-GCM with the tag
+    // appended.
+    function edit(
+      text: string,
+      senders = { origMsgSender: CHAT, editSender: CHAT },
+      {
+        id = "edit-1",
+        ageSeconds = 0,
+        targetKey = {
+          remoteJid: "89572297961476@lid",
+          fromMe: true,
+          id: ORIG_ID,
+        },
+      }: {
+        id?: string;
+        ageSeconds?: number;
+        targetKey?: Record<string, unknown>;
+      } = {},
+    ) {
+      const encIv = randomBytes(12);
+      const key = messageEditKey({
+        ...senders,
+        // The derivation is bound to the message being edited, so it follows
+        // the target key rather than the default one.
+        origMsgId: targetKey.id as string,
+        messageSecret,
+      });
+      const cipher = createCipheriv("aes-256-gcm", key, encIv);
+      cipher.setAAD(Buffer.alloc(0));
+      const body = Buffer.concat([
+        cipher.update(
+          realProto.Message.encode(
+            realProto.Message.fromObject({ conversation: text }),
+          ).finish(),
+        ),
+        cipher.final(),
+      ]);
+
+      return {
+        key: {
+          remoteJid: CHAT,
+          remoteJidAlt: CHAT_PN,
+          fromMe: false,
+          id,
+        },
+        messageTimestamp: Math.floor(Date.now() / 1000) - ageSeconds,
+        message: {
+          secretEncryptedMessage: {
+            targetMessageKey: targetKey,
+            encPayload: Buffer.concat([body, cipher.getAuthTag()]),
+            encIv,
+            secretEncType: 2,
+          },
+        },
+      };
+    }
+
+    async function deliver(messages: unknown[]) {
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages });
+      await drain();
+    }
+
+    // An edit is delivered outside the callback that saw it, so waiting a tick
+    // is not enough — wait for the connection to report nothing pending, which
+    // is the same count a graceful shutdown drains on.
+    // The store writes through one Lua call, so that is what has to be held.
+    // Other scripts keep running: this suite's connection code uses them too.
+    function stallSecretStore(): {
+      release: () => void;
+      restore: () => void;
+    } {
+      const realEval = (redis as any).eval;
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      (redis as any).eval = mock(async (script: string, options?: unknown) => {
+        if (script.trim() === MESSAGE_SECRET_WRITE_SCRIPT) {
+          await held;
+          return 1;
+        }
+        return realEval(script, options);
+      });
+      return {
+        release: () => release?.(),
+        restore: () => {
+          (redis as any).eval = realEval;
+        },
+      };
+    }
+
+    async function drain() {
+      await new Promise((r) => setImmediate(r));
+      while (connection.inFlightWebhooks > 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+    }
+
+    // `mockSocket` is a proxy onto the LATEST socket makeWASocket produced, so
+    // the account JIDs have to be set after connecting: assigning them in a
+    // beforeEach writes them to the socket the connection is about to replace.
+    async function connect() {
+      await connection.connect();
+      mockSocket.user = {
+        id: "5511999999999:12@s.whatsapp.net",
+        lid: "89572297961476@lid",
+      };
+    }
+
+    it("delivers the edit as a messages.update against the original", async () => {
+      await connect();
+
+      await deliver([original()]);
+      await deliver([edit("oi editado")]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      const parsed = JSON.parse(update?.body as string);
+      expect(parsed.data[0].key.id).toBe(ORIG_ID);
+      expect(parsed.data[0].key.fromMe).toBe(false);
+      expect(
+        parsed.data[0].update.message.editedMessage.message.conversation,
+      ).toBe("oi editado");
+    });
+
+    it("does not forward the encrypted node as a message", async () => {
+      await connect();
+
+      await deliver([original()]);
+      fetchCalls.length = 0;
+      await deliver([edit("oi editado")]);
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.upsert"')),
+      ).toBe(false);
+    });
+
+    // The batch is not all-or-nothing: a real message sharing the frame with an
+    // edit still has to arrive.
+    it("keeps the other messages in the same batch", async () => {
+      await connect();
+
+      await deliver([original()]);
+      fetchCalls.length = 0;
+      await deliver([
+        edit("oi editado"),
+        {
+          key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+          message: { conversation: "outra" },
+        },
+      ]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const parsed = JSON.parse(upsert?.body as string);
+      expect(parsed.data.messages).toHaveLength(1);
+      expect(parsed.data.messages[0].key.id).toBe("other-1");
+    });
+
+    // The secret only ever arrives on the original message, so an edit whose
+    // original this instance never saw is undecryptable. Dropping it is still
+    // better than the bubble: there is no content to show either way.
+    it("drops an edit whose original it never saw", async () => {
+      await connect();
+
+      await deliver([edit("oi editado")]);
+
+      expect(fetchCalls).toHaveLength(0);
+    });
+
+    // LID migration means the same person is addressed two ways and only one of
+    // them went into the derivation; the tag check makes trying both safe.
+    it("finds the key when the derivation used the phone-number JID", async () => {
+      await connect();
+
+      await deliver([original()]);
+      await deliver([
+        edit("oi editado", { origMsgSender: CHAT_PN, editSender: CHAT_PN }),
+      ]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // The common case needs no ordering at all: an offline burst consolidates a
+    // message and its edit into one upsert, and the batch can simply repair
+    // itself. Delivering an update alongside the message it edits was what four
+    // rounds of barriers and chains were built to sequence.
+    it("applies an edit to a message in its own batch, with no update event", async () => {
+      await connect();
+
+      await deliver([original(), edit("oi editado")]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const messages = JSON.parse(upsert?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("oi editado");
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // An edit is delivered outside the callback that saw it, and recalling its
+    // secret suspends before sendToWebhook counts anything. A shutdown reading
+    // the count in that gap would exit on top of the edit.
+    it("counts a pending edit as work a graceful shutdown must drain", async () => {
+      await connect();
+      await deliver([original()]);
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages: [edit("oi editado")] });
+
+      expect(connection.inFlightWebhooks).toBeGreaterThan(0);
+      await drain();
+      expect(connection.inFlightWebhooks).toBe(0);
+    });
+
+    // Applying an edit in place replaces the content that holds the secret, so
+    // re-reading the message afterwards to file it finds nothing — and the NEXT
+    // edit to that message arrives with no key.
+    it("keeps a repaired message decryptable for its next edit", async () => {
+      await connect();
+
+      await deliver([original(), edit("primeira")]);
+      fetchCalls.length = 0;
+      await deliver([edit("segunda")]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("segunda");
+    });
+
+    // The protocol orders an edit against the message it edits, by answering
+    // 404 and retrying. It does NOT order two edits of the same message: once
+    // the target exists both are answered 200, so a first edit working through
+    // a retry can land after a second and the older text wins.
+    it("delivers two edits of one message in order, even when the first retries", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      let releaseFirst: (() => void) | undefined;
+      const slowFirst = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let updates = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        if ((init?.body as string)?.includes('"event":"messages.update"')) {
+          updates += 1;
+          if (updates === 1) {
+            await slowFirst;
+          }
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages: [edit("primeira")] });
+      await handler({ type: "notify", messages: [edit("segunda")] });
+      await new Promise((r) => setImmediate(r));
+
+      expect(updates).toBe(1);
+
+      releaseFirst?.();
+      await drain();
+      globalThis.fetch = realFetch;
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["primeira", "segunda"]);
+    });
+
+    // Retention has to cover how long a disconnect may last before its history
+    // arrives, not the fifteen minutes an author has to create the edit: the
+    // edit is valid when created and only replayed to us much later.
+    it("keeps the secret of a dump message older than the edit window", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(6 * 60 * 60)],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      expect(
+        (redis as any).__hashData.has(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      ).toBe(true);
+    });
+
+    // The lookup is the one step that talks to Redis, and it used to throw
+    // straight out of the batch loop: a disconnect at the wrong moment silently
+    // dropped every ordinary message that shared the frame with an edit.
+    it("keeps delivering the batch when the secret lookup fails", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+      // Swapped and restored by hand rather than with spyOn: the redis module is
+      // already a mock, and restoring a spy over one leaves it answering
+      // undefined for every later test in the file.
+      const realGet = (redis as any).get;
+      (redis as any).get = mock(async () => {
+        throw new Error("redis is down");
+      });
+
+      try {
+        await deliver([
+          edit("oi editado"),
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+            message: { conversation: "outra" },
+          },
+        ]);
+      } finally {
+        (redis as any).get = realGet;
+      }
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(JSON.parse(upsert?.body as string).data.messages[0].key.id).toBe(
+        "other-1",
+      );
+    });
+
+    // A wrapper keeps its context outside itself, so normalizing walks straight
+    // past the secret and every edit to a disappearing message stops decrypting.
+    it("files the secret of a message wrapped as ephemeral", async () => {
+      await connect();
+      const wrapped = original();
+
+      await deliver([
+        {
+          ...wrapped,
+          message: {
+            messageContextInfo: { messageSecret },
+            ephemeralMessage: { message: { conversation: "oi" } },
+          },
+        },
+      ]);
+      await deliver([edit("oi editado")]);
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(true);
+    });
+
+    // A dump is the other route a message arrives by. A reconnect can replay an
+    // original whose edit window is still open, and the live edit that follows
+    // has nothing to decrypt with unless the dump was read for secrets too.
+    it("files the secret of a message that arrived in a history dump", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      // A dump carries the secret on the WebMessageInfo, not in the content.
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+      fetchCalls.length = 0;
+
+      await deliver([edit("oi editado")]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // Filing a secret is a side effect of delivering a message, never a reason
+    // to withhold it: node-redis parks a command on its offline queue until it
+    // reconnects, and unbounded that would hold the message AND every edit
+    // queued behind its delivery slot.
+    it("still delivers the batch when the secret store never answers", async () => {
+      await connect();
+      const stalled = stallSecretStore();
+      const realTimeout = config.baileys.messageSecretStoreTimeoutMs;
+      // Never released, which is exactly what an offline queue does.
+      (config.baileys as any).messageSecretStoreTimeoutMs = 20;
+
+      try {
+        await deliver([original()]);
+      } finally {
+        stalled.restore();
+        (config.baileys as any).messageSecretStoreTimeoutMs = realTimeout;
+      }
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(JSON.parse(upsert?.body as string).data.messages[0].key.id).toBe(
+        ORIG_ID,
+      );
+    });
+
+    // A sync split across notifications can leave the original in an earlier
+    // one. There is nothing left to repair in place by then, but the secret was
+    // filed, so the edit is still readable and goes out as a live update.
+    it("sends a dump edit whose original arrived in an earlier dump", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        syncType: 3,
+      });
+      await drain();
+      fetchCalls.length = 0;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [edit("oi editado")],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // A dump is repaired in place rather than re-narrated as an update: an
+    // importer decides its own ordering, so an update would race the very write
+    // it targets.
+    it("applies an edit inside a dump to the message it edits", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(), edit("oi editado")],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("oi editado");
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // A full archive still reaches back past any replay window. Filing those
+    // secrets leaves a keyspace nothing can ever read.
+    it("does not file the secret of a message too old to still be replayed", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(MESSAGE_SECRET_TTL_SECONDS + 60)],
+        syncType: 2,
+        isLatest: true,
+      });
+      await drain();
+
+      expect(
+        (redis as any).__hashData.has(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      ).toBe(false);
+    });
+
+    // Filing the secret is a side effect the delivery sits behind, and it talks
+    // to Redis. Until this reservation existed the count stayed at zero for the
+    // whole write: a handoff or SIGTERM landing on a slow Redis dropped this
+    // connection from the drain set and exited on top of the message.
+    it("counts a batch waiting on the secret store as work to drain", async () => {
+      await connect();
+      const stalled = stallSecretStore();
+
+      try {
+        const handler = mockEventHandlers.get("messages.upsert")!;
+        const delivery = handler({ type: "notify", messages: [original()] });
+        await new Promise((r) => setImmediate(r));
+
+        expect(connection.inFlightWebhooks).toBeGreaterThan(0);
+
+        stalled.release();
+        await delivery;
+      } finally {
+        stalled.restore();
+      }
+
+      await drain();
+      expect(connection.inFlightWebhooks).toBe(0);
+    });
+
+    it("counts a dump waiting on the secret store as work to drain", async () => {
+      await connect();
+      const stalled = stallSecretStore();
+
+      try {
+        const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+        const delivery = historyHandler({
+          chats: [],
+          contacts: [],
+          messages: [dumped()],
+          syncType: 3,
+          isLatest: true,
+        });
+        await new Promise((r) => setImmediate(r));
+
+        expect(connection.inFlightWebhooks).toBeGreaterThan(0);
+
+        stalled.release();
+        await delivery;
+      } finally {
+        stalled.restore();
+      }
+
+      await drain();
+      expect(connection.inFlightWebhooks).toBe(0);
+    });
+
+    // An archive reaches back past the window in which a secret is worth
+    // storing, but it can carry an original AND its edit in the same batch, and
+    // that edit is decryptable right there. Letting the retention filter shrink
+    // the in-batch map loses an edit whose key was in hand.
+    it("applies an in-batch edit to an original too old to file", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [edit("oi editado"), dumped(MESSAGE_SECRET_TTL_SECONDS + 60)],
+        syncType: 2,
+        isLatest: true,
+      });
+      await drain();
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("oi editado");
+      // Still not worth storing: nothing can edit it again.
+      expect(
+        (redis as any).__hashData.has(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      ).toBe(false);
+    });
+
+    // Baileys does not await our handler, so two upserts run concurrently. The
+    // queue orders by the moment an edit is put on it, and everything after the
+    // split can suspend: an older edit behind a slow secret write would reach
+    // the queue after a newer edit that arrived later, and the older text wins.
+    it("queues an edit ahead of a later one even when its batch stalls", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const stalled = stallSecretStore();
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      try {
+        // Carries a secret of its own, so its batch parks on the slow write.
+        const stalls = handler({
+          type: "notify",
+          messages: [
+            {
+              key: { remoteJid: CHAT, fromMe: false, id: "other-1" },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+              message: {
+                conversation: "outra",
+                messageContextInfo: { messageSecret },
+              },
+            },
+            edit("primeira", undefined, { id: "edit-1" }),
+          ],
+        });
+        await new Promise((r) => setImmediate(r));
+
+        await handler({
+          type: "notify",
+          messages: [edit("segunda", undefined, { id: "edit-2" })],
+        });
+
+        stalled.release();
+        await stalls;
+      } finally {
+        stalled.restore();
+      }
+      await drain();
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["primeira", "segunda"]);
+    });
+
+    // node-redis parks commands on an offline queue while the connection is
+    // down and replays them on reconnect. withTimeout stops us awaiting; it
+    // cannot cancel, so a long outage would retain one command per message.
+    it("does not queue a secret write while the store is disconnected", async () => {
+      await connect();
+      const before = (redis as any).eval.mock.calls.length;
+      (redis as any).isReady = false;
+
+      try {
+        await deliver([original()]);
+      } finally {
+        (redis as any).isReady = true;
+      }
+
+      expect((redis as any).eval.mock.calls.length).toBe(before);
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(JSON.parse(upsert?.body as string).data.messages[0].key.id).toBe(
+        ORIG_ID,
+      );
+    });
+
+    // The dump carries the key and the live edit needs it, and Baileys runs the
+    // two callbacks concurrently. A lookup that lands while the dump is still
+    // resolving LIDs finds nothing, and that miss is final: the edit emits
+    // nothing, so there is no 404 and no retry to recover it.
+    it("waits for a dump still filing the secret before looking it up", async () => {
+      await connect();
+
+      let releaseAddressing: (() => void) | undefined;
+      mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockImplementationOnce(
+        async () => {
+          await new Promise<void>((resolve) => {
+            releaseAddressing = resolve;
+          });
+          return null;
+        },
+      );
+
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+      const dump = historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      // Arrives mid-addressing, which is exactly when the key is not filed yet.
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages: [edit("oi editado")] });
+      await new Promise((r) => setImmediate(r));
+
+      releaseAddressing?.();
+      await dump;
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // Nothing this connection can do guarantees arrival order: the callbacks run
+    // concurrently, a dump resolves addressing before it knows what it holds,
+    // and a retried delivery lands after one that was not retried. So the guard
+    // is on the outcome: an older edit changes nothing, however it got here.
+    it("ignores an edit older than one already applied", async () => {
+      await connect();
+      await deliver([original()]);
+      await deliver([edit("segunda", undefined, { id: "edit-2" })]);
+      fetchCalls.length = 0;
+
+      await deliver([
+        edit("primeira", undefined, { id: "edit-1", ageSeconds: 30 }),
+      ]);
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // Two edits stamped in the same second carry no order of their own, so the
+    // guard has to let both through and leave the queue to order them.
+    it("still delivers a second edit stamped in the same second", async () => {
+      await connect();
+      await deliver([original()]);
+      await deliver([edit("primeira", undefined, { id: "edit-1" })]);
+      fetchCalls.length = 0;
+
+      await deliver([edit("segunda", undefined, { id: "edit-2" })]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("segunda");
+    });
+
+    // A handoff clears the socket and leaves the queued webhooks draining. An
+    // edit still in that queue derives its key from the account's own JIDs, and
+    // reading them off a socket that is gone yields no candidate at all.
+    it("derives a fromMe edit's key after the socket is gone", async () => {
+      await connect();
+      await deliver([
+        {
+          ...original(),
+          key: { ...original().key, fromMe: true },
+        },
+      ]);
+      fetchCalls.length = 0;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      const own = "89572297961476@lid";
+      const delivery = handler({
+        type: "notify",
+        messages: [
+          {
+            ...edit("oi editado", { origMsgSender: own, editSender: own }),
+            key: {
+              remoteJid: CHAT,
+              fromMe: true,
+              id: "edit-1",
+            },
+          },
+        ],
+      });
+      // The socket goes while the edit is still queued, which is exactly what a
+      // handoff does.
+      (connection as any).socket = undefined;
+      await delivery;
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // The connection that filed the secret is not always the one that delivers
+    // the edit. A fresh connection whose first edit targets an earlier
+    // connection's message has never read its own JIDs, so if it only reads
+    // them after the awaits it reads them from a socket a handoff already took.
+    it("derives a fromMe edit's key on a connection that saw nothing before it", async () => {
+      await connect();
+      // Filed by an earlier connection: the store is all this one inherits.
+      const own = "89572297961476@lid";
+      (redis as any).__hashData.set(
+        messageSecretKey("+5511999999999", ORIG_ID),
+        new Map([["secret", Buffer.from(messageSecret).toString("base64")]]),
+      );
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      const delivery = handler({
+        type: "notify",
+        messages: [
+          {
+            ...edit("oi editado", { origMsgSender: own, editSender: own }),
+            key: { remoteJid: CHAT, fromMe: true, id: "edit-1" },
+          },
+        ],
+      });
+      (connection as any).socket = undefined;
+      await delivery;
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // The intake chain aggregates, and an aggregate resolves to a value holding
+    // the previous one. Left unflattened it nests one array per event handled
+    // and keeps every one alive for the life of the connection.
+    it("does not accumulate a value across intakes", async () => {
+      await connect();
+
+      for (let i = 0; i < 5; i += 1) {
+        await deliver([
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: `plain-${i}` },
+            messageTimestamp: Math.floor(Date.now() / 1000),
+            message: { conversation: "oi" },
+          },
+        ]);
+      }
+
+      await expect((connection as any).secretIntake).resolves.toBeUndefined();
+    });
+
+    // The batch knows only how ITS copy addressed the author. The store may
+    // hold a form an earlier copy carried, so a local failure is a reason to ask
+    // the store, not a reason to drop the edit.
+    it("falls back to the stored sender forms when the batch cannot decrypt", async () => {
+      await connect();
+      // The live copy taught the store both forms.
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      // A second copy of the same message, addressed by LID alone, arrives
+      // alongside an edit whose author WhatsApp named by the phone-number form.
+      // Nothing in this batch knows that form; only the store does.
+      await deliver([
+        { ...dumped(), key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID } },
+        edit(
+          "oi editado",
+          { origMsgSender: CHAT_PN, editSender: CHAT },
+          { targetKey: { remoteJid: CHAT, fromMe: false, id: ORIG_ID } },
+        ),
+      ]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // An edit that cannot be read changes nothing, so it must not take the
+    // position: a later, older edit that CAN be read would then be rejected as
+    // superseded by an update nobody ever received.
+    it("lets an older readable edit through after a newer unreadable one", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      // Encrypted under a JID neither the batch nor the store ever saw.
+      await deliver([
+        edit(
+          "ilegivel",
+          { origMsgSender: "999@lid", editSender: "999@lid" },
+          { id: "edit-2" },
+        ),
+      ]);
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+
+      await deliver([
+        edit("legivel", undefined, { id: "edit-1", ageSeconds: 30 }),
+      ]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("legivel");
+    });
+
+    // A 404 puts an edit in the retry ladder for a minute. A batch repairing the
+    // same message meanwhile has already sent the newer text, and the guard
+    // cannot cancel a delivery that already started, only refuse the next one.
+    it("abandons an edit whose retry was overtaken by a repaired batch", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realRetries = config.webhook.retryPolicy.maxRetries;
+      (config.webhook.retryPolicy as any).maxRetries = 3;
+      let releaseFirst: (() => void) | undefined;
+      const firstAttempt = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let attempts = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        if ((init?.body as string)?.includes('"event":"messages.update"')) {
+          attempts += 1;
+          if (attempts === 1) {
+            await firstAttempt;
+          }
+          // The consumer has not written the original yet.
+          return new Response("", { status: 404 });
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      try {
+        const retrying = handler({
+          type: "notify",
+          messages: [edit("primeira", undefined, { id: "edit-1" })],
+        });
+        await new Promise((r) => setImmediate(r));
+        expect(attempts).toBe(1);
+
+        // Repaired in place, so the newer text is already on its way out.
+        await handler({
+          type: "notify",
+          messages: [original(), edit("segunda", undefined, { id: "edit-2" })],
+        });
+
+        releaseFirst?.();
+        await retrying;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+        (config.webhook.retryPolicy as any).maxRetries = realRetries;
+      }
+
+      // The first attempt happened before it could be known to be obsolete; no
+      // retry of it may follow.
+      expect(attempts).toBe(1);
+    });
+
+    // Two dumps whose edits are stamped in the same second are separated only by
+    // the order they arrived in, and the addressing lookup destroys that order:
+    // whichever dump resolves its LIDs first reaches the queue first.
+    it("keeps the later dump's edit when a stalled one carries the same second", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      let releaseAddressing: (() => void) | undefined;
+      mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockImplementationOnce(
+        async () => {
+          await new Promise<void>((resolve) => {
+            releaseAddressing = resolve;
+          });
+          return null;
+        },
+      );
+
+      const at = Math.floor(Date.now() / 1000);
+      const stamp = (message: any) => ({ ...message, messageTimestamp: at });
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      const stalled = historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [stamp(edit("primeira", undefined, { id: "edit-1" }))],
+        syncType: 3,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [stamp(edit("segunda", undefined, { id: "edit-2" }))],
+        syncType: 3,
+        isLatest: true,
+      });
+
+      releaseAddressing?.();
+      await stalled;
+      await drain();
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["segunda"]);
+    });
+
+    // Ordering is only owed to two edits of the SAME message. A single chain for
+    // the connection would put one edit's retry ladder, minutes long, in front
+    // of every other chat's edits, for an ordering none of them need.
+    it("delivers an edit for another message while one is stuck retrying", async () => {
+      await connect();
+      const OTHER_ID = "3EB0AAAAAAAAAAAAAAAAAA";
+      await deliver([
+        original(),
+        { ...original(), key: { ...original().key, id: OTHER_ID } },
+      ]);
+      fetchCalls.length = 0;
+
+      let releaseStuck: (() => void) | undefined;
+      const stuck = new Promise<void>((resolve) => {
+        releaseStuck = resolve;
+      });
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        const body = init?.body as string;
+        if (
+          body?.includes('"event":"messages.update"') &&
+          body.includes(ORIG_ID)
+        ) {
+          await stuck;
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      try {
+        const blocked = handler({
+          type: "notify",
+          messages: [edit("presa", undefined, { id: "edit-1" })],
+        });
+        await new Promise((r) => setImmediate(r));
+
+        await handler({
+          type: "notify",
+          messages: [
+            edit("livre", undefined, {
+              id: "edit-2",
+              targetKey: {
+                remoteJid: "89572297961476@lid",
+                fromMe: true,
+                id: OTHER_ID,
+              },
+            }),
+          ],
+        });
+        // Still stuck, and the other message's edit is already out. Polled
+        // rather than waited on: the stuck chain never settles, so there is no
+        // promise to await, only a bound on how long the free one may take.
+        const updates = () =>
+          fetchCalls.filter((c) =>
+            c.body?.includes('"event":"messages.update"'),
+          );
+        for (let tick = 0; tick < 50 && updates().length === 0; tick += 1) {
+          await new Promise((r) => setImmediate(r));
+        }
+        const delivered = fetchCalls
+          .filter((c) => c.body?.includes('"event":"messages.update"'))
+          .map((c) => JSON.parse(c.body).data[0].key.id);
+        expect(delivered).toEqual([OTHER_ID]);
+
+        releaseStuck?.();
+        await blocked;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+
+    // One batch can carry two edits of the same message stamped in the same
+    // second, and they do not have to leave by the same route: the newer can
+    // decrypt in place while the older falls back to the stored sender forms
+    // and goes out as an update. Ranked only by (timestamp, event) the older
+    // one does not look superseded, and it reverts the message.
+    it("does not let a deferred edit revert a newer one from its own batch", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const at = Math.floor(Date.now() / 1000);
+      const stamp = (message: any) => ({ ...message, messageTimestamp: at });
+      // Encrypted under a form only the store knows, so it cannot be applied in
+      // place and is handed to the unresolved path.
+      const deferred = stamp(
+        edit(
+          "primeira",
+          { origMsgSender: CHAT_PN, editSender: CHAT },
+          {
+            id: "edit-1",
+            targetKey: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+          },
+        ),
+      );
+      const inBatch = stamp(edit("segunda", undefined, { id: "edit-2" }));
+
+      await deliver([
+        { ...dumped(), key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID } },
+        deferred,
+        inBatch,
+      ]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      expect(
+        JSON.parse(upsert?.body as string).data.messages[0].message
+          .conversation,
+      ).toBe("segunda");
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // The position map is capped, and a history sync touches far more messages
+    // than the cap. Evicting a target whose delivery is still retrying makes the
+    // retry read "nothing applied yet", which is the one answer that lets it
+    // overwrite the newer text.
+    it("keeps the position of a message whose delivery is still running", async () => {
+      await connect();
+      const held = new Promise<void>(() => {});
+      (connection as any).editDeliveries.set(ORIG_ID, held);
+      const position = { at: 1, seq: 1, rank: 0 };
+      (connection as any).claimEditPosition(ORIG_ID, position);
+
+      for (let i = 0; i < 2000; i += 1) {
+        (connection as any).claimEditPosition(`other-${i}`, {
+          at: 2,
+          seq: 2 + i,
+          rank: 0,
+        });
+      }
+
+      expect((connection as any).editedAt.has(ORIG_ID)).toBe(true);
+      expect(
+        (connection as any).editSuperseded(ORIG_ID, { at: 0, seq: 0, rank: 0 }),
+      ).toBe(true);
+    });
+
+    // Skipping a protected candidate means "evict one" can evict none, and the
+    // map would then sit above the cap for the life of the connection: every
+    // later claim adds one and removes one.
+    it("trims back to the cap once the protected deliveries settle", async () => {
+      await connect();
+      const held = new Promise<void>(() => {});
+      for (let i = 0; i < 1500; i += 1) {
+        (connection as any).editDeliveries.set(`held-${i}`, held);
+        (connection as any).claimEditPosition(`held-${i}`, {
+          at: 1,
+          seq: i + 1,
+          rank: 0,
+        });
+      }
+      // Nothing was evictable while they were all in flight, which is correct.
+      expect((connection as any).editedAt.size).toBe(1500);
+
+      (connection as any).editDeliveries.clear();
+      (connection as any).claimEditPosition("after", {
+        at: 2,
+        seq: 5000,
+        rank: 0,
+      });
+
+      expect((connection as any).editedAt.size).toBe(1000);
+    });
+
+    // Baileys still turns a plaintext MESSAGE_EDIT into a messages.update, in
+    // the very shape the encrypted path synthesises. An encrypted edit sitting
+    // in the retry ladder has to see that one too, or it puts its older text
+    // back over it.
+    it("abandons an encrypted edit overtaken by a plaintext one", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realRetries = config.webhook.retryPolicy.maxRetries;
+      (config.webhook.retryPolicy as any).maxRetries = 3;
+      let releaseFirst: (() => void) | undefined;
+      const firstAttempt = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let encryptedAttempts = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        const body = init?.body as string;
+        if (body?.includes('"event":"messages.update"')) {
+          if (body.includes("primeira")) {
+            encryptedAttempts += 1;
+            if (encryptedAttempts === 1) {
+              await firstAttempt;
+            }
+            // The consumer has not written the original yet.
+            return new Response("", { status: 404 });
+          }
+          return new Response("", { status: 200 });
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      try {
+        const retrying = mockEventHandlers.get("messages.upsert")!({
+          type: "notify",
+          messages: [edit("primeira", undefined, { id: "edit-1" })],
+        });
+        await new Promise((r) => setImmediate(r));
+        expect(encryptedAttempts).toBe(1);
+
+        // Straight off Baileys' plaintext MESSAGE_EDIT branch.
+        await mockEventHandlers.get("messages.update")!([
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+            update: {
+              message: {
+                editedMessage: { message: { conversation: "segunda" } },
+              },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+            },
+          },
+        ]);
+
+        releaseFirst?.();
+        await retrying;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+        (config.webhook.retryPolicy as any).maxRetries = realRetries;
+      }
+
+      // The first attempt was already on the wire before the plaintext edit
+      // existed; no retry of it may follow.
+      expect(encryptedAttempts).toBe(1);
+    });
+
+    // A plaintext edit answered 404 sits in the retry ladder just like an
+    // encrypted one, so it needs the same per-attempt check: an encrypted edit
+    // applied while it sleeps has already sent newer text.
+    it("abandons a plaintext edit whose retry was overtaken", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realRetries = config.webhook.retryPolicy.maxRetries;
+      (config.webhook.retryPolicy as any).maxRetries = 3;
+      let releaseFirst: (() => void) | undefined;
+      const firstAttempt = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let plaintextAttempts = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        const body = init?.body as string;
+        if (body?.includes('"event":"messages.update"')) {
+          if (body.includes("primeira")) {
+            plaintextAttempts += 1;
+            if (plaintextAttempts === 1) {
+              await firstAttempt;
+            }
+            return new Response("", { status: 404 });
+          }
+          return new Response("", { status: 200 });
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      try {
+        const retrying = mockEventHandlers.get("messages.update")!([
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+            update: {
+              message: {
+                editedMessage: { message: { conversation: "primeira" } },
+              },
+              messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+            },
+          },
+        ]);
+        await new Promise((r) => setImmediate(r));
+        expect(plaintextAttempts).toBe(1);
+
+        // Repaired in place, so the newer text is already on its way out.
+        await mockEventHandlers.get("messages.upsert")!({
+          type: "notify",
+          messages: [original(), edit("segunda", undefined, { id: "edit-2" })],
+        });
+
+        releaseFirst?.();
+        await retrying;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+        (config.webhook.retryPolicy as any).maxRetries = realRetries;
+      }
+
+      expect(plaintextAttempts).toBe(1);
+    });
+
+    // The same guard in reverse: the plaintext path can also be the older of
+    // the two, and relaying it would revert the encrypted edit already applied.
+    it("drops a plaintext edit older than the encrypted one applied", async () => {
+      await connect();
+      await deliver([original()]);
+      await deliver([edit("segunda", undefined, { id: "edit-1" })]);
+      fetchCalls.length = 0;
+
+      await mockEventHandlers.get("messages.update")!([
+        {
+          key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+          update: {
+            message: {
+              editedMessage: { message: { conversation: "primeira" } },
+            },
+            messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+          },
+        },
+      ]);
+      await drain();
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
+    // "the most recent message in the chat"), so walking it straight applies the
+    // newest replacement and then overwrites it with an older one.
+    it("applies the newest edit last when a dump carries two of them", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [
+          edit("segunda", undefined, { id: "edit-2" }),
+          edit("primeira", undefined, { id: "edit-1", ageSeconds: 30 }),
+          dumped(60),
+        ],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.conversation).toBe("segunda");
+    });
+
+    // A disappearing message keeps its content inside `ephemeralMessage` and its
+    // context outside it. Assigning the replacement over the whole `message`
+    // drops the wrapper, and the consumer reads what looks like an ordinary,
+    // non-disappearing message.
+    it("keeps the disappearing-message wrapper when repairing in place", async () => {
+      await connect();
+      const wrapped = original();
+
+      await deliver([
+        {
+          ...wrapped,
+          message: {
+            messageContextInfo: { messageSecret },
+            ephemeralMessage: { message: { conversation: "oi" } },
+          },
+        },
+        edit("oi editado"),
+      ]);
+
+      const upsert = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.upsert"'),
+      );
+      const messages = JSON.parse(upsert?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].message.ephemeralMessage.message.conversation).toBe(
+        "oi editado",
+      );
+    });
+
+    // A dump strips the addressing, and the second JID form is exactly what the
+    // stored author candidates are for. Filing before `addressHistory` restores
+    // it records half the candidates, and an edit derived from the form that
+    // was dropped never verifies.
+    it("files both JID forms of an author a dump addressed by LID alone", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        lidPnMappings: [{ lid: CHAT, pn: CHAT_PN }],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      const stored = {
+        senders: [
+          ...((redis as any).__hashData.get(
+            messageSecretKey("+5511999999999", ORIG_ID),
+          ) as Map<string, string>),
+        ]
+          .map(([field]) => field)
+          .filter((field) => field.startsWith("jid:"))
+          .map((field) => field.slice("jid:".length)),
+      };
+      expect(stored.senders).toEqual([CHAT, CHAT_PN]);
+    });
+
+    it("keeps an encrypted edit out of the history frame", async () => {
+      await connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(), edit("oi editado")],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      const frame = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messaging-history.set"'),
+      );
+      const messages = JSON.parse(frame?.body as string).data.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].key.id).toBe(ORIG_ID);
     });
   });
 
