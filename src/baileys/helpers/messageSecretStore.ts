@@ -1,3 +1,4 @@
+import config from "@/config";
 import redis from "@/lib/redis";
 
 const redisKeyPrefix = "@baileys-api:connections";
@@ -41,13 +42,26 @@ export interface MessageSecretEntry {
 }
 
 // node-redis parks a command on an offline queue while the connection is down
-// and replays it on reconnect. `withTimeout` stops us AWAITING the command; it
-// cannot cancel it, so every message that publishes a secret would leave one
-// more command, promise and encoded payload parked there, growing for as long
-// as the outage lasts. A secret we cannot file is a future edit we cannot read,
-// which is the degradation a failed write already accepts.
+// and replays it on reconnect, so every message that publishes a secret would
+// leave one more command, promise and encoded payload parked there, growing for
+// as long as the outage lasts. A secret we cannot file is a future edit we
+// cannot read, which is the degradation a failed write already accepts.
+//
+// Two guards, because neither is enough alone. The readiness check keeps the
+// command from being created at all during a known outage, but it is a snapshot:
+// the connection can drop between the check and the flush. The abort signal is
+// what covers that, and is the only thing that actually CANCELS -- a timeout
+// merely stops us awaiting, leaving the command exactly where it was.
 function storeUnavailable() {
   return !redis.isReady;
+}
+
+// Aborting removes the command from the client's pending queue and rejects it,
+// so nothing is retained past the deadline the caller was willing to wait.
+function bounded() {
+  return redis.withAbortSignal(
+    AbortSignal.timeout(config.baileys.messageSecretStoreTimeoutMs),
+  );
 }
 
 export async function rememberMessageSecret(
@@ -60,15 +74,59 @@ export async function rememberMessageSecret(
     return;
   }
 
+  const key = messageSecretKey(phoneNumber, messageId);
   const payload: StoredMessageSecret = {
     secret: Buffer.from(secret).toString("base64"),
     senders,
   };
-  await redis.set(
-    messageSecretKey(phoneNumber, messageId),
-    JSON.stringify(payload),
-    { expiration: { type: "EX", value: MESSAGE_SECRET_TTL_SECONDS } },
-  );
+  const client = bounded();
+
+  // GET on the write, so the round trip that stores also reports what it
+  // replaced. The same message arrives by more than one route and they do not
+  // address its author equally well: a dump whose LID mapping was unknown
+  // carries one JID form where the live copy carried two. Overwriting the
+  // richer record with the poorer one leaves a later edit, encrypted under the
+  // form that was dropped, with no candidate that verifies.
+  const previous = await client.set(key, JSON.stringify(payload), {
+    expiration: { type: "EX", value: MESSAGE_SECRET_TTL_SECONDS },
+    GET: true,
+  });
+
+  const merged = mergeSenders(previous, senders);
+  if (!merged) {
+    return;
+  }
+
+  await client.set(key, JSON.stringify({ ...payload, senders: merged }), {
+    expiration: { type: "EX", value: MESSAGE_SECRET_TTL_SECONDS },
+  });
+}
+
+/**
+ * The union of the stored author JIDs and the ones just written, or null when
+ * the write already covers everything that was there.
+ *
+ * Only the candidate list is merged, never the secret: the secret is the
+ * message's own and identical on every copy, so the fresh one always stands.
+ */
+function mergeSenders(
+  previous: string | null | undefined,
+  senders: string[],
+): string[] | null {
+  if (!previous) {
+    return null;
+  }
+
+  let stored: string[];
+  try {
+    const parsed = JSON.parse(previous) as StoredMessageSecret;
+    stored = Array.isArray(parsed?.senders) ? parsed.senders : [];
+  } catch {
+    return null;
+  }
+
+  const missing = stored.filter((jid) => jid && !senders.includes(jid));
+  return missing.length > 0 ? [...senders, ...missing] : null;
 }
 
 /**
@@ -100,7 +158,7 @@ export async function recallMessageSecret(
     return null;
   }
 
-  const raw = await redis.get(messageSecretKey(phoneNumber, messageId));
+  const raw = await bounded().get(messageSecretKey(phoneNumber, messageId));
   if (!raw) {
     return null;
   }

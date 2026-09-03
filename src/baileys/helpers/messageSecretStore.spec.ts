@@ -69,4 +69,51 @@ describe("messageSecretStore", () => {
 
     expect(await recallMessageSecret(PHONE, MESSAGE_ID)).toBeNull();
   });
+
+  // The same message arrives by more than one route and they do not address its
+  // author equally well: a dump whose LID mapping was unknown carries one JID
+  // form where the live copy carried two. Letting the poorer copy overwrite the
+  // richer one leaves an edit encrypted under the dropped form undecryptable.
+  it("keeps a sender form a later, poorer copy of the message dropped", async () => {
+    const lid = "167392323834034@lid";
+    const pn = "553499503261@s.whatsapp.net";
+    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid, pn]);
+
+    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid]);
+
+    const stored = await recallMessageSecret(PHONE, MESSAGE_ID);
+    expect(stored?.senders).toEqual([lid, pn]);
+  });
+
+  // A timeout only stops us awaiting; the command stays on node-redis's queue
+  // with its payload until the connection returns. Aborting is what removes it,
+  // so every command here has to carry the signal.
+  it("sends its commands under an abort signal", async () => {
+    const seen: AbortSignal[] = [];
+    const real = (redis as any).withAbortSignal;
+    (redis as any).withAbortSignal = (signal: AbortSignal) => {
+      seen.push(signal);
+      return redis;
+    };
+
+    try {
+      await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, []);
+      await recallMessageSecret(PHONE, MESSAGE_ID);
+    } finally {
+      (redis as any).withAbortSignal = real;
+    }
+
+    expect(seen).toHaveLength(2);
+    expect(seen.every((signal) => signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it("does not rewrite when the new copy already covers the old", async () => {
+    const lid = "167392323834034@lid";
+    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid]);
+    const writes = (redis as any).set.mock.calls.length;
+
+    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, [lid]);
+
+    expect((redis as any).set.mock.calls.length).toBe(writes + 1);
+  });
 });

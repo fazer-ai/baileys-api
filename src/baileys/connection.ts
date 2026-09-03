@@ -312,6 +312,9 @@ export class BaileysConnection {
   // Secrets this connection has taken in but not yet filed. See
   // beginSecretIntake.
   private secretIntake: Promise<unknown> = Promise.resolve();
+  // When each edited message was last edited, as far as this connection has
+  // delivered. See claimEditPosition.
+  private editedAt = new Map<string, number>();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2541,6 +2544,44 @@ export class BaileysConnection {
     return close;
   }
 
+  // How many edited messages the ordering guard remembers. An entry is one id
+  // and one number, and it only has to outlive the window in which two edits of
+  // the same message can still be in flight against each other.
+  private static readonly EDIT_POSITION_MEMORY = 1_000;
+
+  /**
+   * Whether this edit is the newest one seen for its target, recording it if so.
+   *
+   * Order of arrival is not something this connection can guarantee. Baileys
+   * runs the callbacks concurrently, a dump spends a keystore round trip on
+   * addressing before it knows what it holds, and a delivery that had to be
+   * retried lands after one that did not. Every attempt to force the order has
+   * cost more than it bought, so the guard is on the outcome instead: an edit
+   * older than one already applied changes nothing, whichever way it got here.
+   *
+   * Strictly older, not older-or-equal: two edits stamped in the same second
+   * carry no order of their own, and `editDeliveryQueue` is what keeps those in
+   * the order they arrived.
+   */
+  private claimEditPosition(targetId: string, editedAt: number): boolean {
+    const applied = this.editedAt.get(targetId);
+    if (applied !== undefined && editedAt < applied) {
+      return false;
+    }
+
+    // Re-inserted rather than updated in place, so the map's own order stays
+    // least-recently-claimed first and the eviction below takes the right one.
+    this.editedAt.delete(targetId);
+    this.editedAt.set(targetId, Math.max(editedAt, applied ?? editedAt));
+    if (this.editedAt.size > BaileysConnection.EDIT_POSITION_MEMORY) {
+      const oldest = this.editedAt.keys().next();
+      if (!oldest.done) {
+        this.editedAt.delete(oldest.value);
+      }
+    }
+    return true;
+  }
+
   private repairSecretMessageEdits(
     messages: WAMessage[],
     { history = false }: { history?: boolean } = {},
@@ -2616,6 +2657,11 @@ export class BaileysConnection {
             this.phoneNumber,
             targetId,
           );
+          continue;
+        }
+        if (
+          !this.claimEditPosition(targetId, messageTimestampSeconds(message))
+        ) {
           continue;
         }
         target.message = replaceInnerContent(
@@ -2777,6 +2823,17 @@ export class BaileysConnection {
       return;
     }
 
+    if (!this.claimEditPosition(targetId, messageTimestampSeconds(message))) {
+      // A newer edit of this message has already been applied. Delivering this
+      // one would put the older text back.
+      logger.debug(
+        "[%s] [emitSecretMessageEdit] superseded targetId=%s",
+        this.phoneNumber,
+        targetId,
+      );
+      return;
+    }
+
     const decrypted = decryptMessageEdit({
       encPayload,
       encIv,
@@ -2824,9 +2881,25 @@ export class BaileysConnection {
     ]);
   }
 
+  // Remembered rather than read fresh every time, because a handoff clears the
+  // socket while its webhooks are deliberately left draining. An edit still in
+  // that queue with `fromMe` derives its key from the account's own JIDs, and
+  // reading them off a socket that is already gone yields no candidate at all
+  // and drops the edit without a word.
+  private ownJidsSeen: OwnJids = {};
+
   private ownJids(): OwnJids {
     const user = this.socket?.user;
-    return { id: user?.id, lid: user?.lid };
+    // Merged one field at a time: `lid` can be absent from a user record that
+    // still has `id`, and overwriting wholesale would throw away the form the
+    // derivation actually used.
+    if (user?.id) {
+      this.ownJidsSeen.id = user.id;
+    }
+    if (user?.lid) {
+      this.ownJidsSeen.lid = user.lid;
+    }
+    return { ...this.ownJidsSeen };
   }
 
   private handleMessagesUpdate(

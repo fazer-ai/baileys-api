@@ -730,15 +730,19 @@ describe("BaileysConnection", () => {
       }
     }
 
-    beforeEach(() => {
+    // `mockSocket` is a proxy onto the LATEST socket makeWASocket produced, so
+    // the account JIDs have to be set after connecting: assigning them in a
+    // beforeEach writes them to the socket the connection is about to replace.
+    async function connect() {
+      await connection.connect();
       mockSocket.user = {
         id: "5511999999999:12@s.whatsapp.net",
         lid: "89572297961476@lid",
       };
-    });
+    }
 
     it("delivers the edit as a messages.update against the original", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([original()]);
       await deliver([edit("oi editado")]);
@@ -756,7 +760,7 @@ describe("BaileysConnection", () => {
     });
 
     it("does not forward the encrypted node as a message", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([original()]);
       fetchCalls.length = 0;
@@ -770,7 +774,7 @@ describe("BaileysConnection", () => {
     // The batch is not all-or-nothing: a real message sharing the frame with an
     // edit still has to arrive.
     it("keeps the other messages in the same batch", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([original()]);
       fetchCalls.length = 0;
@@ -794,7 +798,7 @@ describe("BaileysConnection", () => {
     // original this instance never saw is undecryptable. Dropping it is still
     // better than the bubble: there is no content to show either way.
     it("drops an edit whose original it never saw", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([edit("oi editado")]);
 
@@ -804,7 +808,7 @@ describe("BaileysConnection", () => {
     // LID migration means the same person is addressed two ways and only one of
     // them went into the derivation; the tag check makes trying both safe.
     it("finds the key when the derivation used the phone-number JID", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([original()]);
       await deliver([
@@ -825,7 +829,7 @@ describe("BaileysConnection", () => {
     // itself. Delivering an update alongside the message it edits was what four
     // rounds of barriers and chains were built to sequence.
     it("applies an edit to a message in its own batch, with no update event", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([original(), edit("oi editado")]);
 
@@ -844,7 +848,7 @@ describe("BaileysConnection", () => {
     // secret suspends before sendToWebhook counts anything. A shutdown reading
     // the count in that gap would exit on top of the edit.
     it("counts a pending edit as work a graceful shutdown must drain", async () => {
-      await connection.connect();
+      await connect();
       await deliver([original()]);
 
       const handler = mockEventHandlers.get("messages.upsert")!;
@@ -859,7 +863,7 @@ describe("BaileysConnection", () => {
     // re-reading the message afterwards to file it finds nothing — and the NEXT
     // edit to that message arrives with no key.
     it("keeps a repaired message decryptable for its next edit", async () => {
-      await connection.connect();
+      await connect();
 
       await deliver([original(), edit("primeira")]);
       fetchCalls.length = 0;
@@ -879,7 +883,7 @@ describe("BaileysConnection", () => {
     // the target exists both are answered 200, so a first edit working through
     // a retry can land after a second and the older text wins.
     it("delivers two edits of one message in order, even when the first retries", async () => {
-      await connection.connect();
+      await connect();
       await deliver([original()]);
       fetchCalls.length = 0;
 
@@ -924,7 +928,7 @@ describe("BaileysConnection", () => {
     // arrives, not the fifteen minutes an author has to create the edit: the
     // edit is valid when created and only replayed to us much later.
     it("keeps the secret of a dump message older than the edit window", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -947,7 +951,7 @@ describe("BaileysConnection", () => {
     // straight out of the batch loop: a disconnect at the wrong moment silently
     // dropped every ordinary message that shared the frame with an edit.
     it("keeps delivering the batch when the secret lookup fails", async () => {
-      await connection.connect();
+      await connect();
       await deliver([original()]);
       fetchCalls.length = 0;
       // Swapped and restored by hand rather than with spyOn: the redis module is
@@ -981,7 +985,7 @@ describe("BaileysConnection", () => {
     // A wrapper keeps its context outside itself, so normalizing walks straight
     // past the secret and every edit to a disappearing message stops decrypting.
     it("files the secret of a message wrapped as ephemeral", async () => {
-      await connection.connect();
+      await connect();
       const wrapped = original();
 
       await deliver([
@@ -1004,7 +1008,7 @@ describe("BaileysConnection", () => {
     // original whose edit window is still open, and the live edit that follows
     // has nothing to decrypt with unless the dump was read for secrets too.
     it("files the secret of a message that arrived in a history dump", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       // A dump carries the secret on the WebMessageInfo, not in the content.
@@ -1034,7 +1038,7 @@ describe("BaileysConnection", () => {
     // reconnects, and unbounded that would hold the message AND every edit
     // queued behind its delivery slot.
     it("still delivers the batch when the secret store never answers", async () => {
-      await connection.connect();
+      await connect();
       const realSet = (redis as any).set;
       const realTimeout = config.baileys.messageSecretStoreTimeoutMs;
       // Never settles, which is exactly what an offline queue does.
@@ -1060,7 +1064,7 @@ describe("BaileysConnection", () => {
     // one. There is nothing left to repair in place by then, but the secret was
     // filed, so the edit is still readable and goes out as a live update.
     it("sends a dump edit whose original arrived in an earlier dump", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -1094,7 +1098,7 @@ describe("BaileysConnection", () => {
     // importer decides its own ordering, so an update would race the very write
     // it targets.
     it("applies an edit inside a dump to the message it edits", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -1120,7 +1124,7 @@ describe("BaileysConnection", () => {
     // A full archive still reaches back past any replay window. Filing those
     // secrets leaves a keyspace nothing can ever read.
     it("does not file the secret of a message too old to still be replayed", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -1144,7 +1148,7 @@ describe("BaileysConnection", () => {
     // whole write: a handoff or SIGTERM landing on a slow Redis dropped this
     // connection from the drain set and exited on top of the message.
     it("counts a batch waiting on the secret store as work to drain", async () => {
-      await connection.connect();
+      await connect();
       const realSet = (redis as any).set;
       let releaseSet: (() => void) | undefined;
       (redis as any).set = mock(
@@ -1172,7 +1176,7 @@ describe("BaileysConnection", () => {
     });
 
     it("counts a dump waiting on the secret store as work to drain", async () => {
-      await connection.connect();
+      await connect();
       const realSet = (redis as any).set;
       let releaseSet: (() => void) | undefined;
       (redis as any).set = mock(
@@ -1210,7 +1214,7 @@ describe("BaileysConnection", () => {
     // that edit is decryptable right there. Letting the retention filter shrink
     // the in-batch map loses an edit whose key was in hand.
     it("applies an in-batch edit to an original too old to file", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -1241,7 +1245,7 @@ describe("BaileysConnection", () => {
     // split can suspend: an older edit behind a slow secret write would reach
     // the queue after a newer edit that arrived later, and the older text wins.
     it("queues an edit ahead of a later one even when its batch stalls", async () => {
-      await connection.connect();
+      await connect();
       await deliver([original()]);
       fetchCalls.length = 0;
 
@@ -1299,7 +1303,7 @@ describe("BaileysConnection", () => {
     // down and replays them on reconnect. withTimeout stops us awaiting; it
     // cannot cancel, so a long outage would retain one command per message.
     it("does not queue a secret write while the store is disconnected", async () => {
-      await connection.connect();
+      await connect();
       const before = (redis as any).set.mock.calls.length;
       (redis as any).isReady = false;
 
@@ -1323,7 +1327,7 @@ describe("BaileysConnection", () => {
     // resolving LIDs finds nothing, and that miss is final: the edit emits
     // nothing, so there is no 404 and no retry to recover it.
     it("waits for a dump still filing the secret before looking it up", async () => {
-      await connection.connect();
+      await connect();
 
       let releaseAddressing: (() => void) | undefined;
       mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockImplementationOnce(
@@ -1364,11 +1368,93 @@ describe("BaileysConnection", () => {
       ).toBe("oi editado");
     });
 
+    // Nothing this connection can do guarantees arrival order: the callbacks run
+    // concurrently, a dump resolves addressing before it knows what it holds,
+    // and a retried delivery lands after one that was not retried. So the guard
+    // is on the outcome: an older edit changes nothing, however it got here.
+    it("ignores an edit older than one already applied", async () => {
+      await connect();
+      await deliver([original()]);
+      await deliver([edit("segunda", undefined, { id: "edit-2" })]);
+      fetchCalls.length = 0;
+
+      await deliver([
+        edit("primeira", undefined, { id: "edit-1", ageSeconds: 30 }),
+      ]);
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
+    // Two edits stamped in the same second carry no order of their own, so the
+    // guard has to let both through and leave the queue to order them.
+    it("still delivers a second edit stamped in the same second", async () => {
+      await connect();
+      await deliver([original()]);
+      await deliver([edit("primeira", undefined, { id: "edit-1" })]);
+      fetchCalls.length = 0;
+
+      await deliver([edit("segunda", undefined, { id: "edit-2" })]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("segunda");
+    });
+
+    // A handoff clears the socket and leaves the queued webhooks draining. An
+    // edit still in that queue derives its key from the account's own JIDs, and
+    // reading them off a socket that is gone yields no candidate at all.
+    it("derives a fromMe edit's key after the socket is gone", async () => {
+      await connect();
+      await deliver([
+        {
+          ...original(),
+          key: { ...original().key, fromMe: true },
+        },
+      ]);
+      fetchCalls.length = 0;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      const own = "89572297961476@lid";
+      const delivery = handler({
+        type: "notify",
+        messages: [
+          {
+            ...edit("oi editado", { origMsgSender: own, editSender: own }),
+            key: {
+              remoteJid: CHAT,
+              fromMe: true,
+              id: "edit-1",
+            },
+          },
+        ],
+      });
+      // The socket goes while the edit is still queued, which is exactly what a
+      // handoff does.
+      (connection as any).socket = undefined;
+      await delivery;
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.
     it("applies the newest edit last when a dump carries two of them", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -1397,7 +1483,7 @@ describe("BaileysConnection", () => {
     // drops the wrapper, and the consumer reads what looks like an ordinary,
     // non-disappearing message.
     it("keeps the disappearing-message wrapper when repairing in place", async () => {
-      await connection.connect();
+      await connect();
       const wrapped = original();
 
       await deliver([
@@ -1426,7 +1512,7 @@ describe("BaileysConnection", () => {
     // it records half the candidates, and an edit derived from the form that
     // was dropped never verifies.
     it("files both JID forms of an author a dump addressed by LID alone", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({
@@ -1448,7 +1534,7 @@ describe("BaileysConnection", () => {
     });
 
     it("keeps an encrypted edit out of the history frame", async () => {
-      await connection.connect();
+      await connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
       await historyHandler({

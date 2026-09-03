@@ -25,6 +25,9 @@ const mockRedis = {
   // The real client flips this false while the connection is down; callers use
   // it to skip a write instead of parking it on the offline queue.
   isReady: true,
+  // The real client returns a view of itself that carries the signal; every
+  // command below is the same mock either way.
+  withAbortSignal: (_signal: AbortSignal) => mockRedis,
   __hashData: hashData,
   __stringData: stringData,
   __multiCommands: multiCommands,
@@ -80,10 +83,13 @@ const mockRedis = {
         EX?: number;
         condition?: "NX" | "XX";
         expiration?: { type: string; value: number };
+        GET?: boolean;
       },
     ) => {
       const nx = options?.NX || options?.condition === "NX";
       if (nx && stringData.has(key)) return null;
+      // SET ... GET answers with the value it replaced, null if there was none.
+      const previous = options?.GET ? (stringData.get(key) ?? null) : null;
       stringData.set(key, value);
       if (options?.expiration) {
         expirations.set(key, options.expiration);
@@ -94,7 +100,7 @@ const mockRedis = {
       } else {
         expirations.delete(key);
       }
-      return "OK";
+      return options?.GET ? previous : "OK";
     },
   ),
   incr: mock(async (key: string) => {
