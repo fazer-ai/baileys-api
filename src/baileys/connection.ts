@@ -3050,35 +3050,72 @@ export class BaileysConnection {
     data: BaileysEventMap["messages.update"],
   ): Promise<unknown> {
     const seq = ++this.eventSeq;
-    const wanted = data.filter((entry, rank) => {
+    const edits: {
+      entry: BaileysEventMap["messages.update"][number];
+      targetId: string;
+      position: EditPosition;
+    }[] = [];
+    const rest: BaileysEventMap["messages.update"] = [];
+
+    data.forEach((entry, rank) => {
       const targetId = entry.key?.id;
       if (!entry.update?.message?.editedMessage || !targetId) {
-        return true;
+        rest.push(entry);
+        return;
       }
-      const claimed = this.claimEditPosition(targetId, {
-        at: messageTimestampSeconds(entry.update),
-        seq,
-        rank,
-      });
-      if (!claimed) {
+      const position = { at: messageTimestampSeconds(entry.update), seq, rank };
+      if (!this.claimEditPosition(targetId, position)) {
+        // Relaying it would put the older text back over the newer one, which
+        // is the whole point of the claim.
         logger.debug(
           "[%s] [onMessagesUpdate] superseded plaintext edit targetId=%s",
           this.phoneNumber,
           targetId,
         );
+        return;
       }
-      return claimed;
+      edits.push({ entry, targetId, position });
     });
 
-    if (!wanted.length) {
-      // Every entry was an edit something newer had already answered. Dropping
-      // them is the point — relaying one puts the older text back — but they
-      // were still inbound activity, and the rebalancer reads silence as idle.
+    if (edits.length) {
+      // One delivery per edit, on the target's own chain, exactly as the
+      // encrypted path does — and for the same three reasons. A batch relayed
+      // whole could only carry one `stillWanted` for all of it, so one aged
+      // edit would drop the others; the chain keeps two edits of one message in
+      // order without holding up any other chat; and being IN `editDeliveries`
+      // is what stops a history sync from evicting this position out from under
+      // its own retry.
+      //
+      // Reserved synchronously, for the reason `emitUnresolvedEdits` reserves
+      // its own: nothing reaches sendToWebhook until a microtask, and a SIGTERM
+      // landing in that gap would read nothing pending and exit on top of it.
+      this._inFlightWebhooks += 1;
+      const deliveries = edits.map(({ entry, targetId, position }) =>
+        this.enqueueEditDelivery(targetId, () =>
+          this.handleMessagesUpdate([entry], {
+            // Re-read between retries, not only before the first attempt: a
+            // 404 parks this in the retry ladder for a minute, and an
+            // encrypted edit applied meanwhile has already sent newer text.
+            stillWanted: () => !this.editSuperseded(targetId, position),
+          }).then(() => {}),
+        ),
+      );
+      Promise.all(deliveries)
+        .catch(() => {})
+        .finally(() => {
+          this._inFlightWebhooks -= 1;
+        });
+    }
+
+    if (!rest.length) {
+      // Nothing left to relay inline, but this was still inbound activity and
+      // the rebalancer reads silence as idle. The deliveries above mark it too,
+      // a tick later, which is a tick too late.
       this.markTraffic();
       return Promise.resolve();
     }
 
-    return this.handleMessagesUpdate(wanted);
+    return this.handleMessagesUpdate(rest);
   }
 
   private handleMessagesUpdate(

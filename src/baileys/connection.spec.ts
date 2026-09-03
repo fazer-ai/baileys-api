@@ -1926,6 +1926,69 @@ describe("BaileysConnection", () => {
       expect(encryptedAttempts).toBe(1);
     });
 
+    // A plaintext edit answered 404 sits in the retry ladder just like an
+    // encrypted one, so it needs the same per-attempt check: an encrypted edit
+    // applied while it sleeps has already sent newer text.
+    it("abandons a plaintext edit whose retry was overtaken", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realRetries = config.webhook.retryPolicy.maxRetries;
+      (config.webhook.retryPolicy as any).maxRetries = 3;
+      let releaseFirst: (() => void) | undefined;
+      const firstAttempt = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let plaintextAttempts = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        const body = init?.body as string;
+        if (body?.includes('"event":"messages.update"')) {
+          if (body.includes("primeira")) {
+            plaintextAttempts += 1;
+            if (plaintextAttempts === 1) {
+              await firstAttempt;
+            }
+            return new Response("", { status: 404 });
+          }
+          return new Response("", { status: 200 });
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      try {
+        const retrying = mockEventHandlers.get("messages.update")!([
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+            update: {
+              message: {
+                editedMessage: { message: { conversation: "primeira" } },
+              },
+              messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+            },
+          },
+        ]);
+        await new Promise((r) => setImmediate(r));
+        expect(plaintextAttempts).toBe(1);
+
+        // Repaired in place, so the newer text is already on its way out.
+        await mockEventHandlers.get("messages.upsert")!({
+          type: "notify",
+          messages: [original(), edit("segunda", undefined, { id: "edit-2" })],
+        });
+
+        releaseFirst?.();
+        await retrying;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+        (config.webhook.retryPolicy as any).maxRetries = realRetries;
+      }
+
+      expect(plaintextAttempts).toBe(1);
+    });
+
     // The same guard in reverse: the plaintext path can also be the older of
     // the two, and relaying it would revert the encrypted edit already applied.
     it("drops a plaintext edit older than the encrypted one applied", async () => {
