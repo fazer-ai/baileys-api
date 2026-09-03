@@ -160,6 +160,40 @@ describe("ownMessageSecret", () => {
     expect(ownMessageSecret(upsert({ conversation: "oi" }))).toBeNull();
   });
 
+  // A wrapper's own context can exist for an expiration or a device list and
+  // carry no secret at all. Protobuf gives that field an empty Uint8Array,
+  // which is truthy, so the candidate has to be chosen by length.
+  it("skips an empty inner secret and takes the outer one", () => {
+    const secret = new Uint8Array(32).fill(9);
+
+    expect(
+      ownMessageSecret(
+        upsert({
+          messageContextInfo: { messageSecret: secret },
+          ephemeralMessage: {
+            message: {
+              conversation: "oi",
+              messageContextInfo: { messageSecret: new Uint8Array(0) },
+            },
+          },
+        }),
+      ),
+    ).toEqual(secret);
+  });
+
+  // The same hole one level further in: a dump strips the content's secret and
+  // carries it on the WebMessageInfo.
+  it("skips an empty content secret and takes the dump's", () => {
+    const secret = new Uint8Array(32).fill(9);
+    const message = upsert({
+      conversation: "oi",
+      messageContextInfo: { messageSecret: new Uint8Array(0) },
+    });
+    message.messageSecret = secret;
+
+    expect(ownMessageSecret(message)).toEqual(secret);
+  });
+
   it("treats an empty secret as none", () => {
     expect(
       ownMessageSecret(

@@ -90,12 +90,17 @@ export function secretMessageEdit(
  * means the edits to those messages arrive undecryptable.
  */
 export function ownMessageSecret(message: WAMessage): Uint8Array | null {
-  const secret =
-    normalizeMessageContent(message.message)?.messageContextInfo
-      ?.messageSecret ||
-    message.message?.messageContextInfo?.messageSecret ||
-    message.messageSecret;
-  return secret?.length ? secret : null;
+  // Picked by length rather than by truthiness: an empty Uint8Array is truthy,
+  // and protobuf hands one back for a bytes field that was never on the wire.
+  // A `||` chain therefore stops at a messageContextInfo that exists for some
+  // other reason — an expiration, a device list — and never reaches the secret
+  // sitting one level out, which is the shape a wrapped message has.
+  const candidates = [
+    normalizeMessageContent(message.message)?.messageContextInfo?.messageSecret,
+    message.message?.messageContextInfo?.messageSecret,
+    message.messageSecret,
+  ];
+  return candidates.find((secret) => secret?.length) ?? null;
 }
 
 /**
