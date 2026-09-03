@@ -730,6 +730,36 @@ describe("BaileysConnection", () => {
     // An edit is delivered outside the callback that saw it, so waiting a tick
     // is not enough — wait for the connection to report nothing pending, which
     // is the same count a graceful shutdown drains on.
+    // The store writes through a transaction, so what has to be held is exec,
+    // not the command that was queued into it.
+    function stallSecretStore(): {
+      release: () => void;
+      restore: () => void;
+    } {
+      const realMulti = (redis as any).multi;
+      let release: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      (redis as any).multi = mock(() => {
+        const chain: any = {
+          hSet: () => chain,
+          expire: () => chain,
+          exec: async () => {
+            await held;
+            return [];
+          },
+        };
+        return chain;
+      });
+      return {
+        release: () => release?.(),
+        restore: () => {
+          (redis as any).multi = realMulti;
+        },
+      };
+    }
+
     async function drain() {
       await new Promise((r) => setImmediate(r));
       while (connection.inFlightWebhooks > 0) {
@@ -1046,16 +1076,15 @@ describe("BaileysConnection", () => {
     // queued behind its delivery slot.
     it("still delivers the batch when the secret store never answers", async () => {
       await connect();
-      const realSet = (redis as any).hSet;
+      const stalled = stallSecretStore();
       const realTimeout = config.baileys.messageSecretStoreTimeoutMs;
-      // Never settles, which is exactly what an offline queue does.
-      (redis as any).hSet = mock(() => new Promise(() => {}));
+      // Never released, which is exactly what an offline queue does.
       (config.baileys as any).messageSecretStoreTimeoutMs = 20;
 
       try {
         await deliver([original()]);
       } finally {
-        (redis as any).hSet = realSet;
+        stalled.restore();
         (config.baileys as any).messageSecretStoreTimeoutMs = realTimeout;
       }
 
@@ -1156,14 +1185,7 @@ describe("BaileysConnection", () => {
     // connection from the drain set and exited on top of the message.
     it("counts a batch waiting on the secret store as work to drain", async () => {
       await connect();
-      const realSet = (redis as any).hSet;
-      let releaseSet: (() => void) | undefined;
-      (redis as any).hSet = mock(
-        () =>
-          new Promise<void>((resolve) => {
-            releaseSet = resolve;
-          }),
-      );
+      const stalled = stallSecretStore();
 
       try {
         const handler = mockEventHandlers.get("messages.upsert")!;
@@ -1172,10 +1194,10 @@ describe("BaileysConnection", () => {
 
         expect(connection.inFlightWebhooks).toBeGreaterThan(0);
 
-        releaseSet?.();
+        stalled.release();
         await delivery;
       } finally {
-        (redis as any).hSet = realSet;
+        stalled.restore();
       }
 
       await drain();
@@ -1184,14 +1206,7 @@ describe("BaileysConnection", () => {
 
     it("counts a dump waiting on the secret store as work to drain", async () => {
       await connect();
-      const realSet = (redis as any).hSet;
-      let releaseSet: (() => void) | undefined;
-      (redis as any).hSet = mock(
-        () =>
-          new Promise<void>((resolve) => {
-            releaseSet = resolve;
-          }),
-      );
+      const stalled = stallSecretStore();
 
       try {
         const historyHandler = mockEventHandlers.get("messaging-history.set")!;
@@ -1206,10 +1221,10 @@ describe("BaileysConnection", () => {
 
         expect(connection.inFlightWebhooks).toBeGreaterThan(0);
 
-        releaseSet?.();
+        stalled.release();
         await delivery;
       } finally {
-        (redis as any).hSet = realSet;
+        stalled.restore();
       }
 
       await drain();
@@ -1256,14 +1271,7 @@ describe("BaileysConnection", () => {
       await deliver([original()]);
       fetchCalls.length = 0;
 
-      const realSet = (redis as any).hSet;
-      let releaseSet: (() => void) | undefined;
-      (redis as any).hSet = mock(
-        () =>
-          new Promise<void>((resolve) => {
-            releaseSet = resolve;
-          }),
-      );
+      const stalled = stallSecretStore();
 
       const handler = mockEventHandlers.get("messages.upsert")!;
       try {
@@ -1289,10 +1297,10 @@ describe("BaileysConnection", () => {
           messages: [edit("segunda", undefined, { id: "edit-2" })],
         });
 
-        releaseSet?.();
+        stalled.release();
         await stalls;
       } finally {
-        (redis as any).hSet = realSet;
+        stalled.restore();
       }
       await drain();
 
@@ -1311,7 +1319,7 @@ describe("BaileysConnection", () => {
     // cannot cancel, so a long outage would retain one command per message.
     it("does not queue a secret write while the store is disconnected", async () => {
       await connect();
-      const before = (redis as any).hSet.mock.calls.length;
+      const before = (redis as any).multi.mock.calls.length;
       (redis as any).isReady = false;
 
       try {
@@ -1320,7 +1328,7 @@ describe("BaileysConnection", () => {
         (redis as any).isReady = true;
       }
 
-      expect((redis as any).hSet.mock.calls.length).toBe(before);
+      expect((redis as any).multi.mock.calls.length).toBe(before);
       const upsert = fetchCalls.find((c) =>
         c.body?.includes('"event":"messages.upsert"'),
       );

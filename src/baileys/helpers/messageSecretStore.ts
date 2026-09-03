@@ -92,9 +92,14 @@ export async function rememberMessageSecret(
     }
   }
 
-  const client = bounded();
-  await client.hSet(key, fields);
-  await client.expire(key, MESSAGE_SECRET_TTL_SECONDS);
+  // One transaction, not two commands: a hash that was created and then failed
+  // to get its expiry is a key nothing will ever delete, and the whole point of
+  // filing these per message is that they age out on their own.
+  await bounded()
+    .multi()
+    .hSet(key, fields)
+    .expire(key, MESSAGE_SECRET_TTL_SECONDS)
+    .exec();
 }
 
 /**

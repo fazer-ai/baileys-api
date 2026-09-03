@@ -23,6 +23,7 @@ describe("messageSecretStore", () => {
     stringData.clear();
     hashData.clear();
     expirations.clear();
+    (redis as any).__multiCommands.length = 0;
   });
 
   it("round-trips the secret and its authors", async () => {
@@ -35,6 +36,20 @@ describe("messageSecretStore", () => {
       secret: SECRET,
       senders: ["167392323834034@lid", "553499503261@s.whatsapp.net"],
     });
+  });
+
+  // A hash created by a write whose EXPIRE never landed is a key nothing will
+  // ever delete, which is the whole failure the TTL exists to prevent. One
+  // transaction, so the entry and its lifetime stand or fall together.
+  it("writes the entry and its expiry in one transaction", async () => {
+    const before = (redis as any).multi.mock.calls.length;
+
+    await rememberMessageSecret(PHONE, MESSAGE_ID, SECRET, []);
+
+    expect((redis as any).multi.mock.calls.length).toBe(before + 1);
+    const ops = (redis as any).__multiCommands.map((c: any) => c.op);
+    expect(ops).toContain("hSet");
+    expect(ops).toContain("expire");
   });
 
   // Per-message keys with no expiry would grow the keyspace by every message

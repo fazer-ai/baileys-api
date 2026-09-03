@@ -328,36 +328,72 @@ const mockRedis = {
       commands.push(cmd);
       multiCommands.push(cmd);
     };
-    return {
-      hSet: (key: string, field: string, value: string) => {
-        queue({ op: "hSet", args: [key, field, value] });
+    const chain = {
+      hSet: (
+        key: string,
+        fieldOrFields: string | Record<string, string>,
+        value?: string,
+      ) => {
+        queue({ op: "hSet", args: [key, fieldOrFields, value] });
+        return chain;
+      },
+      expire: (key: string, seconds: number) => {
+        queue({ op: "expire", args: [key, seconds] });
+        return chain;
       },
       hDel: (key: string, field: string) => {
         queue({ op: "hDel", args: [key, field] });
+        return chain;
       },
       hGet: (key: string, field: string) => {
         queue({ op: "hGet", args: [key, field] });
+        return chain;
       },
-      execAsPipeline: mock(async () => {
-        const results: any[] = [];
-        for (const cmd of commands) {
-          if (cmd.op === "hSet") {
-            const [key, field, value] = cmd.args;
-            if (!hashData.has(key)) hashData.set(key, new Map());
-            hashData.get(key)?.set(field, value);
-            results.push(1);
-          } else if (cmd.op === "hDel") {
-            const [key, field] = cmd.args;
-            hashData.get(key)?.delete(field);
-            results.push(1);
-          } else if (cmd.op === "hGet") {
-            const [key, field] = cmd.args;
-            results.push(hashData.get(key)?.get(field) ?? null);
-          }
-        }
-        return results;
-      }),
+      // MULTI/EXEC and a plain pipeline run the same commands here; only the
+      // real server tells them apart, and no spec asserts on that difference.
+      exec: mock(async () => runQueued()),
+      execAsPipeline: mock(async () => runQueued()),
     };
+
+    function runQueued() {
+      const results: any[] = [];
+      for (const cmd of commands) {
+        if (cmd.op === "hSet") {
+          const [key, fieldOrFields, value] = cmd.args;
+          if (!hashData.has(key)) hashData.set(key, new Map());
+          const hash = hashData.get(key) as Map<string, string>;
+          if (typeof fieldOrFields === "string") {
+            hash.set(fieldOrFields, value);
+            results.push(1);
+          } else {
+            for (const [field, fieldValue] of Object.entries(
+              fieldOrFields as Record<string, string>,
+            )) {
+              hash.set(field, fieldValue);
+            }
+            results.push(Object.keys(fieldOrFields).length);
+          }
+        } else if (cmd.op === "expire") {
+          const [key, seconds] = cmd.args;
+          if (hashData.has(key) || stringData.has(key)) {
+            expirations.set(key, { type: "EX", value: seconds });
+            results.push(1);
+          } else {
+            results.push(0);
+          }
+        } else if (cmd.op === "hDel") {
+          const [key, field] = cmd.args;
+          hashData.get(key)?.delete(field);
+          results.push(1);
+        } else if (cmd.op === "hGet") {
+          const [key, field] = cmd.args;
+          results.push(hashData.get(key)?.get(field) ?? null);
+        }
+      }
+      return results;
+    }
+
+    return chain;
   }),
 };
 
