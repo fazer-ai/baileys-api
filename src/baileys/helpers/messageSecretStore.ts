@@ -2,11 +2,17 @@ import redis from "@/lib/redis";
 
 const redisKeyPrefix = "@baileys-api:connections";
 
-// WhatsApp gives the author 15 minutes to edit a message, so a secret older
-// than that can no longer decrypt anything. An hour of slack covers a webhook
-// retry or a reconnect around the edit; keeping it longer would only grow a
-// per-message keyspace nobody reads.
-export const MESSAGE_SECRET_TTL_SECONDS = 60 * 60;
+// How long a secret is kept, and the window it has to cover is NOT the fifteen
+// minutes WhatsApp gives an author to edit a message. An edit created well
+// inside that window is only replayed to us when the connection comes back, so
+// what matters is how long a disconnect may last before its history arrives —
+// hours, sometimes days. A secret that expired first turns a valid edit into
+// one nothing can read.
+//
+// Seven days is the same horizon the reconnect quarantine works on. Each entry
+// is a few dozen bytes for one message, and only for messages that publish a
+// secret at all.
+export const MESSAGE_SECRET_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export interface StoredMessageSecret {
   /** base64 of the original message's messageContextInfo.messageSecret */

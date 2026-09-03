@@ -304,6 +304,9 @@ export class BaileysConnection {
   private sessionEnded = false;
   // Serializes the send-stall verdicts against each other. See reportSendStall.
   private stallReportChain: Promise<unknown> = Promise.resolve();
+  // Serializes encrypted-edit deliveries against each other. See
+  // emitUnresolvedEdits.
+  private editDeliveryQueue: Promise<void> = Promise.resolve();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2419,10 +2422,10 @@ export class BaileysConnection {
     // Same two steps as a history dump, and deliberately the same code: repair
     // what this batch can repair itself, file the secrets a later edit will
     // need, and let anything left over go out as an ordinary update.
-    const { kept, unresolved } = this.repairSecretMessageEdits(
+    const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
       messagesData.messages,
     );
-    await this.rememberMessageSecretsFor(kept);
+    await this.fileMessageSecrets(secrets);
 
     if (kept.length > 0) {
       if (kept.length !== messagesData.messages.length) {
@@ -2447,65 +2450,87 @@ export class BaileysConnection {
     this.emitUnresolvedEdits(unresolved);
   }
 
-  // Sends the edits this batch could not apply itself, exactly the way Baileys
-  // sends a plaintext one: fire and forget, in arrival order, no queue.
+  // Sends the edits this batch could not apply itself, one at a time.
   //
-  // There is deliberately no ordering machinery around this. An edit whose
-  // original is still being written by the consumer is answered 404, and
-  // `awaitResponse` puts the delivery back through the retry loop — the
-  // ordering is already in the protocol, and four rounds of hand-built
-  // barriers, chains and delivery slots only added ways to lose a message that
-  // the retry never had. After decryption this IS a plaintext edit, so it is
-  // delivered as one and inherits exactly the guarantees the provider already
-  // gives every other edit.
+  // Nothing here waits on the upserts: an edit whose original the consumer has
+  // not written yet is answered 404 and `awaitResponse` puts the delivery back
+  // through the retry loop, so that ordering is already in the protocol. The
+  // barriers and delivery slots built to duplicate it only added ways to lose a
+  // message the retry never had, and are gone.
+  //
+  // What the protocol does NOT give is order between two edits of the SAME
+  // message: once the target exists both are answered 200, so a first edit
+  // working through a retry can land after a second and the older text wins.
+  // Hence the queue — and only the queue. It orders edits against each other,
+  // touches nothing else on the connection, and holds the in-flight
+  // reservation for the span, which is the piece a graceful shutdown needs.
   private emitUnresolvedEdits(
     unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>,
   ) {
-    for (const { message, edit } of unresolved) {
-      // Reserved synchronously, for the reason `stallReportChain` reserves its
-      // own: recalling the secret and decrypting both suspend before
-      // sendToWebhook increments anything, and a SIGTERM landing in that gap
-      // would read nothing pending and exit on top of the edit.
-      this._inFlightWebhooks += 1;
-      void this.emitSecretMessageEdit(message, edit).finally(() => {
+    if (unresolved.length === 0) {
+      return;
+    }
+
+    // Reserved synchronously, for the reason `stallReportChain` reserves its
+    // own: the queue does not reach sendToWebhook until a microtask, and a
+    // SIGTERM landing in that gap would read nothing pending and exit on top of
+    // these edits.
+    this._inFlightWebhooks += 1;
+    this.editDeliveryQueue = this.editDeliveryQueue
+      .catch(() => {})
+      .then(async () => {
+        for (const { message, edit } of unresolved) {
+          await this.emitSecretMessageEdit(message, edit);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
         this._inFlightWebhooks -= 1;
       });
-    }
   }
 
-  private repairSecretMessageEdits(messages: WAMessage[]): {
+  private repairSecretMessageEdits(
+    messages: WAMessage[],
+    { onlyRecent = false }: { onlyRecent?: boolean } = {},
+  ): {
     kept: WAMessage[];
     unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }>;
+    secrets: MessageSecretEntry[];
   } {
     const { kept, edits } = this.splitSecretMessageEdits(messages);
+
+    // Read BEFORE any repair below, and filed from here rather than from the
+    // messages afterwards: applying an edit in place replaces the content that
+    // holds the secret, so re-reading a repaired message finds nothing and the
+    // NEXT edit to it would arrive undecryptable.
+    const secrets = this.collectMessageSecrets(kept, { onlyRecent });
+
     if (edits.length === 0) {
-      return { kept, unresolved: [] };
+      return { kept, unresolved: [], secrets };
     }
 
     const unresolved: Array<{ message: WAMessage; edit: SecretMessageEdit }> =
       [];
 
-    // Indexed from the dump itself, not from Redis: an edit replayed alongside
-    // its original needs that original's secret, and one round trip per edit
-    // would ask the network for something already in hand.
-    const secrets = new Map<string, Uint8Array>();
+    // Indexed from this batch, not from Redis: an edit arriving alongside its
+    // original needs that original's secret, and a round trip per edit would
+    // ask the network for something already in hand.
     const byId = new Map<string, WAMessage>();
+    const secretById = new Map<string, Uint8Array>();
+    for (const entry of secrets) {
+      secretById.set(entry.messageId, entry.secret);
+    }
     for (const message of kept) {
       const id = message.key?.id;
-      if (!id) {
-        continue;
-      }
-      byId.set(id, message);
-      const secret = ownMessageSecret(message);
-      if (secret) {
-        secrets.set(id, secret);
+      if (id) {
+        byId.set(id, message);
       }
     }
 
     for (const { message, edit } of edits) {
       const targetId = edit.targetKey.id as string;
       const target = byId.get(targetId);
-      const secret = secrets.get(targetId);
+      const secret = secretById.get(targetId);
       if (!target || !secret) {
         unresolved.push({ message, edit });
         continue;
@@ -2543,7 +2568,7 @@ export class BaileysConnection {
       }
     }
 
-    return { kept, unresolved };
+    return { kept, unresolved, secrets };
   }
 
   // Files only the messages a future edit could still target. WhatsApp closes
@@ -2552,10 +2577,15 @@ export class BaileysConnection {
   // decrypt anything: filing an archive's worth of them would spend a round
   // trip per message, hold the dump behind all of them, and leave a keyspace
   // nothing will ever read.
-  private async rememberMessageSecretsFor(
+  // The secrets on these messages, as store entries. Split from the write so
+  // the read can happen before an in-place repair overwrites what it reads.
+  private collectMessageSecrets(
     messages: WAMessage[],
     { onlyRecent = false }: { onlyRecent?: boolean } = {},
-  ) {
+  ): MessageSecretEntry[] {
+    // Only a dump is filtered by age: a live message is current by definition,
+    // and dropping one whose timestamp reads oddly would silently cost the edit
+    // that follows it.
     const oldest = Date.now() / 1000 - MESSAGE_SECRET_TTL_SECONDS;
     const entries: MessageSecretEntry[] = [];
 
@@ -2575,6 +2605,10 @@ export class BaileysConnection {
       });
     }
 
+    return entries;
+  }
+
+  private async fileMessageSecrets(entries: MessageSecretEntry[]) {
     if (entries.length === 0) {
       return;
     }
@@ -2586,8 +2620,10 @@ export class BaileysConnection {
         () => rememberMessageSecrets(this.phoneNumber, entries),
       );
     } catch (error) {
+      // A secret we cannot file is a future edit we cannot decrypt, never a
+      // reason to withhold the messages themselves.
       logger.warn(
-        "[%s] [rememberMessageSecretsFor] failed for %d message(s)\n%s",
+        "[%s] [fileMessageSecrets] failed for %d message(s)\n%s",
         this.phoneNumber,
         entries.length,
         errorToString(error),
@@ -2916,12 +2952,12 @@ export class BaileysConnection {
       data.lidPnMappings,
       data.chats ?? [],
     );
-    const { kept: messages, unresolved: unresolvedEdits } =
-      this.repairSecretMessageEdits(addressed);
-    // Only the dump is filtered by age: a live message is current by
-    // definition, and dropping one whose timestamp reads oddly would silently
-    // cost the edit that follows it.
-    await this.rememberMessageSecretsFor(messages, { onlyRecent: true });
+    const {
+      kept: messages,
+      unresolved: unresolvedEdits,
+      secrets,
+    } = this.repairSecretMessageEdits(addressed, { onlyRecent: true });
+    await this.fileMessageSecrets(secrets);
 
     // The one thing worth keeping from the chat records: which chats have
     // nothing older left. An answer that still has history behind it carries no

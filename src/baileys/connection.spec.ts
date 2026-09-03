@@ -851,6 +851,94 @@ describe("BaileysConnection", () => {
       expect(connection.inFlightWebhooks).toBe(0);
     });
 
+    // Applying an edit in place replaces the content that holds the secret, so
+    // re-reading the message afterwards to file it finds nothing — and the NEXT
+    // edit to that message arrives with no key.
+    it("keeps a repaired message decryptable for its next edit", async () => {
+      await connection.connect();
+
+      await deliver([original(), edit("primeira")]);
+      fetchCalls.length = 0;
+      await deliver([edit("segunda")]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("segunda");
+    });
+
+    // The protocol orders an edit against the message it edits, by answering
+    // 404 and retrying. It does NOT order two edits of the same message: once
+    // the target exists both are answered 200, so a first edit working through
+    // a retry can land after a second and the older text wins.
+    it("delivers two edits of one message in order, even when the first retries", async () => {
+      await connection.connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      let releaseFirst: (() => void) | undefined;
+      const slowFirst = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let updates = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        if ((init?.body as string)?.includes('"event":"messages.update"')) {
+          updates += 1;
+          if (updates === 1) {
+            await slowFirst;
+          }
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages: [edit("primeira")] });
+      await handler({ type: "notify", messages: [edit("segunda")] });
+      await new Promise((r) => setImmediate(r));
+
+      expect(updates).toBe(1);
+
+      releaseFirst?.();
+      await drain();
+      globalThis.fetch = realFetch;
+
+      const texts = fetchCalls
+        .filter((c) => c.body?.includes('"event":"messages.update"'))
+        .map(
+          (c) =>
+            JSON.parse(c.body).data[0].update.message.editedMessage.message
+              .conversation,
+        );
+      expect(texts).toEqual(["primeira", "segunda"]);
+    });
+
+    // Retention has to cover how long a disconnect may last before its history
+    // arrives, not the fifteen minutes an author has to create the edit: the
+    // edit is valid when created and only replayed to us much later.
+    it("keeps the secret of a dump message older than the edit window", async () => {
+      await connection.connect();
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+
+      await historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped(6 * 60 * 60)],
+        syncType: 3,
+        isLatest: true,
+      });
+      await drain();
+
+      expect(
+        (redis as any).__stringData.has(
+          messageSecretKey("+5511999999999", ORIG_ID),
+        ),
+      ).toBe(true);
+    });
+
     // The lookup is the one step that talks to Redis, and it used to throw
     // straight out of the batch loop: a disconnect at the wrong moment silently
     // dropped every ordinary message that shared the frame with an edit.
@@ -1025,10 +1113,9 @@ describe("BaileysConnection", () => {
       ).toBe(false);
     });
 
-    // A full archive carries messages whose edit window closed long ago. Filing
-    // their secrets spends a round trip each and leaves a keyspace nothing can
-    // ever read.
-    it("does not file the secret of a message too old to still be edited", async () => {
+    // A full archive still reaches back past any replay window. Filing those
+    // secrets leaves a keyspace nothing can ever read.
+    it("does not file the secret of a message too old to still be replayed", async () => {
       await connection.connect();
       const historyHandler = mockEventHandlers.get("messaging-history.set")!;
 
