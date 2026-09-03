@@ -9,14 +9,6 @@
 # https://github.com/fazer-ai/baileys-api/issues/374
 swagger.json: Restore the actual send-message conflict response
 
-# Business-hosted accounts (@hosted.lid) only, and it costs a phone number rather than
-# producing a wrong one: `addressingMode` does not depend on the mapping, so the client
-# still refuses to read the LID as a number and just leaves the field blank until a live
-# message fills it. Recovering it means new per-connection state carried across flushes,
-# for a domain we serve nobody on and that Baileys' own mapping store rejects outright.
-# Third round in a row on hosted LIDs; declined at the point the fix stopped being a
-# rule and started being a cache: https://github.com/fazer-ai/baileys-api/pull/386
-src/baileys/*.ts: Preserve hosted mappings across history events
 # Ordering across a connection handoff: editDeliveryQueue and editedAt are
 # connection-local, and a handoff leaves the old connection draining while the
 # new one runs. Deliberately not fixed here; the reasoning, the cost of a shared

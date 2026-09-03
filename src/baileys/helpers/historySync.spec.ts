@@ -215,8 +215,8 @@ describe("restoring the addressing a dump strips", () => {
   });
 
   // A business-hosted account is addressed on `hosted.lid`, which `jidDecode` reads as a
-  // LID domain and `isLidUser` -- a plain `@lid` suffix test -- does not. Left out, its
-  // chats kept the exact shape this whole change exists to fix.
+  // LID domain and upstream's `isLidUser` -- a plain `@lid` suffix test -- does not. Left
+  // out, its chats kept the exact shape this whole change exists to fix.
   describe("the hosted form of a LID", () => {
     const HOSTED = "235085806727321@hosted.lid";
 
@@ -226,7 +226,7 @@ describe("restoring the addressing a dump strips", () => {
       expect(message.key.addressingMode).toBe("lid");
     });
 
-    it("takes a hosted mapping out of the event, which is the only place one arrives", () => {
+    it("takes a hosted mapping out of the event like any other", () => {
       const [message] = restoreAddressing(
         [chatMessage(HOSTED)],
         lidPnIndex([{ lid: HOSTED, pn: "5511999999999@hosted" }]),
@@ -261,7 +261,7 @@ describe("restoring the addressing a dump strips", () => {
       expect(chatLidPnPairs([{ id: "120363@g.us", lidJid: LID }])).toEqual([]);
     });
 
-    it("carries a hosted chat, which is the only place its mapping arrives", () => {
+    it("carries a hosted chat, whose record is where the store first learns the pair", () => {
       expect(
         chatLidPnPairs([{ id: "777@hosted.lid", pnJid: "5511@hosted" }]),
       ).toEqual([{ lid: "777@hosted.lid", pn: "5511@hosted" }]);
@@ -283,6 +283,20 @@ describe("restoring the addressing a dump strips", () => {
       ]);
 
       expect(index.get("235085806727321")).toBe(PN);
+    });
+
+    // A source that hands the pair over the other way round would otherwise index the LID
+    // as if it were the phone number, which is the exact shape this module exists to stop.
+    it("drops a pair whose phone side is not a phone address", () => {
+      const index = lidPnIndex([{ lid: LID, pn: "777888999@lid" }]);
+
+      expect(index.size).toBe(0);
+    });
+
+    it("drops a pair handed over reversed", () => {
+      const index = lidPnIndex([{ lid: PN, pn: LID }]);
+
+      expect(index.size).toBe(0);
     });
 
     it("lets the earlier source win, which is the one describing this dump", () => {
