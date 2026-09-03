@@ -672,7 +672,16 @@ describe("BaileysConnection", () => {
       {
         id = "edit-1",
         ageSeconds = 0,
-      }: { id?: string; ageSeconds?: number } = {},
+        targetKey = {
+          remoteJid: "89572297961476@lid",
+          fromMe: true,
+          id: ORIG_ID,
+        },
+      }: {
+        id?: string;
+        ageSeconds?: number;
+        targetKey?: Record<string, unknown>;
+      } = {},
     ) {
       const encIv = randomBytes(12);
       const key = messageEditKey({
@@ -701,11 +710,7 @@ describe("BaileysConnection", () => {
         messageTimestamp: Math.floor(Date.now() / 1000) - ageSeconds,
         message: {
           secretEncryptedMessage: {
-            targetMessageKey: {
-              remoteJid: "89572297961476@lid",
-              fromMe: true,
-              id: ORIG_ID,
-            },
+            targetMessageKey: targetKey,
             encPayload: Buffer.concat([body, cipher.getAuthTag()]),
             encIv,
             secretEncType: 2,
@@ -1507,6 +1512,71 @@ describe("BaileysConnection", () => {
       }
 
       await expect((connection as any).secretIntake).resolves.toBeUndefined();
+    });
+
+    // The batch knows only how ITS copy addressed the author. The store may
+    // hold a form an earlier copy carried, so a local failure is a reason to ask
+    // the store, not a reason to drop the edit.
+    it("falls back to the stored sender forms when the batch cannot decrypt", async () => {
+      await connect();
+      // The live copy taught the store both forms.
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      // A second copy of the same message, addressed by LID alone, arrives
+      // alongside an edit whose author WhatsApp named by the phone-number form.
+      // Nothing in this batch knows that form; only the store does.
+      await deliver([
+        { ...dumped(), key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID } },
+        edit(
+          "oi editado",
+          { origMsgSender: CHAT_PN, editSender: CHAT },
+          { targetKey: { remoteJid: CHAT, fromMe: false, id: ORIG_ID } },
+        ),
+      ]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
+    // An edit that cannot be read changes nothing, so it must not take the
+    // position: a later, older edit that CAN be read would then be rejected as
+    // superseded by an update nobody ever received.
+    it("lets an older readable edit through after a newer unreadable one", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      // Encrypted under a JID neither the batch nor the store ever saw.
+      await deliver([
+        edit(
+          "ilegivel",
+          { origMsgSender: "999@lid", editSender: "999@lid" },
+          { id: "edit-2" },
+        ),
+      ]);
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+
+      await deliver([
+        edit("legivel", undefined, { id: "edit-1", ageSeconds: 30 }),
+      ]);
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("legivel");
     });
 
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as

@@ -2666,11 +2666,16 @@ export class BaileysConnection {
           }),
         });
         if (!decrypted) {
+          // Not a dead end: the batch knows only how this copy addressed the
+          // author, and the store may hold a form an earlier copy carried (see
+          // the merge in rememberMessageSecret). Hand it to the unresolved path,
+          // which asks the store and tries those too.
           logger.warn(
-            "[%s] [repairSecretMessageEdits] no sender candidate decrypted targetId=%s",
+            "[%s] [repairSecretMessageEdits] no in-batch candidate decrypted, deferring targetId=%s",
             this.phoneNumber,
             targetId,
           );
+          unresolved.push({ message, edit });
           continue;
         }
         if (
@@ -2837,17 +2842,6 @@ export class BaileysConnection {
       return;
     }
 
-    if (!this.claimEditPosition(targetId, messageTimestampSeconds(message))) {
-      // A newer edit of this message has already been applied. Delivering this
-      // one would put the older text back.
-      logger.debug(
-        "[%s] [emitSecretMessageEdit] superseded targetId=%s",
-        this.phoneNumber,
-        targetId,
-      );
-      return;
-    }
-
     const decrypted = decryptMessageEdit({
       encPayload,
       encIv,
@@ -2876,6 +2870,19 @@ export class BaileysConnection {
       targetId,
       decrypted.senders,
     );
+
+    // Claimed only now, for the same reason the in-batch path claims after
+    // decrypting: an edit that cannot be read changes nothing, and letting it
+    // take the position would reject a later, older edit that CAN be read as
+    // superseded by an update nobody ever received.
+    if (!this.claimEditPosition(targetId, messageTimestampSeconds(message))) {
+      logger.debug(
+        "[%s] [emitSecretMessageEdit] superseded targetId=%s",
+        this.phoneNumber,
+        targetId,
+      );
+      return;
+    }
 
     // Same shape Baileys emits for a plaintext MESSAGE_EDIT: the edit's own key
     // with the id swapped for the original's, so the consumer updates the
