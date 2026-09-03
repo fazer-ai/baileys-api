@@ -843,8 +843,8 @@ export class BaileysConnection {
         this.handleMessagesUpsert,
       ),
       "messages.update": this.withErrorHandling(
-        "handleMessagesUpdate",
-        this.handleMessagesUpdate,
+        "onMessagesUpdate",
+        this.onMessagesUpdate,
       ),
       "message-receipt.update": this.withErrorHandling(
         "handleMessageReceiptUpdate",
@@ -2645,19 +2645,29 @@ export class BaileysConnection {
     // least-recently-claimed first and the eviction below takes the right one.
     this.editedAt.delete(targetId);
     this.editedAt.set(targetId, position);
-    if (this.editedAt.size > BaileysConnection.EDIT_POSITION_MEMORY) {
-      for (const candidate of this.editedAt.keys()) {
-        // A message still being delivered keeps its position no matter how old
-        // the claim is: the retry consults it before every attempt, and a
-        // position that was evicted reads as "nothing applied yet", which is
-        // precisely the answer that lets a stale retry through. A history sync
-        // touching thousands of messages would otherwise do this routinely.
-        if (this.editDeliveries.has(candidate)) {
-          continue;
-        }
-        this.editedAt.delete(candidate);
+    // Trimmed back to the cap rather than by one entry per claim: a protected
+    // candidate is skipped, not evicted, so "evict one" can evict none, and the
+    // map would then stay above the cap for as long as the connection lives —
+    // every later claim adding one and removing one. The loop runs at most once
+    // over the map, and only while it is over the cap.
+    for (const candidate of this.editedAt.keys()) {
+      if (this.editedAt.size <= BaileysConnection.EDIT_POSITION_MEMORY) {
         break;
       }
+      // A message still being delivered keeps its position no matter how old
+      // the claim is: the retry consults it before every attempt, and a
+      // position that was evicted reads as "nothing applied yet", which is
+      // precisely the answer that lets a stale retry through. A history sync
+      // touching thousands of messages would otherwise do this routinely.
+      //
+      // With more deliveries in flight than the cap there is nothing to take,
+      // and the map grows until they settle. That is the honest outcome: the
+      // alternative is dropping a position something is still consulting. The
+      // next claim after they settle brings it back down.
+      if (this.editDeliveries.has(candidate)) {
+        continue;
+      }
+      this.editedAt.delete(candidate);
     }
     return true;
   }
@@ -3018,6 +3028,57 @@ export class BaileysConnection {
       this.ownJidsSeen.lid = user.lid;
     }
     return { ...this.ownJidsSeen };
+  }
+
+  /**
+   * The event listener, as opposed to the relay the encrypted path calls.
+   *
+   * Baileys still turns a plaintext MESSAGE_EDIT into exactly the shape the
+   * encrypted path synthesises: the original message's id, an `editedMessage`
+   * body, and the edit's own timestamp. Both edit the same message, so both
+   * have to answer to the same guard. Without this, an encrypted edit sitting
+   * in the retry ladder would never learn that a newer plaintext edit had
+   * already landed, and would put its older text back — and a plaintext edit
+   * older than an encrypted one already applied would do the same in reverse.
+   *
+   * Only the listener claims. The encrypted path claims before it calls the
+   * relay, and hands `stillWanted` that very position to compare against;
+   * claiming again on the way through would supersede it and make the delivery
+   * abandon itself one attempt later.
+   */
+  private onMessagesUpdate(
+    data: BaileysEventMap["messages.update"],
+  ): Promise<unknown> {
+    const seq = ++this.eventSeq;
+    const wanted = data.filter((entry, rank) => {
+      const targetId = entry.key?.id;
+      if (!entry.update?.message?.editedMessage || !targetId) {
+        return true;
+      }
+      const claimed = this.claimEditPosition(targetId, {
+        at: messageTimestampSeconds(entry.update),
+        seq,
+        rank,
+      });
+      if (!claimed) {
+        logger.debug(
+          "[%s] [onMessagesUpdate] superseded plaintext edit targetId=%s",
+          this.phoneNumber,
+          targetId,
+        );
+      }
+      return claimed;
+    });
+
+    if (!wanted.length) {
+      // Every entry was an edit something newer had already answered. Dropping
+      // them is the point — relaying one puts the older text back — but they
+      // were still inbound activity, and the rebalancer reads silence as idle.
+      this.markTraffic();
+      return Promise.resolve();
+    }
+
+    return this.handleMessagesUpdate(wanted);
   }
 
   private handleMessagesUpdate(

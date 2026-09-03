@@ -1832,6 +1832,126 @@ describe("BaileysConnection", () => {
       ).toBe(true);
     });
 
+    // Skipping a protected candidate means "evict one" can evict none, and the
+    // map would then sit above the cap for the life of the connection: every
+    // later claim adds one and removes one.
+    it("trims back to the cap once the protected deliveries settle", async () => {
+      await connect();
+      const held = new Promise<void>(() => {});
+      for (let i = 0; i < 1500; i += 1) {
+        (connection as any).editDeliveries.set(`held-${i}`, held);
+        (connection as any).claimEditPosition(`held-${i}`, {
+          at: 1,
+          seq: i + 1,
+          rank: 0,
+        });
+      }
+      // Nothing was evictable while they were all in flight, which is correct.
+      expect((connection as any).editedAt.size).toBe(1500);
+
+      (connection as any).editDeliveries.clear();
+      (connection as any).claimEditPosition("after", {
+        at: 2,
+        seq: 5000,
+        rank: 0,
+      });
+
+      expect((connection as any).editedAt.size).toBe(1000);
+    });
+
+    // Baileys still turns a plaintext MESSAGE_EDIT into a messages.update, in
+    // the very shape the encrypted path synthesises. An encrypted edit sitting
+    // in the retry ladder has to see that one too, or it puts its older text
+    // back over it.
+    it("abandons an encrypted edit overtaken by a plaintext one", async () => {
+      await connect();
+      await deliver([original()]);
+      fetchCalls.length = 0;
+
+      const realRetries = config.webhook.retryPolicy.maxRetries;
+      (config.webhook.retryPolicy as any).maxRetries = 3;
+      let releaseFirst: (() => void) | undefined;
+      const firstAttempt = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let encryptedAttempts = 0;
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = mock(async (url: any, init?: RequestInit) => {
+        const body = init?.body as string;
+        if (body?.includes('"event":"messages.update"')) {
+          if (body.includes("primeira")) {
+            encryptedAttempts += 1;
+            if (encryptedAttempts === 1) {
+              await firstAttempt;
+            }
+            // The consumer has not written the original yet.
+            return new Response("", { status: 404 });
+          }
+          return new Response("", { status: 200 });
+        }
+        return realFetch(url, init);
+      }) as any;
+
+      try {
+        const retrying = mockEventHandlers.get("messages.upsert")!({
+          type: "notify",
+          messages: [edit("primeira", undefined, { id: "edit-1" })],
+        });
+        await new Promise((r) => setImmediate(r));
+        expect(encryptedAttempts).toBe(1);
+
+        // Straight off Baileys' plaintext MESSAGE_EDIT branch.
+        await mockEventHandlers.get("messages.update")!([
+          {
+            key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+            update: {
+              message: {
+                editedMessage: { message: { conversation: "segunda" } },
+              },
+              messageTimestamp: Math.floor(Date.now() / 1000),
+            },
+          },
+        ]);
+
+        releaseFirst?.();
+        await retrying;
+        await drain();
+      } finally {
+        globalThis.fetch = realFetch;
+        (config.webhook.retryPolicy as any).maxRetries = realRetries;
+      }
+
+      // The first attempt was already on the wire before the plaintext edit
+      // existed; no retry of it may follow.
+      expect(encryptedAttempts).toBe(1);
+    });
+
+    // The same guard in reverse: the plaintext path can also be the older of
+    // the two, and relaying it would revert the encrypted edit already applied.
+    it("drops a plaintext edit older than the encrypted one applied", async () => {
+      await connect();
+      await deliver([original()]);
+      await deliver([edit("segunda", undefined, { id: "edit-1" })]);
+      fetchCalls.length = 0;
+
+      await mockEventHandlers.get("messages.update")!([
+        {
+          key: { remoteJid: CHAT, fromMe: false, id: ORIG_ID },
+          update: {
+            message: {
+              editedMessage: { message: { conversation: "primeira" } },
+            },
+            messageTimestamp: Math.floor(Date.now() / 1000) - 60,
+          },
+        },
+      ]);
+      await drain();
+
+      expect(
+        fetchCalls.some((c) => c.body?.includes('"event":"messages.update"')),
+      ).toBe(false);
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.

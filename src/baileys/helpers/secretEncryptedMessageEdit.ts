@@ -17,7 +17,9 @@ const MESSAGE_EDIT_ENC_TYPES: ReadonlySet<number | string> = new Set([
  * number or as a `{ low, high }` Long depending on how it came off the wire,
  * and a dump mixes both.
  */
-export function messageTimestampSeconds(message: WAMessage): number {
+export function messageTimestampSeconds(
+  message: Pick<WAMessage, "messageTimestamp">,
+): number {
   const timestamp = message.messageTimestamp;
   if (typeof timestamp === "number") {
     return timestamp;
