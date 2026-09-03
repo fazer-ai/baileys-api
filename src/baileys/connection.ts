@@ -309,6 +309,9 @@ export class BaileysConnection {
   // Serializes encrypted-edit deliveries against each other. See
   // emitUnresolvedEdits.
   private editDeliveryQueue: Promise<void> = Promise.resolve();
+  // Secrets this connection has taken in but not yet filed. See
+  // beginSecretIntake.
+  private secretIntake: Promise<unknown> = Promise.resolve();
   private stallStrikeRollback:
     | { previous: SendStallState | null; ttlMs: number | null; wrote: string }
     | undefined;
@@ -2424,6 +2427,9 @@ export class BaileysConnection {
     // Same two steps as a history dump, and deliberately the same code: repair
     // what this batch can repair itself, file the secrets a later edit will
     // need, and let anything left over go out as an ordinary update.
+    // Opened before the secrets are read and closed once they are filed, so an
+    // edit arriving on another callback waits for them instead of missing.
+    const releaseIntake = this.beginSecretIntake();
     const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
       messagesData.messages,
     );
@@ -2445,7 +2451,11 @@ export class BaileysConnection {
     // of messages that were never delivered.
     this._inFlightWebhooks += 1;
     try {
-      await this.fileMessageSecrets(secrets);
+      try {
+        await this.fileMessageSecrets(secrets);
+      } finally {
+        releaseIntake();
+      }
 
       if (kept.length > 0) {
         if (kept.length !== messagesData.messages.length) {
@@ -2508,6 +2518,27 @@ export class BaileysConnection {
       .finally(() => {
         this._inFlightWebhooks -= 1;
       });
+  }
+
+  /**
+   * Opens a window that stays open until this batch's secrets are filed, and
+   * returns the handle that closes it. Registered synchronously, so it is
+   * already open before anything else on this connection gets to run.
+   *
+   * An edit's key lookup waits for whatever windows were open when it ran. A
+   * miss there is final in a way nothing else in this path is: an edit
+   * delivered out of order is answered 404 and the retry loop recovers it, but
+   * an edit that found no key emits nothing, so there is nothing to retry. The
+   * dump that carries the key can easily still be inside `addressHistory` when
+   * the live edit arrives, because Baileys does not await our handlers.
+   */
+  private beginSecretIntake(): () => void {
+    let close: () => void = () => {};
+    const open = new Promise<void>((resolve) => {
+      close = resolve;
+    });
+    this.secretIntake = Promise.all([this.secretIntake, open]);
+    return close;
   }
 
   private repairSecretMessageEdits(
@@ -2710,6 +2741,26 @@ export class BaileysConnection {
     { targetKey, encPayload, encIv }: SecretMessageEdit,
   ) {
     const targetId = targetKey.id as string;
+
+    // The dump or upsert carrying this message's secret may still be filing it.
+    // Bounded, because `addressHistory` waits on the keystore and a wedged one
+    // must not park every edit behind it: on a timeout the lookup goes ahead
+    // and, at worst, misses the way it would have anyway.
+    try {
+      await withTimeout(
+        "secretIntake",
+        config.baileys.messageSecretStoreTimeoutMs,
+        () => this.secretIntake,
+      );
+    } catch (error) {
+      logger.warn(
+        "[%s] [emitSecretMessageEdit] secret intake did not settle targetId=%s\n%s",
+        this.phoneNumber,
+        targetId,
+        errorToString(error),
+      );
+    }
+
     const stored = await withTimeout(
       "recallMessageSecret",
       config.baileys.messageSecretStoreTimeoutMs,
@@ -2977,34 +3028,45 @@ export class BaileysConnection {
   private async handleMessagingHistorySet(
     data: BaileysEventMap["messaging-history.set"],
   ) {
-    // Addressing first, secrets second, and the order is load-bearing: a dump's
-    // keys arrive without their `remoteJidAlt`/`participantAlt`, and those are
-    // the second JID form every stored author candidate needs. Filing before
-    // the restore would record half the candidates, and a later edit derived
-    // from the form we dropped would never verify.
-    const addressed = await this.addressHistory(
-      data.messages ?? [],
-      data.lidPnMappings,
-      data.chats ?? [],
-    );
-    const {
-      kept: messages,
-      unresolved: unresolvedEdits,
-      secrets,
-    } = this.repairSecretMessageEdits(addressed, { history: true });
-    // Same reason as the live path: enqueued before the awaits below, so the
-    // queue's order is the order the dumps were handled in rather than whichever
-    // one finished writing first. The one await this cannot get in front of is
-    // `addressHistory` above, which has to run before anything can be decrypted;
-    // two dumps carrying edits of the SAME message can still cross there.
-    this.emitUnresolvedEdits(unresolvedEdits);
+    // Opened before the addressing round trip below, which is the window the
+    // whole gate exists for: a live edit arriving while this dump is still
+    // resolving LIDs would look its key up, find the dump had not filed it yet
+    // and drop the edit with nothing to retry.
+    const releaseIntake = this.beginSecretIntake();
 
     // Same reservation, same reason as the live path: the Redis write below is
     // a stall this connection has to survive being drained through, and until
     // the first frame reaches sendToWebhook nothing else is holding it.
     this._inFlightWebhooks += 1;
     try {
-      await this.fileMessageSecrets(secrets);
+      let messages: WAMessage[] = [];
+      try {
+        // Addressing first, secrets second, and the order is load-bearing: a
+        // dump's keys arrive without their `remoteJidAlt`/`participantAlt`, and
+        // those are the second JID form every stored author candidate needs.
+        // Filing before the restore would record half the candidates, and a
+        // later edit derived from the form we dropped would never verify.
+        const addressed = await this.addressHistory(
+          data.messages ?? [],
+          data.lidPnMappings,
+          data.chats ?? [],
+        );
+        const { kept, unresolved, secrets } = this.repairSecretMessageEdits(
+          addressed,
+          { history: true },
+        );
+        messages = kept;
+        // Same reason as the live path: enqueued before the write below, so the
+        // queue's order is the order the dumps were handled in rather than
+        // whichever one finished writing first.
+        this.emitUnresolvedEdits(unresolved);
+        await this.fileMessageSecrets(secrets);
+      } finally {
+        // Closed as soon as the secrets are down, not after the frames: an edit
+        // has no reason to wait behind the delivery of a whole archive.
+        releaseIntake();
+      }
+
       await this.deliverHistoryFrames(data, messages);
     } finally {
       this._inFlightWebhooks -= 1;

@@ -1318,6 +1318,52 @@ describe("BaileysConnection", () => {
       );
     });
 
+    // The dump carries the key and the live edit needs it, and Baileys runs the
+    // two callbacks concurrently. A lookup that lands while the dump is still
+    // resolving LIDs finds nothing, and that miss is final: the edit emits
+    // nothing, so there is no 404 and no retry to recover it.
+    it("waits for a dump still filing the secret before looking it up", async () => {
+      await connection.connect();
+
+      let releaseAddressing: (() => void) | undefined;
+      mockSocket.signalRepository.lidMapping.getPNsForLIDs.mockImplementationOnce(
+        async () => {
+          await new Promise<void>((resolve) => {
+            releaseAddressing = resolve;
+          });
+          return null;
+        },
+      );
+
+      const historyHandler = mockEventHandlers.get("messaging-history.set")!;
+      const dump = historyHandler({
+        chats: [],
+        contacts: [],
+        messages: [dumped()],
+        syncType: 3,
+        isLatest: true,
+      });
+      await new Promise((r) => setImmediate(r));
+
+      // Arrives mid-addressing, which is exactly when the key is not filed yet.
+      const handler = mockEventHandlers.get("messages.upsert")!;
+      await handler({ type: "notify", messages: [edit("oi editado")] });
+      await new Promise((r) => setImmediate(r));
+
+      releaseAddressing?.();
+      await dump;
+      await drain();
+
+      const update = fetchCalls.find((c) =>
+        c.body?.includes('"event":"messages.update"'),
+      );
+      expect(update).toBeDefined();
+      expect(
+        JSON.parse(update?.body as string).data[0].update.message.editedMessage
+          .message.conversation,
+      ).toBe("oi editado");
+    });
+
     // Baileys builds a chat's history array newest-first (it keeps msgs[0] as
     // "the most recent message in the chat"), so walking it straight applies the
     // newest replacement and then overwrites it with an older one.
