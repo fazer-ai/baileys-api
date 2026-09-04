@@ -3410,7 +3410,11 @@ export class BaileysConnection {
         isLatest: data.isLatest,
         chunkIndex,
         ...(chunkIndex === 0 && exhausted.length > 0 ? { exhausted } : {}),
-        ...(chunkIndex === 0 && namedGroups > 0 ? { groupNames: names } : {}),
+        // Every frame, unlike `exhausted`. The frames are cut by byte budget and not by
+        // chat, so a group's messages can land in the fourth one alone: a map sent once
+        // would name whichever groups happened to open the dump and leave the rest as
+        // jids. It is one short string per group against a 512 KB budget.
+        ...(namedGroups > 0 ? { groupNames: names } : {}),
       };
       chunkIndex += 1;
       await this.sendToWebhook({

@@ -6103,7 +6103,7 @@ describe("BaileysConnection", () => {
     // A dump strips `groupName` from the messages, so without this every imported group
     // reaches the client under its own jid and stays that way until somebody writes in it.
     describe("what the groups are called", () => {
-      it("carries the subjects on the first frame only", async () => {
+      it("carries the subjects on every frame, not just the first", async () => {
         const previousBudget = config.webhook.historyFrameMaxBytes;
         config.webhook.historyFrameMaxBytes = 512;
 
@@ -6125,7 +6125,9 @@ describe("BaileysConnection", () => {
           expect(payloads[0].groupNames).toEqual({
             "120363418525571303@g.us": "Obra da casa",
           });
-          expect(payloads[1].groupNames).toBeUndefined();
+          expect(payloads[1].groupNames).toEqual({
+            "120363418525571303@g.us": "Obra da casa",
+          });
         } finally {
           config.webhook.historyFrameMaxBytes = previousBudget;
         }

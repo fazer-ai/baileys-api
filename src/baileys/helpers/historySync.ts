@@ -353,7 +353,8 @@ export interface BaileysHistoryFramePayload {
   // frame only: it describes the answer, not the slice of messages this frame
   // happens to carry.
   exhausted?: string[];
-  // Group subject by jid, for the groups this dump names. First frame only, and
-  // for the same reason: it describes the dump, not the slice.
+  // Group subject by jid, for the groups this dump names. On every frame, unlike
+  // `exhausted`: frames are cut by byte budget and not by chat, so the frame a
+  // group's messages land in is not the frame its name would have arrived on.
   groupNames?: Record<string, string>;
 }
