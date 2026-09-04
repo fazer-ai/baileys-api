@@ -118,6 +118,35 @@ export function exhaustedChats(
     .filter((id): id is string => Boolean(id));
 }
 
+// The subject of every group in this dump, by jid.
+//
+// A dump strips `groupName` from the messages (see the History translator on the client
+// side), so an imported group has nothing to be called by and lands under its own jid --
+// `120363418525571303` where a name belongs. The subject is in the dump the whole time,
+// on the chat records, which we otherwise drop.
+//
+// Dropping them is still right for everything else they carry: on a mature account the
+// contacts and participant lists are a second dump the size of the first. A subject is one
+// short string per chat, and it is the difference between a readable inbox and a wall of
+// numbers.
+//
+// Groups only. A 1:1 chat record also has a `name`, and it is the push name of the peer --
+// which the messages already carry, per message, and which the client resolves there with
+// rules of its own about when it may overwrite a stored contact.
+export function groupNames(
+  chats: { id?: string | null; name?: string | null }[],
+): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const chat of chats) {
+    const id = chat.id;
+    const name = chat.name?.trim();
+    if (id?.endsWith("@g.us") && name) {
+      names[id] = name;
+    }
+  }
+  return names;
+}
+
 // A history message key holds exactly what the protobuf defines: `remoteJid`,
 // `fromMe`, `id`, `participant`. The three fields a live key also carries --
 // `addressingMode`, `remoteJidAlt`, `participantAlt` -- are stamped by the live
@@ -324,4 +353,7 @@ export interface BaileysHistoryFramePayload {
   // frame only: it describes the answer, not the slice of messages this frame
   // happens to carry.
   exhausted?: string[];
+  // Group subject by jid, for the groups this dump names. First frame only, and
+  // for the same reason: it describes the dump, not the slice.
+  groupNames?: Record<string, string>;
 }

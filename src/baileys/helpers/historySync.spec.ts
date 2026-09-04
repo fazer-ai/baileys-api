@@ -3,6 +3,7 @@ import type { WAMessageKey } from "@whiskeysockets/baileys";
 import {
   chatLidPnPairs,
   exhaustedChats,
+  groupNames,
   historyFrames,
   lidPnIndex,
   NO_MORE_HISTORY,
@@ -405,5 +406,43 @@ describe("which chats WhatsApp says are finished", () => {
     expect(
       exhaustedChats([{ endOfHistoryTransferType: NO_MORE_HISTORY }]),
     ).toEqual([]);
+  });
+});
+
+describe("what the groups in a dump are called", () => {
+  it("names every group the chat records carry a subject for", () => {
+    expect(
+      groupNames([
+        { id: "120363418525571303@g.us", name: "Guichê Web + fazer.ai" },
+        { id: "120363422502290697@g.us", name: "Obra da casa" },
+      ]),
+    ).toEqual({
+      "120363418525571303@g.us": "Guichê Web + fazer.ai",
+      "120363422502290697@g.us": "Obra da casa",
+    });
+  });
+
+  // A 1:1 record also carries a `name`, and there it is the peer's push name. The
+  // messages already carry that per message, and the client applies its own rules about
+  // when a push name may overwrite a stored contact -- so taking it from here would put a
+  // second, ruleless writer on the same field.
+  it("leaves the name on a one-to-one record alone", () => {
+    expect(
+      groupNames([
+        { id: "5511999@s.whatsapp.net", name: "June" },
+        { id: "5511888@lid", name: "July" },
+      ]),
+    ).toEqual({});
+  });
+
+  it("skips a group the dump names with nothing", () => {
+    expect(
+      groupNames([
+        { id: "120363418525571303@g.us", name: "   " },
+        { id: "120363422502290697@g.us", name: null },
+        { id: "120363424043869415@g.us" },
+        { name: "sem jid" },
+      ]),
+    ).toEqual({});
   });
 });

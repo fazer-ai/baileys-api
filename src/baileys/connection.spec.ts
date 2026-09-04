@@ -6100,6 +6100,70 @@ describe("BaileysConnection", () => {
       });
     });
 
+    // A dump strips `groupName` from the messages, so without this every imported group
+    // reaches the client under its own jid and stays that way until somebody writes in it.
+    describe("what the groups are called", () => {
+      it("carries the subjects on the first frame only", async () => {
+        const previousBudget = config.webhook.historyFrameMaxBytes;
+        config.webhook.historyFrameMaxBytes = 512;
+
+        try {
+          await connection.connect();
+          const handler = mockEventHandlers.get("messaging-history.set")!;
+
+          await handler({
+            chats: [{ id: "120363418525571303@g.us", name: "Obra da casa" }],
+            contacts: [],
+            messages: Array.from({ length: 20 }, (_, i) =>
+              historyMessage(`ID-${i}`),
+            ),
+            syncType: 2,
+          });
+
+          const payloads = historyPayloads();
+          expect(payloads.length).toBeGreaterThan(1);
+          expect(payloads[0].groupNames).toEqual({
+            "120363418525571303@g.us": "Obra da casa",
+          });
+          expect(payloads[1].groupNames).toBeUndefined();
+        } finally {
+          config.webhook.historyFrameMaxBytes = previousBudget;
+        }
+      });
+
+      it("sends the subjects even when the dump carries no message", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "120363418525571303@g.us", name: "Obra da casa" }],
+          contacts: [],
+          messages: [],
+          syncType: 2,
+        });
+
+        const payloads = historyPayloads();
+        expect(payloads).toHaveLength(1);
+        expect(payloads[0].groupNames).toEqual({
+          "120363418525571303@g.us": "Obra da casa",
+        });
+      });
+
+      it("says nothing when the dump names no group", async () => {
+        await connection.connect();
+        const handler = mockEventHandlers.get("messaging-history.set")!;
+
+        await handler({
+          chats: [{ id: "5511888@lid", name: "June" }],
+          contacts: [],
+          messages: [historyMessage("ID-1")],
+          syncType: 2,
+        });
+
+        expect(historyPayloads()[0].groupNames).toBeUndefined();
+      });
+    });
+
     it("splits a large dump into frames under the budget, numbered in order", async () => {
       const previousBudget = config.webhook.historyFrameMaxBytes;
       config.webhook.historyFrameMaxBytes = 2_048;

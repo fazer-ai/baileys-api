@@ -29,6 +29,7 @@ import {
   type BaileysHistoryFramePayload,
   chatLidPnPairs,
   exhaustedChats,
+  groupNames,
   historyFrames,
   lidPnIndex,
   restoreAddressing,
@@ -3378,18 +3379,23 @@ export class BaileysConnection {
     // chat record at all, so an empty list here means "no news", never "there
     // is more".
     const exhausted = exhaustedChats(data.chats ?? []);
-    if (messages.length === 0 && exhausted.length === 0) {
+    // The other thing worth keeping from the chat records: what the groups in this dump
+    // are called. Without it every imported group lands under its own jid.
+    const names = groupNames(data.chats ?? []);
+    const namedGroups = Object.keys(names).length;
+    if (messages.length === 0 && exhausted.length === 0 && namedGroups === 0) {
       return;
     }
 
     logger.info(
-      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s exhausted=%d",
+      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s exhausted=%d groupNames=%d",
       this.phoneNumber,
       data.syncType ?? "-",
       messages.length,
       data.isLatest ?? "-",
       data.progress ?? "-",
       exhausted.length,
+      namedGroups,
     );
 
     let chunkIndex = 0;
@@ -3404,6 +3410,7 @@ export class BaileysConnection {
         isLatest: data.isLatest,
         chunkIndex,
         ...(chunkIndex === 0 && exhausted.length > 0 ? { exhausted } : {}),
+        ...(chunkIndex === 0 && namedGroups > 0 ? { groupNames: names } : {}),
       };
       chunkIndex += 1;
       await this.sendToWebhook({
@@ -3426,6 +3433,7 @@ export class BaileysConnection {
           isLatest: data.isLatest,
           chunkIndex: 0,
           exhausted,
+          ...(namedGroups > 0 ? { groupNames: names } : {}),
         },
       });
     }
