@@ -3,6 +3,7 @@ import type { WAMessageKey } from "@whiskeysockets/baileys";
 import {
   chatLidPnPairs,
   exhaustedChats,
+  groupNames,
   historyFrames,
   lidPnIndex,
   NO_MORE_HISTORY,
@@ -103,7 +104,7 @@ describe("historyFrames", () => {
     const frames = [...historyFrames(messages, 512 * 1024)];
 
     expect(frames).toHaveLength(1);
-    expect(frames[0]).toHaveLength(2);
+    expect(frames[0].messages).toHaveLength(2);
   });
 
   it("splits so no frame exceeds the budget, and loses no message", () => {
@@ -121,7 +122,9 @@ describe("historyFrames", () => {
       );
     }
 
-    const ids = frames.flat().map((message) => message.key.id);
+    const ids = frames
+      .flatMap((frame) => frame.messages)
+      .map((message) => message.key.id);
     expect(ids).toEqual(messages.map((message) => message.key.id));
   });
 
@@ -134,7 +137,7 @@ describe("historyFrames", () => {
 
     const frames = [...historyFrames(messages, 1_024)];
 
-    expect(frames.map((frame) => frame.map((m) => m.key.id))).toEqual([
+    expect(frames.map((frame) => frame.messages.map((m) => m.key.id))).toEqual([
       ["SMALL"],
       ["HUGE"],
       ["SMALL-2"],
@@ -151,7 +154,7 @@ describe("historyFrames", () => {
     const frames = [...historyFrames(messages, 8_192)];
 
     expect(frames).toHaveLength(1);
-    expect(frames[0]).toHaveLength(10);
+    expect(frames[0].messages).toHaveLength(10);
   });
 });
 
@@ -405,5 +408,108 @@ describe("which chats WhatsApp says are finished", () => {
     expect(
       exhaustedChats([{ endOfHistoryTransferType: NO_MORE_HISTORY }]),
     ).toEqual([]);
+  });
+});
+
+describe("what the groups in a dump are called", () => {
+  it("names every group the chat records carry a subject for", () => {
+    expect(
+      groupNames([
+        { id: "120363418525571303@g.us", name: "Guichê Web + fazer.ai" },
+        { id: "120363422502290697@g.us", name: "Obra da casa" },
+      ]),
+    ).toEqual({
+      "120363418525571303@g.us": "Guichê Web + fazer.ai",
+      "120363422502290697@g.us": "Obra da casa",
+    });
+  });
+
+  // A 1:1 record also carries a `name`, and there it is the peer's push name. The
+  // messages already carry that per message, and the client applies its own rules about
+  // when a push name may overwrite a stored contact -- so taking it from here would put a
+  // second, ruleless writer on the same field.
+  it("leaves the name on a one-to-one record alone", () => {
+    expect(
+      groupNames([
+        { id: "5511999@s.whatsapp.net", name: "June" },
+        { id: "5511888@lid", name: "July" },
+      ]),
+    ).toEqual({});
+  });
+
+  it("skips a group the dump names with nothing", () => {
+    expect(
+      groupNames([
+        { id: "120363418525571303@g.us", name: "   " },
+        { id: "120363422502290697@g.us", name: null },
+        { id: "120363424043869415@g.us" },
+        { name: "sem jid" },
+      ]),
+    ).toEqual({});
+  });
+});
+
+describe("the names a frame carries", () => {
+  const GROUP = "120363418525571303@g.us";
+  const OTHER = "120363422502290697@g.us";
+  const named = { [GROUP]: "Obra da casa", [OTHER]: "Outro grupo" };
+
+  function groupMessage(id: string, jid: string, body = "hi") {
+    return {
+      key: { id, remoteJid: jid, fromMe: false },
+      messageTimestamp: 1_700_000_000,
+      message: { conversation: body },
+    };
+  }
+
+  it("names only the chats the frame is addressed to", () => {
+    const frames = [
+      ...historyFrames(
+        [groupMessage("A", GROUP), groupMessage("B", "5511999@s.whatsapp.net")],
+        100_000,
+        named,
+      ),
+    ];
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].groupNames).toEqual({ [GROUP]: "Obra da casa" });
+  });
+
+  it("carries nothing for a frame that speaks about no named group", () => {
+    const frames = [
+      ...historyFrames(
+        [groupMessage("A", "5511999@s.whatsapp.net")],
+        100_000,
+        named,
+      ),
+    ];
+
+    expect(frames[0].groupNames).toEqual({});
+  });
+
+  // A frame packed to the budget with messages from many distinct groups would otherwise
+  // carry an entry per group on top of a budget already spent.
+  it("charges the names against the same budget as the messages", () => {
+    const maxBytes = 4_096;
+    const names: Record<string, string> = {};
+    const messages = Array.from({ length: 200 }, (_, i) => {
+      const jid = `12036340000000000${i}@g.us`;
+      names[jid] = `Grupo com um nome de tamanho realista ${i}`;
+      return groupMessage(`ID-${i}`, jid, "x".repeat(100));
+    });
+
+    const frames = [...historyFrames(messages, maxBytes, names)];
+
+    expect(frames.length).toBeGreaterThan(1);
+    for (const frame of frames) {
+      const bytes = Buffer.byteLength(
+        JSON.stringify({
+          messages: frame.messages,
+          groupNames: frame.groupNames,
+        }),
+        "utf8",
+      );
+      expect(bytes).toBeLessThan(maxBytes + 1_024);
+    }
   });
 });

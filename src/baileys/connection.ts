@@ -29,6 +29,7 @@ import {
   type BaileysHistoryFramePayload,
   chatLidPnPairs,
   exhaustedChats,
+  groupNames,
   historyFrames,
   lidPnIndex,
   restoreAddressing,
@@ -3378,32 +3379,47 @@ export class BaileysConnection {
     // chat record at all, so an empty list here means "no news", never "there
     // is more".
     const exhausted = exhaustedChats(data.chats ?? []);
+    // The other thing worth keeping from the chat records: what the groups in this dump
+    // are called. Without it every imported group lands under its own jid.
+    const names = groupNames(data.chats ?? []);
+    const namedGroups = Object.keys(names).length;
     if (messages.length === 0 && exhausted.length === 0) {
       return;
     }
 
     logger.info(
-      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s exhausted=%d",
+      "[%s] [handleMessagingHistorySet] syncType=%s messages=%d isLatest=%s progress=%s exhausted=%d groupNames=%d",
       this.phoneNumber,
       data.syncType ?? "-",
       messages.length,
       data.isLatest ?? "-",
       data.progress ?? "-",
       exhausted.length,
+      namedGroups,
     );
 
     let chunkIndex = 0;
     for (const frame of historyFrames(
       messages,
       config.webhook.historyFrameMaxBytes,
+      names,
     )) {
+      const framedNames = frame.groupNames;
       const payload: BaileysHistoryFramePayload = {
-        messages: frame,
+        messages: frame.messages,
         syncType: data.syncType,
         progress: data.progress,
         isLatest: data.isLatest,
         chunkIndex,
         ...(chunkIndex === 0 && exhausted.length > 0 ? { exhausted } : {}),
+        // Per frame, unlike `exhausted`, and scoped to the frame's own chats. The frames
+        // are cut by byte budget and not by chat, so a group's messages can land in the
+        // fourth one alone and a map sent once would name whichever groups happened to
+        // open the dump. Sending the whole map on each one instead would put a payload on
+        // every frame that grows with the account.
+        ...(Object.keys(framedNames).length > 0
+          ? { groupNames: framedNames }
+          : {}),
       };
       chunkIndex += 1;
       await this.sendToWebhook({
