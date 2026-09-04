@@ -147,6 +147,27 @@ export function groupNames(
   return names;
 }
 
+// The slice of `names` that this frame's own messages are addressed to.
+//
+// A frame is cut by byte budget and not by chat, so which groups it speaks about is not
+// known until it exists -- and shipping the account's whole map on each one puts a payload
+// on every frame that grows with the account rather than with the frame. Bounded here to
+// the frame's own chats, so the bytes that ride along with a slice are proportional to
+// what is in it.
+export function groupNamesIn<T extends HistoryMessage>(
+  frame: readonly T[],
+  names: Record<string, string>,
+): Record<string, string> {
+  const framed: Record<string, string> = {};
+  for (const { key } of frame) {
+    const jid = key?.remoteJid;
+    if (jid && names[jid]) {
+      framed[jid] = names[jid];
+    }
+  }
+  return framed;
+}
+
 // A history message key holds exactly what the protobuf defines: `remoteJid`,
 // `fromMe`, `id`, `participant`. The three fields a live key also carries --
 // `addressingMode`, `remoteJidAlt`, `participantAlt` -- are stamped by the live
@@ -353,8 +374,10 @@ export interface BaileysHistoryFramePayload {
   // frame only: it describes the answer, not the slice of messages this frame
   // happens to carry.
   exhausted?: string[];
-  // Group subject by jid, for the groups this dump names. On every frame, unlike
-  // `exhausted`: frames are cut by byte budget and not by chat, so the frame a
-  // group's messages land in is not the frame its name would have arrived on.
+  // Group subject by jid, for the groups THIS frame is addressed to. Per frame and
+  // not once per dump, unlike `exhausted`: frames are cut by byte budget and not by
+  // chat, so the frame a group's messages land in is not the frame a single copy
+  // would have arrived on. Scoped to the frame's own chats so the payload grows with
+  // the slice rather than with the account.
   groupNames?: Record<string, string>;
 }

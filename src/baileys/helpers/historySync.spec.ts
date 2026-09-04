@@ -4,6 +4,7 @@ import {
   chatLidPnPairs,
   exhaustedChats,
   groupNames,
+  groupNamesIn,
   historyFrames,
   lidPnIndex,
   NO_MORE_HISTORY,
@@ -444,5 +445,30 @@ describe("what the groups in a dump are called", () => {
         { name: "sem jid" },
       ]),
     ).toEqual({});
+  });
+});
+
+describe("the names a frame carries", () => {
+  const named = {
+    "120363418525571303@g.us": "Obra da casa",
+    "120363422502290697@g.us": "Outro grupo",
+  };
+
+  it("keeps the names of the chats this frame is addressed to", () => {
+    const frame = [
+      { key: { remoteJid: "120363418525571303@g.us" } },
+      { key: { remoteJid: "5511999@s.whatsapp.net" } },
+    ];
+
+    expect(groupNamesIn(frame, named)).toEqual({
+      "120363418525571303@g.us": "Obra da casa",
+    });
+  });
+
+  it("carries nothing for a frame that speaks about no named group", () => {
+    expect(
+      groupNamesIn([{ key: { remoteJid: "5511999@s.whatsapp.net" } }], named),
+    ).toEqual({});
+    expect(groupNamesIn([{ key: undefined }], named)).toEqual({});
   });
 });

@@ -30,6 +30,7 @@ import {
   chatLidPnPairs,
   exhaustedChats,
   groupNames,
+  groupNamesIn,
   historyFrames,
   lidPnIndex,
   restoreAddressing,
@@ -3383,7 +3384,7 @@ export class BaileysConnection {
     // are called. Without it every imported group lands under its own jid.
     const names = groupNames(data.chats ?? []);
     const namedGroups = Object.keys(names).length;
-    if (messages.length === 0 && exhausted.length === 0 && namedGroups === 0) {
+    if (messages.length === 0 && exhausted.length === 0) {
       return;
     }
 
@@ -3403,6 +3404,7 @@ export class BaileysConnection {
       messages,
       config.webhook.historyFrameMaxBytes,
     )) {
+      const framedNames = groupNamesIn(frame, names);
       const payload: BaileysHistoryFramePayload = {
         messages: frame,
         syncType: data.syncType,
@@ -3410,11 +3412,14 @@ export class BaileysConnection {
         isLatest: data.isLatest,
         chunkIndex,
         ...(chunkIndex === 0 && exhausted.length > 0 ? { exhausted } : {}),
-        // Every frame, unlike `exhausted`. The frames are cut by byte budget and not by
-        // chat, so a group's messages can land in the fourth one alone: a map sent once
-        // would name whichever groups happened to open the dump and leave the rest as
-        // jids. It is one short string per group against a 512 KB budget.
-        ...(namedGroups > 0 ? { groupNames: names } : {}),
+        // Per frame, unlike `exhausted`, and scoped to the frame's own chats. The frames
+        // are cut by byte budget and not by chat, so a group's messages can land in the
+        // fourth one alone and a map sent once would name whichever groups happened to
+        // open the dump. Sending the whole map on each one instead would put a payload on
+        // every frame that grows with the account.
+        ...(Object.keys(framedNames).length > 0
+          ? { groupNames: framedNames }
+          : {}),
       };
       chunkIndex += 1;
       await this.sendToWebhook({
@@ -3437,7 +3442,6 @@ export class BaileysConnection {
           isLatest: data.isLatest,
           chunkIndex: 0,
           exhausted,
-          ...(namedGroups > 0 ? { groupNames: names } : {}),
         },
       });
     }

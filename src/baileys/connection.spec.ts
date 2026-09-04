@@ -6103,7 +6103,25 @@ describe("BaileysConnection", () => {
     // A dump strips `groupName` from the messages, so without this every imported group
     // reaches the client under its own jid and stays that way until somebody writes in it.
     describe("what the groups are called", () => {
-      it("carries the subjects on every frame, not just the first", async () => {
+      const GROUP = "120363418525571303@g.us";
+      const PARTICIPANT = "5511777@s.whatsapp.net";
+
+      function groupMessage(id: string) {
+        return {
+          key: {
+            id,
+            remoteJid: GROUP,
+            fromMe: false,
+            participant: PARTICIPANT,
+          },
+          messageTimestamp: 1_700_000_000,
+          message: { conversation: `in the group, ${id}` },
+        };
+      }
+
+      // The frame a group's messages land in is not the frame a single copy of the map
+      // would have arrived on, so every frame carries the names for its own chats.
+      it("carries the subjects on every frame that speaks about the group", async () => {
         const previousBudget = config.webhook.historyFrameMaxBytes;
         config.webhook.historyFrameMaxBytes = 512;
 
@@ -6112,42 +6130,42 @@ describe("BaileysConnection", () => {
           const handler = mockEventHandlers.get("messaging-history.set")!;
 
           await handler({
-            chats: [{ id: "120363418525571303@g.us", name: "Obra da casa" }],
+            chats: [{ id: GROUP, name: "Obra da casa" }],
             contacts: [],
             messages: Array.from({ length: 20 }, (_, i) =>
-              historyMessage(`ID-${i}`),
+              groupMessage(`ID-${i}`),
             ),
             syncType: 2,
           });
 
           const payloads = historyPayloads();
           expect(payloads.length).toBeGreaterThan(1);
-          expect(payloads[0].groupNames).toEqual({
-            "120363418525571303@g.us": "Obra da casa",
-          });
-          expect(payloads[1].groupNames).toEqual({
-            "120363418525571303@g.us": "Obra da casa",
-          });
+          for (const payload of payloads) {
+            expect(payload.groupNames).toEqual({ [GROUP]: "Obra da casa" });
+          }
         } finally {
           config.webhook.historyFrameMaxBytes = previousBudget;
         }
       });
 
-      it("sends the subjects even when the dump carries no message", async () => {
+      // And only for its own chats: shipping the account's whole map on each frame puts a
+      // payload on every one of them that grows with the account rather than the slice.
+      it("leaves out a group this frame says nothing about", async () => {
         await connection.connect();
         const handler = mockEventHandlers.get("messaging-history.set")!;
 
         await handler({
-          chats: [{ id: "120363418525571303@g.us", name: "Obra da casa" }],
+          chats: [
+            { id: GROUP, name: "Obra da casa" },
+            { id: "120363422502290697@g.us", name: "Outro grupo" },
+          ],
           contacts: [],
-          messages: [],
+          messages: [groupMessage("ID-1")],
           syncType: 2,
         });
 
-        const payloads = historyPayloads();
-        expect(payloads).toHaveLength(1);
-        expect(payloads[0].groupNames).toEqual({
-          "120363418525571303@g.us": "Obra da casa",
+        expect(historyPayloads()[0].groupNames).toEqual({
+          [GROUP]: "Obra da casa",
         });
       });
 
