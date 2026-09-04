@@ -62,6 +62,13 @@ export function stripHistoryPayload<T>(value: T): T {
 // array punctuation the frame is wrapped in lands on top of it, which is a
 // couple of kilobytes on a full frame.
 //
+// Each frame comes with the subjects of the groups its own messages are addressed to, and
+// those are charged against the same budget. Both halves of that matter. Per frame,
+// because frames are cut by byte budget and not by chat, so the frame a group's messages
+// land in is not the frame a single copy of the map would have arrived on. Charged,
+// because a frame packed with messages from many distinct groups would otherwise carry an
+// entry per group on top of a budget already spent.
+//
 // A generator, not an array: the caller awaits a POST between frames, so the
 // stripping and sizing of the next frame happens after the event loop has had
 // a turn. Bun runs one thread, and a whole dump serialized in one go freezes
@@ -70,30 +77,46 @@ export function stripHistoryPayload<T>(value: T): T {
 // Budget is bytes rather than a message count because a text message and a
 // photo differ by orders of magnitude. A single message larger than the budget
 // still goes out on its own -- there is nothing smaller to split it into.
-export function* historyFrames<T>(
+export function* historyFrames<T extends HistoryMessage>(
   messages: readonly T[],
   maxBytes: number,
-): Generator<T[]> {
+  names: Record<string, string> = {},
+): Generator<HistoryFrame<T>> {
   let frame: T[] = [];
+  let framed: Record<string, string> = {};
   let frameBytes = 0;
 
   for (const message of messages) {
     const stripped = stripHistoryPayload(message);
     const size = Buffer.byteLength(JSON.stringify(stripped) ?? "null", "utf8");
+    const jid = stripped.key?.remoteJid ?? undefined;
+    const name = jid ? names[jid] : undefined;
+    // The name rides along only the first time its chat appears in a frame, so it is
+    // charged once and only where it is actually sent.
+    const cost = (carried: Record<string, string>) =>
+      size + (jid && name && !(jid in carried) ? entryBytes(jid, name) : 0);
 
-    if (frame.length > 0 && frameBytes + size > maxBytes) {
-      yield frame;
+    if (frame.length > 0 && frameBytes + cost(framed) > maxBytes) {
+      yield { messages: frame, groupNames: framed };
       frame = [];
+      framed = {};
       frameBytes = 0;
     }
 
+    frameBytes += cost(framed);
+    if (jid && name) {
+      framed[jid] = name;
+    }
     frame.push(stripped);
-    frameBytes += size;
   }
 
   if (frame.length > 0) {
-    yield frame;
+    yield { messages: frame, groupNames: framed };
   }
+}
+
+function entryBytes(jid: string, name: string): number {
+  return Buffer.byteLength(JSON.stringify({ [jid]: name }), "utf8");
 }
 
 // The chat is done: WhatsApp holds nothing older than what it just sent. Named
@@ -145,27 +168,6 @@ export function groupNames(
     }
   }
   return names;
-}
-
-// The slice of `names` that this frame's own messages are addressed to.
-//
-// A frame is cut by byte budget and not by chat, so which groups it speaks about is not
-// known until it exists -- and shipping the account's whole map on each one puts a payload
-// on every frame that grows with the account rather than with the frame. Bounded here to
-// the frame's own chats, so the bytes that ride along with a slice are proportional to
-// what is in it.
-export function groupNamesIn<T extends HistoryMessage>(
-  frame: readonly T[],
-  names: Record<string, string>,
-): Record<string, string> {
-  const framed: Record<string, string> = {};
-  for (const { key } of frame) {
-    const jid = key?.remoteJid;
-    if (jid && names[jid]) {
-      framed[jid] = names[jid];
-    }
-  }
-  return framed;
 }
 
 // A history message key holds exactly what the protobuf defines: `remoteJid`,
@@ -356,6 +358,12 @@ export function restoreAddressing<T extends HistoryMessage>(
 // lists Baileys ships alongside the messages are dropped: nothing reads them,
 // and on a mature account they are a second dump the size of the first. The
 // chats are dropped too, except for the one bit above.
+// One frame: its messages and the subjects of the groups they are addressed to.
+export interface HistoryFrame<T> {
+  messages: T[];
+  groupNames: Record<string, string>;
+}
+
 export interface BaileysHistoryFramePayload {
   messages: proto.IWebMessageInfo[];
   // proto.HistorySync.HistorySyncType. Decides whether the dump is an offline

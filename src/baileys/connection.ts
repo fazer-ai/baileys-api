@@ -30,7 +30,6 @@ import {
   chatLidPnPairs,
   exhaustedChats,
   groupNames,
-  groupNamesIn,
   historyFrames,
   lidPnIndex,
   restoreAddressing,
@@ -3403,10 +3402,11 @@ export class BaileysConnection {
     for (const frame of historyFrames(
       messages,
       config.webhook.historyFrameMaxBytes,
+      names,
     )) {
-      const framedNames = groupNamesIn(frame, names);
+      const framedNames = frame.groupNames;
       const payload: BaileysHistoryFramePayload = {
-        messages: frame,
+        messages: frame.messages,
         syncType: data.syncType,
         progress: data.progress,
         isLatest: data.isLatest,

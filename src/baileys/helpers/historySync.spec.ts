@@ -4,7 +4,6 @@ import {
   chatLidPnPairs,
   exhaustedChats,
   groupNames,
-  groupNamesIn,
   historyFrames,
   lidPnIndex,
   NO_MORE_HISTORY,
@@ -105,7 +104,7 @@ describe("historyFrames", () => {
     const frames = [...historyFrames(messages, 512 * 1024)];
 
     expect(frames).toHaveLength(1);
-    expect(frames[0]).toHaveLength(2);
+    expect(frames[0].messages).toHaveLength(2);
   });
 
   it("splits so no frame exceeds the budget, and loses no message", () => {
@@ -123,7 +122,9 @@ describe("historyFrames", () => {
       );
     }
 
-    const ids = frames.flat().map((message) => message.key.id);
+    const ids = frames
+      .flatMap((frame) => frame.messages)
+      .map((message) => message.key.id);
     expect(ids).toEqual(messages.map((message) => message.key.id));
   });
 
@@ -136,7 +137,7 @@ describe("historyFrames", () => {
 
     const frames = [...historyFrames(messages, 1_024)];
 
-    expect(frames.map((frame) => frame.map((m) => m.key.id))).toEqual([
+    expect(frames.map((frame) => frame.messages.map((m) => m.key.id))).toEqual([
       ["SMALL"],
       ["HUGE"],
       ["SMALL-2"],
@@ -153,7 +154,7 @@ describe("historyFrames", () => {
     const frames = [...historyFrames(messages, 8_192)];
 
     expect(frames).toHaveLength(1);
-    expect(frames[0]).toHaveLength(10);
+    expect(frames[0].messages).toHaveLength(10);
   });
 });
 
@@ -449,26 +450,66 @@ describe("what the groups in a dump are called", () => {
 });
 
 describe("the names a frame carries", () => {
-  const named = {
-    "120363418525571303@g.us": "Obra da casa",
-    "120363422502290697@g.us": "Outro grupo",
-  };
+  const GROUP = "120363418525571303@g.us";
+  const OTHER = "120363422502290697@g.us";
+  const named = { [GROUP]: "Obra da casa", [OTHER]: "Outro grupo" };
 
-  it("keeps the names of the chats this frame is addressed to", () => {
-    const frame = [
-      { key: { remoteJid: "120363418525571303@g.us" } },
-      { key: { remoteJid: "5511999@s.whatsapp.net" } },
+  function groupMessage(id: string, jid: string, body = "hi") {
+    return {
+      key: { id, remoteJid: jid, fromMe: false },
+      messageTimestamp: 1_700_000_000,
+      message: { conversation: body },
+    };
+  }
+
+  it("names only the chats the frame is addressed to", () => {
+    const frames = [
+      ...historyFrames(
+        [groupMessage("A", GROUP), groupMessage("B", "5511999@s.whatsapp.net")],
+        100_000,
+        named,
+      ),
     ];
 
-    expect(groupNamesIn(frame, named)).toEqual({
-      "120363418525571303@g.us": "Obra da casa",
-    });
+    expect(frames).toHaveLength(1);
+    expect(frames[0].groupNames).toEqual({ [GROUP]: "Obra da casa" });
   });
 
   it("carries nothing for a frame that speaks about no named group", () => {
-    expect(
-      groupNamesIn([{ key: { remoteJid: "5511999@s.whatsapp.net" } }], named),
-    ).toEqual({});
-    expect(groupNamesIn([{ key: undefined }], named)).toEqual({});
+    const frames = [
+      ...historyFrames(
+        [groupMessage("A", "5511999@s.whatsapp.net")],
+        100_000,
+        named,
+      ),
+    ];
+
+    expect(frames[0].groupNames).toEqual({});
+  });
+
+  // A frame packed to the budget with messages from many distinct groups would otherwise
+  // carry an entry per group on top of a budget already spent.
+  it("charges the names against the same budget as the messages", () => {
+    const maxBytes = 4_096;
+    const names: Record<string, string> = {};
+    const messages = Array.from({ length: 200 }, (_, i) => {
+      const jid = `12036340000000000${i}@g.us`;
+      names[jid] = `Grupo com um nome de tamanho realista ${i}`;
+      return groupMessage(`ID-${i}`, jid, "x".repeat(100));
+    });
+
+    const frames = [...historyFrames(messages, maxBytes, names)];
+
+    expect(frames.length).toBeGreaterThan(1);
+    for (const frame of frames) {
+      const bytes = Buffer.byteLength(
+        JSON.stringify({
+          messages: frame.messages,
+          groupNames: frame.groupNames,
+        }),
+        "utf8",
+      );
+      expect(bytes).toBeLessThan(maxBytes + 1_024);
+    }
   });
 });
