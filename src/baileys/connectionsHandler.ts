@@ -98,12 +98,14 @@ export class BaileysConnectionsHandler {
     };
   }
 
-  // Send-side health for one connection. Ages, never absolute timestamps:
-  // lastTrafficAt is a performance.now() reading, which is monotonic and
-  // meaningless to a client.
-  sendHealth(phoneNumber: string): {
+  // Send- and receive-side health for one connection. Ages, never absolute
+  // timestamps: lastTrafficAt is a performance.now() reading, which is
+  // monotonic and meaningless to a client.
+  health(phoneNumber: string): {
     connected: boolean;
     sendState: "unknown" | "ok" | "degraded" | "stalled";
+    receiveState: "pending" | "ok" | "stalled";
+    openForMs: number | null;
     consecutiveSendTimeouts: number;
     lastTrafficAgoMs: number | null;
     lastSendCompletedAgoMs: number | null;
@@ -122,6 +124,8 @@ export class BaileysConnectionsHandler {
       // claim connectivity.
       connected: connection.isOpen,
       sendState: connection.sendState,
+      receiveState: connection.receiveState,
+      openForMs: connection.openForMs,
       consecutiveSendTimeouts: connection.consecutiveSendTimeouts,
       lastTrafficAgoMs:
         connection.lastTrafficAt === null

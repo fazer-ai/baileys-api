@@ -4,6 +4,7 @@ import {
   describe,
   expect,
   it,
+  jest,
   mock,
   setSystemTime,
   spyOn,
@@ -15,7 +16,7 @@ const originalFetch = globalThis.fetch;
 
 import { createCipheriv, randomBytes } from "node:crypto";
 import * as baileysModule from "@whiskeysockets/baileys";
-import { WAMessageStatus } from "@whiskeysockets/baileys";
+import { DisconnectReason, WAMessageStatus } from "@whiskeysockets/baileys";
 import { proto as realProto } from "@whiskeysockets/baileys/WAProto/index.js";
 import { messageEditKey } from "@/baileys/helpers/decryptMessageEdit";
 import {
@@ -29,6 +30,7 @@ import * as sendStallStore from "@/cluster/sendStallStore";
 import config from "@/config";
 import { asyncSleep } from "@/helpers/asyncSleep";
 import { OperationTimeoutError } from "@/helpers/withTimeout";
+import logger from "@/lib/logger";
 import redis from "@/lib/redis";
 import {
   BaileysConnection,
@@ -6368,6 +6370,261 @@ describe("BaileysConnection", () => {
       const [payload] = historyPayloads();
       expect(payload.chats).toBeUndefined();
       expect(payload.contacts).toBeUndefined();
+    });
+  });
+
+  // Receive-side health. After every (re)connect WhatsApp drains the queue it
+  // held for this device and closes it with <ib><offline/>, which Baileys
+  // surfaces as connection.update { receivedPendingNotifications: true }. When
+  // the server is stuck behind a stanza it is waiting an ack for, that marker
+  // never comes and the socket is open but hears nothing -- the #404 failure.
+  describe("receive health", () => {
+    const STALL_MS = 120_000;
+    let makeSocket: ReturnType<typeof mock>;
+
+    beforeEach(async () => {
+      const baileys = (await import("@whiskeysockets/baileys")) as any;
+      makeSocket = baileys.default as ReturnType<typeof mock>;
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const emit = (data: Record<string, unknown>) =>
+      mockEventHandlers.get("connection.update")?.(data);
+
+    // Fake timers only once the socket exists: connect() itself awaits real
+    // timers, and the open is what starts the stall clock under test.
+    async function connectOpen() {
+      await connection.connect();
+      jest.useFakeTimers();
+      await emit({ connection: "open" });
+    }
+
+    const closed = (statusCode: number) => ({
+      connection: "close",
+      lastDisconnect: {
+        error: Object.assign(new Error("closed"), {
+          output: { statusCode, payload: { message: "closed" } },
+        }),
+      },
+    });
+
+    // The way a socket really gets replaced: it closes with a reconnectable
+    // code and the connection builds a new one in the background.
+    async function replaceSocketWith(close: ReturnType<typeof closed>) {
+      jest.useRealTimers();
+      const before = makeSocket.mock.calls.length;
+      await emit(close);
+      while (makeSocket.mock.calls.length === before) {
+        await new Promise((r) => setImmediate(r));
+      }
+    }
+    const replaceSocket = () =>
+      replaceSocketWith(closed(DisconnectReason.connectionClosed));
+
+    const receiveStallWarns = (warn: ReturnType<typeof spyOn>) =>
+      warn.mock.calls.filter((args: unknown[]) =>
+        String(args[0]).includes("receive stall"),
+      ).length;
+
+    it("is ok once the server finished delivering, and reports how long the socket has been open", async () => {
+      await connectOpen();
+      await emit({ receivedPendingNotifications: true });
+      jest.advanceTimersByTime(5_000);
+
+      expect(connection.receiveState).toBe("ok");
+      expect(connection.openForMs).toBeGreaterThanOrEqual(5_000);
+    });
+
+    // The bug this exists for: a deaf socket reported nothing but health.
+    it("turns stalled when the socket stays open without the marker", async () => {
+      await connectOpen();
+
+      jest.advanceTimersByTime(STALL_MS - 10_000);
+      expect(connection.receiveState).toBe("pending");
+
+      jest.advanceTimersByTime(20_000);
+      expect(connection.receiveState).toBe("stalled");
+      expect(connection.isOpen).toBe(true);
+    });
+
+    // CB:success awaits the prekey upload and a passive IQ before emitting
+    // `open`, so the offline marker can land first. Keyed to the socket, not to
+    // the open, it still counts.
+    it("counts a marker that arrived before the open", async () => {
+      await connection.connect();
+      jest.useFakeTimers();
+      await emit({ receivedPendingNotifications: true });
+      await emit({ connection: "open" });
+      jest.advanceTimersByTime(STALL_MS + 10_000);
+
+      expect(connection.receiveState).toBe("ok");
+    });
+
+    it("recovers when the marker arrives late, without restarting the open clock", async () => {
+      await connectOpen();
+      jest.advanceTimersByTime(STALL_MS + 10_000);
+      expect(connection.receiveState).toBe("stalled");
+
+      await emit({ receivedPendingNotifications: true });
+
+      expect(connection.receiveState).toBe("ok");
+      expect(connection.openForMs).toBeGreaterThanOrEqual(STALL_MS + 10_000);
+    });
+
+    // The point of the log line is a deployment running at `warn` that nobody
+    // polls, so it has to come from a timer, and only once per socket.
+    it("logs one warn when a socket turns stalled, with nobody reading the state", async () => {
+      const warn = spyOn(logger, "warn");
+      try {
+        await connectOpen();
+        jest.advanceTimersByTime(STALL_MS - 10_000);
+        expect(receiveStallWarns(warn)).toBe(0);
+
+        jest.advanceTimersByTime(STALL_MS * 4);
+        expect(receiveStallWarns(warn)).toBe(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("does not warn about a socket that received the marker", async () => {
+      const warn = spyOn(logger, "warn");
+      try {
+        await connectOpen();
+        await emit({ receivedPendingNotifications: true });
+        jest.advanceTimersByTime(STALL_MS * 5);
+        expect(receiveStallWarns(warn)).toBe(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // While the cause is still there every new socket comes back just as deaf,
+    // so recreating it here would turn a signal into a reconnect loop.
+    it("never recreates the socket on its own", async () => {
+      await connectOpen();
+      const socketsBefore = makeSocket.mock.calls.length;
+
+      jest.advanceTimersByTime(STALL_MS * 5);
+
+      expect(makeSocket.mock.calls.length).toBe(socketsBefore);
+      expect(connection.receiveState).toBe("stalled");
+    });
+
+    it("starts over on a replacement socket", async () => {
+      await connectOpen();
+      await emit({ receivedPendingNotifications: true });
+      jest.advanceTimersByTime(30_000);
+
+      await replaceSocket();
+      await emit({ connection: "open" });
+
+      expect(connection.receiveState).toBe("pending");
+      expect(connection.openForMs).toBeLessThan(30_000);
+    });
+
+    // A marker from the socket that was replaced says nothing about the one
+    // that is live now; the late event can still reach the handler it was
+    // registered with.
+    it("ignores a marker from the socket that was replaced", async () => {
+      await connectOpen();
+      const previousSocketHandler = mockEventHandlers.get("connection.update")!;
+      await replaceSocket();
+      jest.useFakeTimers();
+      await emit({ connection: "open" });
+
+      await previousSocketHandler({ receivedPendingNotifications: true });
+      jest.advanceTimersByTime(5_000);
+      expect(connection.receiveState).toBe("pending");
+
+      jest.advanceTimersByTime(STALL_MS);
+      expect(connection.receiveState).toBe("stalled");
+    });
+
+    // The stall clock counts time OPEN. A socket that never opened is an
+    // ordinary outage, already told apart by `connected: false`.
+    it("never stalls, nor warns about, a socket that never opened", async () => {
+      const warn = spyOn(logger, "warn");
+      try {
+        await connection.connect();
+        jest.useFakeTimers();
+        jest.advanceTimersByTime(STALL_MS * 5);
+
+        expect(connection.openForMs).toBeNull();
+        expect(connection.receiveState).toBe("pending");
+        expect(receiveStallWarns(warn)).toBe(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    // A connectionReplaced loop holds the reconnect in a backoff with the old
+    // socket already closed and no replacement built: the one window in which
+    // a closed socket's receive state is still observable. `beforeClose` runs on
+    // the open socket that is about to close.
+    async function closeIntoBackoff(
+      beforeClose: () => Promise<void> = async () => {},
+    ) {
+      const conflict = closed(DisconnectReason.connectionReplaced);
+      await connection.connect();
+      for (let i = 0; i < 4; i++) {
+        await emit({ connection: "open" });
+        await replaceSocketWith(conflict);
+      }
+      (asyncSleep as any).mockClear();
+      (asyncSleep as any).mockImplementationOnce(() => new Promise(() => {}));
+      jest.useFakeTimers();
+      await emit({ connection: "open" });
+      await beforeClose();
+      const sockets = makeSocket.mock.calls.length;
+      void emit(conflict);
+      while ((asyncSleep as any).mock.calls.length === 0) {
+        await Promise.resolve();
+      }
+      return () => {
+        expect(connection.isOpen).toBe(false);
+        expect(makeSocket.mock.calls.length).toBe(sockets);
+      };
+    }
+
+    // A socket that heard everything and then closed is not receiving any more;
+    // `ok` would vouch for a socket that no longer exists.
+    it("does not keep reporting ok for a socket that closed", async () => {
+      const stillInWindow = await closeIntoBackoff(async () => {
+        await emit({ receivedPendingNotifications: true });
+        expect(connection.receiveState).toBe("ok");
+      });
+
+      stillInWindow();
+      expect(connection.receiveState).toBe("pending");
+      expect(connection.openForMs).toBeNull();
+    });
+
+    // The stall timer armed by the open fires inside that window.
+    it("does not warn about a socket that closed before the stall timer fired", async () => {
+      const warn = spyOn(logger, "warn");
+      try {
+        const stillInWindow = await closeIntoBackoff();
+
+        jest.advanceTimersByTime(STALL_MS * 2);
+
+        stillInWindow();
+        expect(receiveStallWarns(warn)).toBe(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("stops counting open time once the socket closes", async () => {
+      await connectOpen();
+      jest.advanceTimersByTime(10_000);
+      await emit(closed(DisconnectReason.connectionClosed));
+
+      expect(connection.openForMs).toBeNull();
+      expect(connection.receiveState).toBe("pending");
     });
   });
 });

@@ -76,6 +76,8 @@ class MockBaileysConnection {
   lastOutgoingAckAt: number | null = null;
   consecutiveSendTimeouts = 0;
   sendState: "unknown" | "ok" | "degraded" | "stalled" = "unknown";
+  receiveState: "pending" | "ok" | "stalled" = "pending";
+  openForMs: number | null = null;
   // True by default because that is the only state from which the real
   // connection ever calls requestRestart: handleSendStall sets it immediately
   // before. Examples flip it to false to model recovery arriving while the
@@ -1478,9 +1480,9 @@ describe("BaileysConnectionsHandler", () => {
     });
   });
 
-  describe("#sendHealth", () => {
+  describe("#health", () => {
     it("returns null for a phone with no connection", () => {
-      expect(handler.sendHealth("+5511000000000")).toBeNull();
+      expect(handler.health("+5511000000000")).toBeNull();
     });
 
     it("reports ages, never raw timestamps", async () => {
@@ -1490,12 +1492,26 @@ describe("BaileysConnectionsHandler", () => {
       connection.consecutiveSendTimeouts = 2;
       connection.lastSendCompletedAt = Date.now() - 5_000;
 
-      const health = handler.sendHealth("+5511999999999");
+      const health = handler.health("+5511999999999");
 
       expect(health?.sendState).toBe("degraded");
       expect(health?.consecutiveSendTimeouts).toBe(2);
       expect(health?.lastSendCompletedAgoMs).toBeGreaterThanOrEqual(5_000);
       expect(health?.lastOutgoingAckAgoMs).toBeNull();
+    });
+
+    // The receive side comes from the connection's own verdict, so every client
+    // reads the same threshold instead of re-deriving it.
+    it("reports the connection's receive state and open age", async () => {
+      await handler.connect("+5511999999999", defaultOptions);
+      const connection = mockConnectionInstances.get("+5511999999999");
+      connection.receiveState = "stalled";
+      connection.openForMs = 130_000;
+
+      const health = handler.health("+5511999999999");
+
+      expect(health?.receiveState).toBe("stalled");
+      expect(health?.openForMs).toBe(130_000);
     });
 
     // Being registered here is not connectivity: a connection is registered
@@ -1506,10 +1522,10 @@ describe("BaileysConnectionsHandler", () => {
       await handler.connect("+5511999999999", defaultOptions);
       const connection = mockConnectionInstances.get("+5511999999999");
 
-      expect(handler.sendHealth("+5511999999999")?.connected).toBe(true);
+      expect(handler.health("+5511999999999")?.connected).toBe(true);
 
       connection.isOpen = false;
-      expect(handler.sendHealth("+5511999999999")?.connected).toBe(false);
+      expect(handler.health("+5511999999999")?.connected).toBe(false);
     });
   });
 

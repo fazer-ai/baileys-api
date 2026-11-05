@@ -404,7 +404,7 @@ const connectionsController = new Elysia({
   .get(
     "/:phoneNumber/health",
     ({ params, set }) => {
-      const health = baileys.sendHealth(params.phoneNumber);
+      const health = baileys.health(params.phoneNumber);
       if (!health) {
         set.status = 404;
         return { error: "Not Found", message: "Phone number not connected" };
@@ -414,12 +414,12 @@ const connectionsController = new Elysia({
     {
       params: phoneNumberParams,
       detail: {
-        summary: "Send-side health for this connection",
+        summary: "Send- and receive-side health for this connection",
         description:
-          "Whether this connection is actually able to send, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen.",
+          "Whether this connection is actually able to send and to receive, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen. `receiveState` is `stalled` when the socket has been open for 2 minutes and WhatsApp has not finished delivering the queue it held for this device: the socket sends, but no messages or receipts arrive. The API does not recreate the socket on its own for that state.",
         responses: {
           200: {
-            description: "Send-side health snapshot",
+            description: "Send- and receive-side health snapshot",
             content: {
               "application/json": {
                 schema: {
@@ -435,6 +435,19 @@ const connectionsController = new Elysia({
                           description:
                             "'unknown' means no send has been observed on this connection yet",
                           example: "ok",
+                        },
+                        receiveState: {
+                          type: "string",
+                          enum: ["pending", "ok", "stalled"],
+                          description:
+                            "'pending' until WhatsApp finishes delivering the offline queue to the current socket (receivedPendingNotifications), 'ok' once it has, 'stalled' when the socket has been open for 2 minutes without it. 'pending' while the socket is not open.",
+                          example: "ok",
+                        },
+                        openForMs: {
+                          type: "integer",
+                          nullable: true,
+                          description:
+                            "How long the current socket has been open; null when it is not open. Resets when the socket is replaced.",
                         },
                         consecutiveSendTimeouts: { type: "integer" },
                         lastTrafficAgoMs: {
