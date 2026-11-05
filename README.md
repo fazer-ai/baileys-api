@@ -119,7 +119,7 @@ This project includes a [`docker-compose.coolify.yml`](./docker-compose.coolify.
 
 The provided Docker Compose file is configured to work within a Coolify environment that has an existing Redis instance on the same network. The API will connect to this Redis instance using the `REDIS_URL` and `REDIS_PASSWORD` environment variables that you should provide in the environment variables section of the Coolify dashboard.
 
-The compose file also automates the creation of a default API key. This key is generated using `SERVICE_PASSWORD_64_DEFAULTAPIKEY` (an auto-generated Coolify service password) and can be retrieved from the service's environment variables in the Coolify dashboard.
+The compose file also sets up a default API key. Its value is `SERVICE_PASSWORD_64_DEFAULTAPIKEY` (an auto-generated Coolify service password), passed to the container as `BAILEYS_PROVIDER_DEFAULT_API_KEY`, and can be retrieved from the service's environment variables in the Coolify dashboard. The API registers it as a `user` key on every boot, logging only its fingerprint (the first 8 hex characters of its sha256).
 
 ### Other Docker Environments
 
@@ -130,7 +130,8 @@ The `docker-compose.coolify.yml` can be adapted for other Docker environments. Y
     - Alternatively, you can add a new Redis service definition to the `docker-compose.yml` file.
 2.  **API Key Management**:
     - In production/non-development environments, authentication is required. The `manage-api-keys.ts` script is used to create and manage API keys.
-    - The provided `docker-compose.coolify.yml` automatically creates a user API key using the command: `bun manage-api-keys create user ${SERVICE_PASSWORD_64_DEFAULTAPIKEY}`. You can adapt this or run the script manually within the container or a separate environment to generate your API keys.
+    - Set `BAILEYS_PROVIDER_DEFAULT_API_KEY` and the API registers that key with the `user` role at boot, keeping its role if it already exists (a key promoted to `admin` stays `admin`). This is what the provided `docker-compose.coolify.yml` does, so the key never appears on a command line. Deployments whose compose still runs `bun manage-api-keys create user <key> && bun start` keep working unchanged, and the key no longer shows up in their logs.
+    - You can also run the script manually within the container or a separate environment to manage your API keys. It prints a key only when it generated it; a key you pass is shown by its fingerprint.
     - To create an API key manually:
       ```bash
       bun scripts/manage-api-keys.ts create <role> [key]

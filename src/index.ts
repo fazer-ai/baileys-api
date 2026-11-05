@@ -2,6 +2,7 @@ import app from "@/app";
 import coordinator from "@/cluster";
 import config from "@/config";
 import { errorToString } from "@/helpers/errorToString";
+import { provisionDefaultApiKey } from "@/lib/apiKeys";
 import logger, { deepSanitizeObject } from "@/lib/logger";
 import { initializeRedis } from "@/lib/redis";
 import proxyApp from "@/proxy/app";
@@ -42,6 +43,9 @@ const bootstrap = async () => {
   // lease, and the proxy cannot resolve routes at all. Fail fast instead.
   try {
     await initializeRedis();
+    // Before the listener opens, so the deployment's own key authenticates
+    // from the first request.
+    await provisionDefaultApiKey();
     if (isProxy) {
       // The proxy holds no sockets and no media; it only needs Redis (route
       // resolution) and the pub/sub invalidation feed. A failed subscription

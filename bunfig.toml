@@ -1,3 +1,9 @@
+# `bun run` echoes each script's command line before running it, arguments
+# included. Older deployments boot with `bun manage-api-keys create user <key>`,
+# so the echo printed the API key as the first line of the container log.
+[run]
+silent = true
+
 [test]
 root = "src"
 preload = ["./src/test/preload.ts"]

@@ -119,7 +119,7 @@ Este projeto inclui um arquivo [`docker-compose.coolify.yml`](./docker-compose.c
 
 O arquivo Docker Compose fornecido está configurado para funcionar dentro de um ambiente Coolify que possui uma instância Redis existente na mesma rede. A API se conectará a esta instância Redis usando as variáveis de ambiente `REDIS_URL` e `REDIS_PASSWORD` que você deve fornecer na seção de variáveis de ambiente do painel do Coolify.
 
-O arquivo compose também automatiza a criação de uma chave de API padrão. Esta chave é gerada usando `SERVICE_PASSWORD_64_DEFAULTAPIKEY` (uma senha de serviço Coolify gerada automaticamente) e pode ser recuperada das variáveis de ambiente do serviço no painel do Coolify.
+O arquivo compose também configura uma chave de API padrão. O valor dela é `SERVICE_PASSWORD_64_DEFAULTAPIKEY` (uma senha de serviço Coolify gerada automaticamente), repassado ao contêiner como `BAILEYS_PROVIDER_DEFAULT_API_KEY`, e pode ser recuperado das variáveis de ambiente do serviço no painel do Coolify. A API registra essa chave com o papel `user` a cada boot e registra no log só o fingerprint dela (os 8 primeiros caracteres hex do sha256).
 
 ### Outros Ambientes Docker
 
@@ -130,7 +130,8 @@ O `docker-compose.coolify.yml` pode ser adaptado para outros ambientes Docker. V
     - Alternativamente, você pode adicionar uma nova definição de serviço Redis ao arquivo `docker-compose.yml`.
 2.  **Gerenciamento de Chaves de API**:
     - Em ambientes de produção/não desenvolvimento, a autenticação é necessária. O script `manage-api-keys.ts` é usado para criar e gerenciar chaves de API.
-    - O `docker-compose.coolify.yml` fornecido cria automaticamente uma chave de API de usuário usando o comando: `bun manage-api-keys create user ${SERVICE_PASSWORD_64_DEFAULTAPIKEY}`. Você pode adaptar isso ou executar o script manualmente dentro do contêiner ou em um ambiente separado para gerar suas chaves de API.
+    - Defina `BAILEYS_PROVIDER_DEFAULT_API_KEY` e a API registra essa chave com o papel `user` no boot, mantendo o papel se ela já existir (uma chave promovida a `admin` continua `admin`). É o que o `docker-compose.coolify.yml` fornecido faz, então a chave nunca aparece numa linha de comando. Deploys cujo compose ainda roda `bun manage-api-keys create user <chave> && bun start` continuam funcionando sem mudança, e a chave deixa de aparecer nos logs deles.
+    - Você também pode executar o script manualmente dentro do contêiner ou em um ambiente separado para gerenciar suas chaves de API. Ele só imprime uma chave quando foi ele que a gerou; uma chave que você passa aparece pelo fingerprint.
     - Para criar uma chave de API manualmente:
       ```bash
       bun scripts/manage-api-keys.ts create <role> [key]
