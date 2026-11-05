@@ -16,10 +16,10 @@ services:
       - MEDIA_CLEANUP_ENABLED=${MEDIA_CLEANUP_ENABLED:-true}
       - MEDIA_CLEANUP_INTERVAL_MS=${MEDIA_CLEANUP_INTERVAL_MS:-3600000}
       - MEDIA_MAX_AGE_HOURS=${MEDIA_MAX_AGE_HOURS:-24}
-    command:
-      - sh
-      - "-c"
-      - "bun manage-api-keys create user ${SERVICE_PASSWORD_64_DEFAULTAPIKEY} && bun start"
+    # The app registers BAILEYS_PROVIDER_DEFAULT_API_KEY itself at boot, so the
+    # key never sits on a command line (which the container log and
+    # `docker inspect` both show).
+    command: ["bun", "start"]
     restart: always
     healthcheck:
       test:
