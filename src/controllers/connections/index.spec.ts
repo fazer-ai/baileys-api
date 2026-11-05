@@ -960,10 +960,12 @@ describe("connectionsController connection health", () => {
     expect(res.status).toBe(404);
   });
 
-  it("reports the send-side snapshot", async () => {
-    const spy = spyOn(baileys, "sendHealth").mockReturnValue({
+  it("reports the send- and receive-side snapshot", async () => {
+    const spy = spyOn(baileys, "health").mockReturnValue({
       connected: true,
       sendState: "stalled",
+      receiveState: "stalled",
+      openForMs: 180_000,
       consecutiveSendTimeouts: 3,
       lastTrafficAgoMs: 1200,
       lastSendCompletedAgoMs: 214_000,
@@ -983,6 +985,8 @@ describe("connectionsController connection health", () => {
         data: {
           connected: true,
           sendState: "stalled",
+          receiveState: "stalled",
+          openForMs: 180_000,
           consecutiveSendTimeouts: 3,
           lastTrafficAgoMs: 1200,
           lastSendCompletedAgoMs: 214_000,

@@ -154,6 +154,16 @@ const SUBMITTED_ID_HISTORY = 500;
 // acknowledging and socket.sendMessage resolving, and because most entries here
 // are genuinely not ours -- messages the operator sent from the phone.
 const UNMATCHED_ACK_HISTORY = 100;
+// Receive-side counterpart of the send stall. After every (re)connect WhatsApp
+// drains the queue it held for this device and closes it with <ib><offline/>,
+// which Baileys surfaces as connection.update { receivedPendingNotifications:
+// true }. A server stuck behind a stanza it is waiting an ack for never sends
+// that marker, and the socket is open, sends fine and hears nothing (#404).
+// Measured across two production fleets: healthy opens get the marker within 4s
+// at p99, and the sockets that never got it were exactly the deaf ones. Two
+// minutes leaves a wide margin over a slow drain and still flags a deaf inbox
+// long before anyone misses a customer.
+const RECEIVE_STALL_AFTER_MS = 120_000;
 
 export class BaileysNotConnectedError extends Error {
   constructor() {
@@ -378,6 +388,12 @@ export class BaileysConnection {
   // dead weight, and an unbounded set on a busy connection is a leak.
   private submittedMessageIds = new Set<string>();
   private unmatchedAckIds = new Map<string, number>();
+  // Receive health, all of it belonging to the CURRENT socket and reset when it
+  // is replaced. Wall-clock, like the send-side ages.
+  private offlineQueueDelivered = false;
+  private _openedAt: number | null = null;
+  private receiveStallTimer: ReturnType<typeof setTimeout> | null = null;
+  private receiveStallReported = false;
 
   constructor(phoneNumber: string, options: BaileysConnectionOptions) {
     this.phoneNumber = phoneNumber;
@@ -504,6 +520,95 @@ export class BaileysConnection {
       return "unknown";
     }
     return "ok";
+  }
+
+  // Whether WhatsApp is delivering to this socket. `pending` until the server
+  // finishes draining the queue it held for us, `ok` once it has, `stalled`
+  // when the socket has been open for RECEIVE_STALL_AFTER_MS without that. A
+  // socket that is not open is `pending`: that is an outage `connected` already
+  // reports, not a deaf socket. Deliberately no automatic restart: while the
+  // cause is there every new socket comes back as deaf, and recreating it would
+  // turn a signal into a reconnect loop.
+  get receiveState(): "pending" | "ok" | "stalled" {
+    if (!this.isOpen) {
+      return "pending";
+    }
+    if (this.offlineQueueDelivered) {
+      return "ok";
+    }
+    const openForMs = this.openForMs;
+    if (openForMs !== null && openForMs >= RECEIVE_STALL_AFTER_MS) {
+      return "stalled";
+    }
+    return "pending";
+  }
+
+  get openForMs(): number | null {
+    if (!this.isOpen || this._openedAt === null) {
+      return null;
+    }
+    return Date.now() - this._openedAt;
+  }
+
+  private trackReceiveHealth({
+    connection,
+    receivedPendingNotifications,
+  }: Partial<ConnectionState>) {
+    // The marker can arrive before `open`: CB:success awaits the prekey upload
+    // and a passive IQ before emitting it. It belongs to the socket either way.
+    if (receivedPendingNotifications && !this.offlineQueueDelivered) {
+      this.offlineQueueDelivered = true;
+      this.clearReceiveStallTimer();
+      if (this.receiveStallReported) {
+        logger.info(
+          "[%s] [receiveHealth] offline queue delivered after the receive stall, %dms after open",
+          this.phoneNumber,
+          this.openForMs ?? -1,
+        );
+      }
+    }
+    // The original event only: an `isOnline` presence echo is rewritten to
+    // `open` further down and would restart the clock on a deaf socket.
+    if (connection === "open") {
+      this._openedAt = Date.now();
+      this.clearReceiveStallTimer();
+      if (!this.offlineQueueDelivered) {
+        this.receiveStallTimer = setTimeout(() => {
+          this.receiveStallTimer = null;
+          // Re-checked rather than assumed: the socket may have closed, or
+          // been discarded, since the timer was armed.
+          if (this.receiveState !== "stalled") {
+            return;
+          }
+          this.receiveStallReported = true;
+          // warn, not info: the deployments that need this run at `warn`, and
+          // a deaf inbox that only receives is otherwise invisible.
+          logger.warn(
+            "[%s] [receiveHealth] receive stall: socket open for %dms and WhatsApp has not finished delivering the offline queue; inbound messages and receipts are not arriving",
+            this.phoneNumber,
+            this.openForMs ?? -1,
+          );
+        }, RECEIVE_STALL_AFTER_MS);
+      }
+    }
+    // Nothing to do on `close`: receiveState and openForMs read isOpen, so a
+    // closed socket is already `pending` with no open age, and the timer
+    // finds it so. A Baileys socket never reopens; the replacement resets all
+    // of this in connect().
+  }
+
+  private clearReceiveStallTimer() {
+    if (this.receiveStallTimer) {
+      clearTimeout(this.receiveStallTimer);
+      this.receiveStallTimer = null;
+    }
+  }
+
+  private resetReceiveHealth() {
+    this.clearReceiveStallTimer();
+    this.offlineQueueDelivered = false;
+    this._openedAt = null;
+    this.receiveStallReported = false;
   }
 
   // Reported by the patched addTransactionCapability. Logged here rather than
@@ -797,6 +902,9 @@ export class BaileysConnection {
       // nobody has written through yet.
       this._lastSendCompletedAt = null;
       this._lastOutgoingAckAt = null;
+      // Same reasoning on the receive side: the marker the previous socket got
+      // says nothing about whether the server is delivering to this one.
+      this.resetReceiveHealth();
     } catch (error) {
       logger.error(
         "[%s] [BaileysConnection.connect] Failed to create socket: %s",
@@ -821,6 +929,10 @@ export class BaileysConnection {
   }
 
   private addEventListeners({ saveCreds }: { saveCreds: () => Promise<void> }) {
+    // The socket these listeners belong to. A late event from it can still
+    // arrive after it was replaced, and connection.update needs to know whose
+    // offline marker it is carrying.
+    const socket = this.socket;
     type EventHandlers = {
       [K in keyof BaileysEventMap]?: (
         data: BaileysEventMap[K],
@@ -837,7 +949,8 @@ export class BaileysConnection {
       }),
       "connection.update": this.withErrorHandling(
         "handleConnectionUpdate",
-        this.handleConnectionUpdate,
+        (data: BaileysEventMap["connection.update"]) =>
+          this.handleConnectionUpdate(data, socket),
       ),
       "messages.upsert": this.withErrorHandling(
         "handleMessagesUpsert",
@@ -2169,7 +2282,12 @@ export class BaileysConnection {
     });
   }
 
-  private async handleConnectionUpdate(data: Partial<ConnectionState>) {
+  private async handleConnectionUpdate(
+    data: Partial<ConnectionState>,
+    // The socket that emitted this update; defaults to the live one for
+    // callers that are not a socket listener.
+    origin: ReturnType<typeof makeWASocket> | null = this.socket,
+  ) {
     // A discarded connection must be inert. `socket.end()` fires a final
     // connection.update before the listeners are torn down; without this
     // guard the handler would dispatch `reconnecting` webhooks and even
@@ -2190,6 +2308,11 @@ export class BaileysConnection {
     // describe what the client is told, not what the socket is doing.
     if (connection) {
       this.connectionState = connection;
+    }
+
+    // Same placement and reason: the early returns below must not skip it.
+    if (origin === this.socket) {
+      this.trackReceiveHealth(data);
     }
 
     // WhatsApp's authoritative reach-out time-lock state (the restriction

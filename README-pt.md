@@ -43,7 +43,7 @@ A API expõe os seguintes endpoints. Tenha em mente que este projeto está em de
 - `POST /connections/:phoneNumber/read-messages`: Marca mensagens como lidas.
 - `DELETE /connections/:phoneNumber`: Faz logout e desconecta uma conexão WhatsApp.
 - `POST /connections/:phoneNumber/restart`: Recria o socket de uma conexão, preservando a sessão (sem QR, sem re-pareamento).
-- `GET /connections/:phoneNumber/health`: Saúde do envio de uma conexão. Veja "Conexões mudas" abaixo.
+- `GET /connections/:phoneNumber/health`: Saúde do envio e do recebimento de uma conexão. Veja "Conexões mudas" e "Conexões surdas" abaixo.
 
 > [!IMPORTANT]
 > O parâmetro `phoneNumber` na URL deve estar no formato `+<codigo_do_pais><telefone>`, ex: `+551234567890`.
@@ -98,6 +98,14 @@ O que esta API oferece:
 > retentativa reusa o mesmo id e o WhatsApp deduplica. Sem ele, a API não tem
 > como dizer ao caller que é seguro retentar, e responde `409` com
 > `x-baileys-idempotency-state: indeterminate`.
+
+### Conexões surdas
+
+O contrário de uma conexão muda: o socket está aberto, o envio sai, e nada chega, nem mensagem nem recibo. A cada (re)conexão o WhatsApp entrega a fila que guardou para o aparelho e a fecha com um marcador de fim, que o Baileys reporta como `connection.update` com `receivedPendingNotifications: true`. Quando o servidor fica preso atrás de uma stanza cujo ack ele espera, o marcador nunca chega, e nada do que está atrás dele é entregue. Foi assim que uma stanza `<status>` sem ack deixou sockets surdos por horas (#404).
+
+- **Detecção.** `GET /connections/:phoneNumber/health` reporta `receiveState`: `pending` até o marcador chegar para o socket atual, `ok` quando chegou, `stalled` quando o socket está aberto há 2 minutos sem ele. `openForMs` diz há quanto tempo o socket atual está aberto. Os dois zeram quando o socket é substituído. Um socket saudável recebe o marcador poucos segundos depois de abrir, então uma inbox `stalled` que só recebe deixa de parecer saudável só porque ninguém está enviando por ela.
+- **Uma linha de log `warn`** é escrita uma vez por socket quando ele vira `stalled`, para que um deployment rodando em `warn` veja sem fazer polling.
+- **Sem recuperação automática.** Enquanto a causa estiver lá, todo socket novo volta tão surdo quanto o anterior, então a API não o recria sozinha. Quando a causa sai (uma release corrigida, por exemplo), `POST /connections/:phoneNumber/restart` recupera a conexão sem QR.
 
 ### Admin
 

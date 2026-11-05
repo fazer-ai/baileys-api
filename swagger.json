@@ -1282,7 +1282,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Send-side health snapshot",
+            "description": "Send- and receive-side health snapshot",
             "content": {
               "application/json": {
                 "schema": {
@@ -1304,6 +1304,21 @@
                           ],
                           "description": "'unknown' means no send has been observed on this connection yet",
                           "example": "ok"
+                        },
+                        "receiveState": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "ok",
+                            "stalled"
+                          ],
+                          "description": "'pending' until WhatsApp finishes delivering the offline queue to the current socket (receivedPendingNotifications), 'ok' once it has, 'stalled' when the socket has been open for 2 minutes without it. 'pending' while the socket is not open.",
+                          "example": "ok"
+                        },
+                        "openForMs": {
+                          "type": "integer",
+                          "nullable": true,
+                          "description": "How long the current socket has been open; null when it is not open. Resets when the socket is replaced."
                         },
                         "consecutiveSendTimeouts": {
                           "type": "integer"
@@ -1348,8 +1363,8 @@
             }
           }
         },
-        "summary": "Send-side health for this connection",
-        "description": "Whether this connection is actually able to send, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen."
+        "summary": "Send- and receive-side health for this connection",
+        "description": "Whether this connection is actually able to send and to receive, which POST /connections cannot tell you: that path only does a presence update, which does not touch the keystore and therefore passes while sends are wedged. `sendState` is `unknown` when no send has been observed yet — a connection nobody writes to can be stalled and still look perfect, so this never claims health it has not seen. `receiveState` is `stalled` when the socket has been open for 2 minutes and WhatsApp has not finished delivering the queue it held for this device: the socket sends, but no messages or receipts arrive. The API does not recreate the socket on its own for that state."
       }
     },
     "/connections/{phoneNumber}/presence": {
