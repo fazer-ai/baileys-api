@@ -310,13 +310,20 @@ index 24a358326a704e3f95b27ad996d2bc5e8ecfd101..f5a738f2b7d501ece18be53032540b05
                  releaseTxMutexRef(key);
              }
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..c30b8a68e5182710fa8fa239147cda1fd1d2f684 100644
+index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..24684dd8d1f1796b5d63157ed6ad4a29c11dd301 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
-@@ -1,6 +1,135 @@
+@@ -1,6 +1,142 @@
  import { prepareWAMessageMedia } from './messages.js';
  import { extractImageThumb, getHttpStream } from './messages-media.js';
  const THUMBNAIL_WIDTH_PX = 192;
++// The preview budget always applies. A caller's signal can cancel earlier, but
++// it must not replace the timeout: a signal that never fires would otherwise
++// let stalled headers or a trickling body hold the send forever.
++const previewSignal = (fetchOpts, timeoutMs) => {
++    const signals = [fetchOpts?.signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined].filter(Boolean);
++    return signals.length > 1 ? AbortSignal.any(signals) : signals[0];
++};
 +const isYouTubeUrl = (url) => {
 +    return /(?:youtube\.com\/watch\?v=|youtu\.be\/)/.test(url);
 +};
@@ -352,7 +359,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..c30b8a68e5182710fa8fa239147cda1f
 +    const previewTimeoutMs = fetchOpts?.timeout ?? fetchOpts?.timeoutMs;
 +    const response = await fetch(oembedUrl, {
 +        ...fetchOpts,
-+        signal: fetchOpts?.signal ?? (previewTimeoutMs ? AbortSignal.timeout(previewTimeoutMs) : undefined)
++        signal: previewSignal(fetchOpts, previewTimeoutMs)
 +    });
 +    if (!response.ok) {
 +        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
@@ -424,7 +431,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..c30b8a68e5182710fa8fa239147cda1f
 +    const response = await fetch(proxyUrl ? proxyUrl.concat(url) : url, {
 +        headers: fetchOpts?.headers ?? {},
 +        redirect: 'follow',
-+        signal: fetchOpts?.signal ?? AbortSignal.timeout(timeoutMs)
++        signal: previewSignal(fetchOpts, timeoutMs)
 +    });
 +    const contentType = response.headers.get('content-type');
 +    const declaredLength = Number(response.headers.get('content-length'));
@@ -449,7 +456,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..c30b8a68e5182710fa8fa239147cda1f
  /** Fetches an image and generates a thumbnail for it */
  const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
      const stream = await getHttpStream(url, fetchOpts);
-@@ -18,35 +147,20 @@ export const getUrlInfo = async (text, opts = {
+@@ -18,35 +154,20 @@ export const getUrlInfo = async (text, opts = {
      fetchOpts: { timeout: 3000 }
  }) => {
      try {

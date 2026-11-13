@@ -203,6 +203,16 @@ describe("link preview body limits", () => {
     expect(read["/endless.html"] ?? 0).toBeLessThanOrEqual(CAP + MiB);
   });
 
+  it("keeps the timeout when the caller also passes a signal", async () => {
+    // A caller signal that never fires must not replace the preview budget.
+    const caller = new AbortController();
+    const result = await settle(`${base}/slow.html`, 200, {
+      signal: caller.signal,
+    });
+    expect(result.state).not.toBe("hung");
+    expect(result.ms).toBeLessThan(1500);
+  });
+
   it("applies the timeout to the body, not only to the headers", async () => {
     const result = await settle(`${base}/slow.html`, 200);
     expect(result.state).not.toBe("hung");
