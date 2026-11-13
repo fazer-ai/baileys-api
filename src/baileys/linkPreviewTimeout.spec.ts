@@ -59,6 +59,34 @@ describe("patched link preview", () => {
     }
   });
 
+  // A caller signal that never fires must not replace the preview budget.
+  it("keeps the oEmbed timeout when the caller also passes a signal", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((_url: unknown, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      })) as unknown as typeof fetch;
+
+    try {
+      const outcome = await Promise.race([
+        getUrlInfo("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+          thumbnailWidth: 192,
+          fetchOpts: { timeout: 20, signal: new AbortController().signal },
+        } as never).then(
+          () => "settled",
+          () => "settled",
+        ),
+        new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+      ]);
+
+      expect(outcome).toBe("settled");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   // The thumbnail download that follows the oEmbed. messages-send.js hands it
   // BOTH budgets -- `{ timeout: 3000, ...httpRequestOptions }` -- and taking the
   // 120s one means a stalled thumbnail outlives the 45s send deadline, so the

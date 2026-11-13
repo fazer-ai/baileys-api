@@ -310,13 +310,20 @@ index 24a358326a704e3f95b27ad996d2bc5e8ecfd101..f5a738f2b7d501ece18be53032540b05
                  releaseTxMutexRef(key);
              }
 diff --git a/lib/Utils/link-preview.js b/lib/Utils/link-preview.js
-index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9ff8f009d 100644
+index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..24684dd8d1f1796b5d63157ed6ad4a29c11dd301 100644
 --- a/lib/Utils/link-preview.js
 +++ b/lib/Utils/link-preview.js
-@@ -1,6 +1,62 @@
+@@ -1,6 +1,142 @@
  import { prepareWAMessageMedia } from './messages.js';
  import { extractImageThumb, getHttpStream } from './messages-media.js';
  const THUMBNAIL_WIDTH_PX = 192;
++// The preview budget always applies. A caller's signal can cancel earlier, but
++// it must not replace the timeout: a signal that never fires would otherwise
++// let stalled headers or a trickling body hold the send forever.
++const previewSignal = (fetchOpts, timeoutMs) => {
++    const signals = [fetchOpts?.signal, timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined].filter(Boolean);
++    return signals.length > 1 ? AbortSignal.any(signals) : signals[0];
++};
 +const isYouTubeUrl = (url) => {
 +    return /(?:youtube\.com\/watch\?v=|youtu\.be\/)/.test(url);
 +};
@@ -352,7 +359,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9
 +    const previewTimeoutMs = fetchOpts?.timeout ?? fetchOpts?.timeoutMs;
 +    const response = await fetch(oembedUrl, {
 +        ...fetchOpts,
-+        signal: fetchOpts?.signal ?? (previewTimeoutMs ? AbortSignal.timeout(previewTimeoutMs) : undefined)
++        signal: previewSignal(fetchOpts, previewTimeoutMs)
 +    });
 +    if (!response.ok) {
 +        throw new Error(`Failed to fetch YouTube oEmbed data: ${response.statusText}`);
@@ -373,10 +380,91 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9
 +        favicons: ['https://www.youtube.com/favicon.ico']
 +    };
 +};
++// link-preview-js's getLinkPreview clears its timer as soon as the headers
++// arrive and then buffers the whole body with response.text(), before it even
++// looks at the content type. A link to a multi-GB file therefore gets
++// downloaded into memory to build a preview (14 GB RSS and a host OOM in
++// production). So the fetch happens here, bounded, and the library only parses.
++const MAX_PREVIEW_BODY_BYTES = 5 * 1024 * 1024;
++const isHtmlContentType = (contentType) => /^\s*(text\/html|application\/xhtml\+xml)\s*(;|$)/i.test(contentType || '');
++const discardBody = (response) => response.body?.cancel().catch(() => undefined);
++/** Reads at most maxBytes of the body; undefined when the body is larger */
++const readCappedText = async (response, maxBytes) => {
++    const reader = response.body?.getReader();
++    if (!reader) {
++        return '';
++    }
++    const chunks = [];
++    let total = 0;
++    for (;;) {
++        const { done, value } = await reader.read();
++        if (done) {
++            break;
++        }
++        total += value.byteLength;
++        if (total > maxBytes) {
++            await reader.cancel().catch(() => undefined);
++            return undefined;
++        }
++        chunks.push(value);
++    }
++    return Buffer.concat(chunks).toString('utf8');
++};
++const getBoundedLinkPreview = async (url, fetchOpts) => {
++    const { getPreviewFromContent } = await import('link-preview-js');
++    // The package "exports" map only exposes its index, and the URL gate lives
++    // in the sibling constants file, so resolve it next to the index.
++    const { createRequire } = await import('node:module');
++    const require = createRequire(import.meta.url);
++    const { CONSTANTS } = require(require.resolve('link-preview-js').replace(/index\.js$/, 'constants.js'));
++    // Same gate getLinkPreview applied: no preview for loopback, private
++    // ranges or anything that is not a well-formed public URL.
++    if (!CONSTANTS.REGEX_VALID_URL.test(url)) {
++        return undefined;
++    }
++    // One budget for the whole request, headers and body alike.
++    const timeoutMs = fetchOpts?.timeout ?? fetchOpts?.timeoutMs ?? 3000;
++    // A configured proxy is a URL prefix, as getLinkPreview treated it: the
++    // request goes through it, and its prefix is stripped from the response URL
++    // so the preview (and relative image URLs) point at the real page.
++    const proxyUrl = fetchOpts?.proxyUrl;
++    const response = await fetch(proxyUrl ? proxyUrl.concat(url) : url, {
++        headers: fetchOpts?.headers ?? {},
++        redirect: 'follow',
++        signal: previewSignal(fetchOpts, timeoutMs)
++    });
++    const contentType = response.headers.get('content-type');
++    const declaredLength = Number(response.headers.get('content-length'));
++    if (!isHtmlContentType(contentType) ||
++        declaredLength > MAX_PREVIEW_BODY_BYTES) {
++        await discardBody(response);
++        return undefined;
++    }
++    const data = await readCappedText(response, MAX_PREVIEW_BODY_BYTES);
++    if (data === undefined) {
++        return undefined;
++    }
++    const headers = {};
++    response.headers.forEach((value, key) => {
++        headers[key] = value;
++    });
++    const responseUrl = (proxyUrl ? response.url?.replace(proxyUrl, '') : response.url) || url;
++    // fetchOpts was the options object of getLinkPreview, so parse-time options
++    // given there (imagesPropertyType, onResponse) still reach the parser.
++    return getPreviewFromContent({ url: responseUrl, headers, data }, fetchOpts);
++};
  /** Fetches an image and generates a thumbnail for it */
  const getCompressedJpegThumbnail = async (url, { thumbnailWidth, fetchOpts }) => {
      const stream = await getHttpStream(url, fetchOpts);
-@@ -26,27 +82,36 @@ export const getUrlInfo = async (text, opts = {
+@@ -18,35 +154,20 @@ export const getUrlInfo = async (text, opts = {
+     fetchOpts: { timeout: 3000 }
+ }) => {
+     try {
+-        // retries
+-        let retries = 0;
+-        const maxRetry = 5;
+-        const { getLinkPreview } = await import('link-preview-js');
+         let previewLink = text;
          if (!text.startsWith('https://') && !text.startsWith('http://')) {
              previewLink = 'https://' + previewLink;
          }
@@ -409,27 +497,7 @@ index 0f4ff1ce169432faa8b0a7d2e2bca874c1d8092d..f7c20c3e93bd9a02aaa88df3910ea8b9
 +            info = await getYouTubeLinkPreview(previewLink, opts.fetchOpts);
 +        }
 +        else {
-+            info = await getLinkPreview(previewLink, {
-+                ...opts.fetchOpts,
-+                followRedirects: 'follow',
-+                handleRedirects: (baseURL, forwardedURL) => {
-+                    const urlObj = new URL(baseURL);
-+                    const forwardedURLObj = new URL(forwardedURL);
-+                    if (retries >= maxRetry) {
-+                        return false;
-+                    }
-+                    if (forwardedURLObj.hostname === urlObj.hostname ||
-+                        forwardedURLObj.hostname === 'www.' + urlObj.hostname ||
-+                        'www.' + forwardedURLObj.hostname === urlObj.hostname) {
-+                        retries += 1;
-+                        return true;
-+                    }
-+                    else {
-+                        return false;
-+                    }
-+                },
-+                headers: opts.fetchOpts?.headers
-+            });
++            info = await getBoundedLinkPreview(previewLink, opts.fetchOpts);
 +        }
          if (info && 'title' in info && info.title) {
              const [image] = info.images;
