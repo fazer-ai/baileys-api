@@ -61,6 +61,8 @@ const originalFetch = globalThis.fetch;
 // link-preview-js refuses loopback and private hosts, so the tests use a public
 // looking origin and route it to the local server here, signal included.
 const base = "https://files.example.com";
+const PROXY = "https://proxy.example.com/fetch?url=";
+let proxied: string[] = [];
 
 // node:http rather than Bun.serve: Bun.serve drops a declared content-length
 // on a streamed body and sends it chunked, and one route needs the header.
@@ -109,8 +111,11 @@ beforeAll(async () => {
         : input instanceof URL
           ? input.href
           : input.url;
-    const route = new URL(url).pathname;
-    return originalFetch(url.replace(base, local), init).then((response) => {
+    // A request through the configured proxy arrives as <proxy><target>.
+    const target = url.startsWith(PROXY) ? url.slice(PROXY.length) : url;
+    if (target !== url) proxied.push(target);
+    const route = new URL(target).pathname;
+    return originalFetch(target.replace(base, local), init).then((response) => {
       const wrapped = new Response(counted(route, response.body), {
         status: response.status,
         headers: response.headers,
@@ -131,12 +136,16 @@ afterAll(() => {
 
 // Raced so that the old behaviour (never settling) fails the assertion instead
 // of hanging the suite.
-const settle = async (url: string, timeout = 300) => {
+const settle = async (
+  url: string,
+  timeout = 300,
+  extra: Record<string, unknown> = {},
+) => {
   const started = performance.now();
   const outcome = await Promise.race([
     getUrlInfo(url, {
       thumbnailWidth: 192,
-      fetchOpts: { timeout },
+      fetchOpts: { timeout, ...extra },
     } as never).then(
       (info) => ({ state: "resolved" as const, info }),
       (error: Error) => ({ state: "rejected" as const, error }),
@@ -153,6 +162,16 @@ describe("link preview body limits", () => {
     if (result.state !== "resolved") return;
     expect(result.info?.title).toBe("Small page");
     expect(result.info?.description).toBe("A small page");
+  });
+
+  it("routes through the configured proxy and reports the real URL", async () => {
+    proxied = [];
+    const result = await settle(`${base}/page`, 300, { proxyUrl: PROXY });
+    expect(proxied).toEqual([`${base}/page`]);
+    expect(result.state).toBe("resolved");
+    if (result.state !== "resolved") return;
+    expect(result.info?.title).toBe("Small page");
+    expect(result.info?.["canonical-url"]).toBe(`${base}/page`);
   });
 
   it("does not download a non-HTML file to preview it", async () => {
