@@ -64,6 +64,9 @@ const mockGroupFetchAllParticipating = mock(async function (this: any) {
 const mockPresenceSubscribe = mock(async function (this: any) {
   return { subscribed: [] };
 });
+const mockRequestPairingCode = mock(async function (this: any) {
+  return "ABCD-1234";
+});
 
 class MockBaileysConnection {
   phoneNumber: string;
@@ -145,9 +148,11 @@ class MockBaileysConnection {
   groupJoinApprovalMode = mockGroupJoinApprovalMode;
   groupFetchAllParticipating = mockGroupFetchAllParticipating;
   presenceSubscribe = mockPresenceSubscribe;
+  requestPairingCode = mockRequestPairingCode;
 }
 
 import {
+  BaileysAlreadyPairedError,
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
@@ -1541,4 +1546,38 @@ describe("BaileysConnectionsHandler", () => {
       expect(handler.stalledConnectionCount()).toBe(1);
     });
   });
+
+  describe("#requestPairingCode (guarda de ja pareado)", () => {
+    const guardedPhone = "+5511999";
+    const authKey = `@baileys-api:connections:${guardedPhone}:authState`;
+
+    it("recusa com BaileysAlreadyPairedError quando o numero ja tem identidade", async () => {
+      // creds.me presente = pareado (mesmo criterio de isRedisAuthStatePaired).
+      (redis as any).__hashData.set(
+        authKey,
+        new Map([
+          ["creds", JSON.stringify({ me: { id: `${guardedPhone}:98@s.whatsapp.net` } })],
+        ]),
+      );
+      mockRequestPairingCode.mockClear();
+
+      await expect(handler.requestPairingCode(guardedPhone)).rejects.toThrow(
+        BaileysAlreadyPairedError,
+      );
+      // O ponto do bug: nenhum codigo pode sair nesse estado.
+      expect(mockRequestPairingCode).not.toHaveBeenCalled();
+    });
+
+    it("emite o codigo quando o numero ainda nao esta pareado", async () => {
+      (redis as any).__hashData.delete(authKey);
+      await handler.connect(guardedPhone, defaultOptions);
+      mockRequestPairingCode.mockClear();
+
+      const code = await handler.requestPairingCode(guardedPhone);
+
+      expect(code).toBe("ABCD-1234");
+      expect(mockRequestPairingCode).toHaveBeenCalledTimes(1);
+    });
+  });
+
 });

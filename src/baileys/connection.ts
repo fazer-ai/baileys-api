@@ -114,6 +114,14 @@ const MESSAGE_ACCOUNT_RESTRICTION_CODE = "463";
 // once per window per connection.
 const REACHOUT_TIMELOCK_REFETCH_WINDOW_MS = 60_000;
 
+// Quanto o `pairing-code` espera o socket abrir, e de quanto em quanto checa.
+// `POST /connections` retorna antes de o websocket existir, e pedir o codigo
+// nessa janela devolve 428/500 — ou, pior, corrompe `creds.me`, porque a
+// biblioteca escreve antes de enviar. 20 s e o mesmo horizonte do
+// `connectTimeoutMs` padrao do Baileys.
+const PAIRING_READY_TIMEOUT_MS = 20_000;
+const PAIRING_READY_POLL_MS = 250;
+
 // Send-stall watchdog. Six keystore operations serialize on a mutex keyed by
 // our own JID, so once one of them wedges, EVERY send on this connection times
 // out while receiving and health checks stay perfect -- the connection goes
@@ -184,6 +192,20 @@ export class BaileysConnectionForbiddenError extends Error {
 export class BaileysSendStalledError extends Error {
   constructor() {
     super("Connection is not accepting sends");
+  }
+}
+
+/**
+ * `POST /:phoneNumber/pairing-code` num número que já está pareado.
+ *
+ * Emitir um código aqui não é inofensivo: a biblioteca grava `creds.me` e o
+ * persiste via `creds.update` ANTES de enviar o nó, então a tentativa — mesmo
+ * falhando — deixa o estado pareado sem `:device`/`lid` e a conexão seguinte
+ * vira login passivo. O chamador deve tratar isto como conflito (409).
+ */
+export class BaileysAlreadyPairedError extends Error {
+  constructor() {
+    super("Phone number is already paired");
   }
 }
 
@@ -287,6 +309,8 @@ export class BaileysConnection {
   // Noise candidates only while they have never opened; a close after opening
   // is a normal disconnect, not a wrong-key handshake failure.
   private hasOpened = false;
+  // Injetavel para o teste nao pagar 20 s de espera; producao usa o default.
+  private pairingReadyTimeoutMs = PAIRING_READY_TIMEOUT_MS;
   // The socket's actual state, as WhatsApp last reported it. Registration in the
   // handler is NOT connectivity: a connection is registered before it ever opens
   // (QR pairing) and stays registered while its socket is closed and backing off,
@@ -2257,9 +2281,39 @@ export class BaileysConnection {
    * biblioteca grava `creds.me` antes de enviar o nó: falhar depois dessa
    * escrita custa a sessão.
    */
-  requestPairingCode() {
+  async requestPairingCode() {
+    // `requestPairingCode` precisa de socket ABERTO: a biblioteca grava
+    // `creds.me` e emite `creds.update` ANTES de enviar o no, e o `sendNode`
+    // falha com 428 quando o websocket ainda nao subiu. Como a escrita vem
+    // primeiro, uma chamada cedo demais deixa o estado corrompido mesmo
+    // falhando. A espera fica aqui, nao no chamador.
+    await this.waitUntilOpen();
     const phoneNumber = this.phoneNumber.replace(/\D/g, "");
     return this.safeSocket().requestPairingCode(phoneNumber);
+  }
+
+  /**
+   * Espera o socket abrir, dentro de `timeoutMs`.
+   *
+   * `POST /connections` retorna assim que o objeto e criado — antes de o
+   * websocket existir. Sem esta espera o chamador apanha de um 428/500
+   * intermitente e, pior, corre o risco de corromper o `creds`.
+   *
+   * Lanca `BaileysNotConnectedError` no timeout, para o chamador responder
+   * 503 com `retry-after` em vez de um 500 generico.
+   */
+  private async waitUntilOpen(timeoutMs = this.pairingReadyTimeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.isDiscarded) {
+        throw new BaileysNotConnectedError();
+      }
+      if (this.socket?.ws.isOpen) {
+        return;
+      }
+      await asyncSleep(PAIRING_READY_POLL_MS);
+    }
+    throw new BaileysNotConnectedError();
   }
 
   private safeSocket() {
@@ -2446,6 +2500,13 @@ export class BaileysConnection {
           message ?? "",
           this.reconnectCount + 1,
         );
+        // 515 (restartRequired) e o WhatsApp pedindo para reabrir o socket,
+        // nao uma falha: acontece uma vez logo depois de o registro concluir.
+        // Contar isso no guarda de laco estourava o limite de 10 e abortava a
+        // conexao — e abortar durante o pareamento custa o pareamento.
+        if (statusCode === DisconnectReason.restartRequired) {
+          this.reconnectCount = 0;
+        }
         await this.handleReconnecting();
         // NOTE: We don't call `this.close()` here because we want to keep the auth state.
         this.socket = null;

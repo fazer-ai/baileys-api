@@ -8,11 +8,15 @@ import type {
   WAPresence,
 } from "@whiskeysockets/baileys";
 import {
+  BaileysAlreadyPairedError,
   BaileysConnection,
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
 } from "@/baileys/connection";
-import { getRedisAuthMetadata } from "@/baileys/redisAuthState";
+import {
+  getRedisAuthMetadata,
+  isRedisAuthStatePaired,
+} from "@/baileys/redisAuthState";
 import type {
   BaileysConnectionOptions,
   FetchMessageHistoryOptions,
@@ -525,7 +529,15 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).presenceSubscribe(jids);
   }
 
-  requestPairingCode(phoneNumber: string) {
+  async requestPairingCode(phoneNumber: string) {
+    // Parear um numero que JA esta pareado nao devolve um codigo utilizavel:
+    // o `requestPairingCode` da biblioteca sobrescreve `creds.me` (perde o
+    // sufixo `:device` e o `lid`, e volta `registered` para false) e emite
+    // `creds.update` ANTES de enviar o no — entao uma falha aqui ja corrompeu
+    // o estado e a proxima conexao vira login passivo. Isso custa a sessao.
+    if (await isRedisAuthStatePaired(phoneNumber)) {
+      throw new BaileysAlreadyPairedError();
+    }
     return this.getConnection(phoneNumber).requestPairingCode();
   }
 

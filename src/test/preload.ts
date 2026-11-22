@@ -632,6 +632,11 @@ function createMockSocket() {
     groupJoinApprovalMode: mock(async () => {}),
     groupFetchAllParticipating: mock(async () => ({})),
     presenceSubscribe: mock(async () => {}),
+    requestPairingCode: mock(async () => "ABCD-1234"),
+    // `isOpen` e o sinal de readiness que `waitUntilOpen` consulta. O default
+    // e `true` para os testes existentes nao pagarem a espera; quem testa a
+    // espera seta `false`.
+    ws: { isOpen: true },
     signalRepository: {
       lidMapping: {
         getPNForLID: mock(async () => null),
@@ -666,8 +671,9 @@ mock.module("@whiskeysockets/baileys", () => ({
   Browsers: { windows: (name: string) => ["Windows", name, "10"] },
   DisconnectReason: {
     loggedOut: 401,
-    badSession: 500,
     connectionReplaced: 440,
+    restartRequired: 515,
+    badSession: 500,
   },
   WAMessageStatus: {
     ERROR: 0,

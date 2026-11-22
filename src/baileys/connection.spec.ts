@@ -6627,4 +6627,62 @@ describe("BaileysConnection", () => {
       expect(connection.receiveState).toBe("pending");
     });
   });
+
+  // `POST /connections` retorna antes de o websocket existir. Pedir o codigo
+  // nessa janela devolvia 428/500 — e, como a biblioteca grava `creds.me`
+  // antes de enviar, a tentativa que falhava ja corrompia o estado.
+  describe("#requestPairingCode readiness", () => {
+    it("pede o codigo quando o socket esta aberto", async () => {
+      await connection.connect();
+      const socket = mockSocket as any;
+      socket.ws.isOpen = true;
+      socket.requestPairingCode.mockClear();
+
+      const code = await connection.requestPairingCode();
+
+      expect(code).toBe("ABCD-1234");
+      expect(socket.requestPairingCode).toHaveBeenCalledTimes(1);
+    });
+
+    it("falha com BaileysNotConnectedError e nao emite codigo com socket fechado", async () => {
+      await connection.connect();
+      const socket = mockSocket as any;
+      // Timeout 0: sem socket, a primeira checagem do laco ja falha. Sem isso o
+      // teste pagaria os 20 s reais de espera.
+      (connection as any).pairingReadyTimeoutMs = 0;
+      socket.ws.isOpen = false;
+      socket.requestPairingCode.mockClear();
+
+      await expect(connection.requestPairingCode()).rejects.toThrow(
+        BaileysNotConnectedError,
+      );
+      // O ponto do bug: nada de `creds.me` gravado quando nao ha socket.
+      expect(socket.requestPairingCode).not.toHaveBeenCalled();
+      socket.ws.isOpen = true;
+    });
+  });
+
+  // 515 (restartRequired) e o WhatsApp pedindo para reabrir o socket logo
+  // depois do registro — nao e falha. Contar no guarda de laco estourava o
+  // limite de 10 e abortava a conexao, quebrando o pareamento.
+  describe("515 restartRequired does not exhaust the reconnect guard", () => {
+    it("zera o contador a cada 515", async () => {
+      await connection.connect();
+      const handler = mockEventHandlers.get("connection.update")!;
+      const this_ = connection as any;
+
+      for (let i = 0; i < 5; i++) {
+        await handler({
+          connection: "close" as const,
+          lastDisconnect: {
+            error: { output: { statusCode: 515 }, message: "restart required" } as any,
+          },
+        });
+      }
+
+      // Sem o reset o contador passaria de 5 aqui; com ele, fica baixo.
+      expect(this_.reconnectCount).toBeLessThanOrEqual(1);
+    });
+  });
+
 });

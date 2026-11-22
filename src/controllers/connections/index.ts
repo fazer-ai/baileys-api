@@ -2,10 +2,12 @@ import Elysia, { t } from "elysia";
 import type { OpenAPIV3 } from "openapi-types";
 import baileys from "@/baileys";
 import {
+  BaileysAlreadyPairedError,
   BaileysConnectionForbiddenError,
   BaileysNotConnectedError,
   BaileysSendStalledError,
 } from "@/baileys/connection";
+import { isRedisAuthStatePaired } from "@/baileys/redisAuthState";
 import { isTxMutexTimeout } from "@/baileys/helpers/isTxMutexTimeout";
 import {
   InvalidNoiseCandidateError,
@@ -252,10 +254,31 @@ const connectionsController = new Elysia({
   )
   .post(
     "/:phoneNumber/pairing-code",
-    async ({ params }) => {
+    async ({ params, set }) => {
       const { phoneNumber } = params;
-      const code = await baileys.requestPairingCode(phoneNumber);
-      return { data: { code } };
+      try {
+        const code = await baileys.requestPairingCode(phoneNumber);
+        return { data: { code } };
+      } catch (e) {
+        // Conflito, nao erro de servidor: o numero ja tem identidade pareada e
+        // emitir codigo aqui corromperia `creds.me`. O chamador deve usar
+        // `DELETE /:phoneNumber` antes de parear de novo.
+        if (e instanceof BaileysAlreadyPairedError) {
+          set.status = 409;
+          return new Response("Phone number is already paired", { status: 409 });
+        }
+        // O socket nao abriu na janela de espera. 503 + `retry-after` diz para
+        // tentar de novo, e NENHUM codigo foi emitido (a espera roda antes de
+        // tocar no `creds`).
+        if (e instanceof BaileysNotConnectedError) {
+          set.headers["retry-after"] = "2";
+          return new Response("Phone number not connected", {
+            status: 503,
+            headers: { "retry-after": "2" },
+          });
+        }
+        throw e;
+      }
     },
     {
       params: phoneNumberParams,
@@ -264,6 +287,39 @@ const connectionsController = new Elysia({
         responses: {
           200: {
             description: "Pairing code generated",
+          },
+          409: {
+            description:
+              "Conflict — the phone number already has a paired identity. Logout (DELETE) first; emitting a code here would overwrite creds.me and destroy the session.",
+          },
+          503: {
+            description:
+              "The socket did not open in time, so no code was emitted. Retry after the number of seconds in the retry-after header.",
+            headers: {
+              "retry-after": {
+                description: "Seconds to wait before retrying",
+                schema: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  )
+  .get(
+    "/:phoneNumber/is-paired",
+    async ({ params }) => {
+      const { phoneNumber } = params;
+      return { data: { paired: await isRedisAuthStatePaired(phoneNumber) } };
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        summary: "Whether the phone number has a paired WhatsApp identity",
+        responses: {
+          200: {
+            description:
+              "Paired state read from the stored creds; false means pairing would start a fresh registration.",
           },
         },
       },
