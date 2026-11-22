@@ -330,11 +330,60 @@ export async function isRedisAuthStatePaired(id: string): Promise<boolean> {
     return false;
   }
   try {
-    const creds = JSON.parse(data) as { me?: { id?: string } };
-    return Boolean(creds?.me?.id);
+    const creds = JSON.parse(data) as { registered?: boolean; me?: { id?: string } };
+    // `registered`, nao apenas a existencia de `me`: o `requestPairingCode` da
+    // biblioteca grava `creds.me` ANTES de o pareamento concluir, entao um
+    // codigo emitido e nunca digitado deixa um `me` sem `registered`. Tratar
+    // isso como "pareado" recusava justamente o novo codigo que o usuario
+    // precisa — e escondia o estado orfao de quem fosse diagnosticar.
+    return creds?.registered === true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Apaga o rastro de um pareamento que nao concluiu: `me` e `pairingCode`.
+ *
+ * `requestPairingCode` grava os dois antes de enviar o `companion_hello`. Se o
+ * codigo expirar, o usuario desistir ou o socket cair antes do `pair-success`,
+ * esse `me` sobrevive no Redis — e o Baileys escolhe o no de handshake pela
+ * presenca dele: com `me` usa `generateLoginNode` (`passive:true`), sem `me`
+ * usa `generateRegistrationNode` (`passive:false`). Um device que nao existe
+ * nao loga, entao a proxima tentativa morre em `Connection Failure` em vez de
+ * oferecer um codigo novo.
+ *
+ * O fence de lease e o mesmo do `clear`: so o dono apaga.
+ */
+export async function clearOrphanedPairing(id: string): Promise<boolean> {
+  const raw = await redis.hGet(`${redisKeyPrefix}:${id}:authState`, "creds");
+  if (!raw) {
+    return false;
+  }
+  let creds: {
+    registered?: boolean;
+    me?: { id?: string };
+    pairingCode?: string;
+  };
+  try {
+    creds = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (creds?.registered === true) {
+    return false; // sessao de verdade: nao ha rastro orfao a limpar
+  }
+  if (!creds?.me && !creds?.pairingCode) {
+    return false; // nada a fazer
+  }
+  delete creds.me;
+  delete creds.pairingCode;
+  await redis.hSet(
+    `${redisKeyPrefix}:${id}:authState`,
+    "creds",
+    JSON.stringify(creds),
+  );
+  return true;
 }
 
 export async function getRedisAuthMetadata<T>(id: string): Promise<T | null> {

@@ -1552,11 +1552,17 @@ describe("BaileysConnectionsHandler", () => {
     const authKey = `@baileys-api:connections:${guardedPhone}:authState`;
 
     it("recusa com BaileysAlreadyPairedError quando o numero ja tem identidade", async () => {
-      // creds.me presente = pareado (mesmo criterio de isRedisAuthStatePaired).
+      // `registered` = sessao de verdade (mesmo criterio de isRedisAuthStatePaired).
       (redis as any).__hashData.set(
         authKey,
         new Map([
-          ["creds", JSON.stringify({ me: { id: `${guardedPhone}:98@s.whatsapp.net` } })],
+          [
+            "creds",
+            JSON.stringify({
+              registered: true,
+              me: { id: `${guardedPhone}:98@s.whatsapp.net` },
+            }),
+          ],
         ]),
       );
       mockRequestPairingCode.mockClear();

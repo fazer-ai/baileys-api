@@ -458,9 +458,21 @@ describe("isRedisAuthStatePaired", () => {
     );
   };
 
-  it("returns true when creds carry a registered identity", async () => {
-    setCreds("paired", { me: { id: "5511999@s.whatsapp.net" } });
+  it("returns true when creds are registered", async () => {
+    setCreds("paired", { registered: true, me: { id: "5511999@s.whatsapp.net" } });
     expect(await isRedisAuthStatePaired("paired")).toBe(true);
+  });
+
+  it("returns false when a pairing code was issued but never confirmed", async () => {
+    // O `requestPairingCode` grava `me` e `pairingCode` antes do pareamento
+    // concluir. Exigir `registered` e o que impede esse rastro de orfao ser
+    // lido como sessao valida — e era exatamente o que recusava o codigo novo.
+    setCreds("orphan", {
+      registered: false,
+      me: { id: "5511999@s.whatsapp.net", name: "~" },
+      pairingCode: "P8BB1416",
+    });
+    expect(await isRedisAuthStatePaired("orphan")).toBe(false);
   });
 
   it("returns false when pairing never completed", async () => {

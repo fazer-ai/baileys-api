@@ -65,6 +65,7 @@ import { shouldIgnoreJid } from "@/baileys/helpers/shouldIgnoreJid";
 import {
   advanceImportCandidate,
   clearImportCandidates,
+  clearOrphanedPairing,
   useRedisAuthState,
   writeAuthMetadata,
 } from "@/baileys/redisAuthState";
@@ -793,6 +794,26 @@ export class BaileysConnection {
   async connect() {
     if (this.isDiscarded || this.socket) {
       return;
+    }
+
+    // Antes de montar o socket: se o Redis guarda o rastro de um pareamento que
+    // nao concluiu (`me`/`pairingCode` sem `registered`), apaga. O Baileys
+    // escolhe o no de handshake pela presenca de `me` — com ele tenta login
+    // passivo de um device inexistente e morre em Connection Failure, sem
+    // nunca oferecer um codigo novo.
+    try {
+      if (await clearOrphanedPairing(this.phoneNumber)) {
+        logger.info(
+          "[%s] [connect] estado de pareamento incompleto descartado (me/pairingCode orfaos)",
+          this.phoneNumber,
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        "[%s] [connect] clearOrphanedPairing falhou; seguindo (error=%s)",
+        this.phoneNumber,
+        errorToString(error),
+      );
     }
 
     const { state, saveCreds } = await useRedisAuthState(this.phoneNumber, {
