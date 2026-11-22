@@ -298,11 +298,13 @@ const mockRedis = {
         return 1;
       }
 
-      // clear-if-owner: KEYS=[hash, lease], ARGV=[owner]
+      // clear-if-owner: KEYS=[hash, lease, backup], ARGV=[owner]
       if (script.includes("clear-if-owner")) {
-        const [hashKey, leaseKey] = keys;
+        const [hashKey, leaseKey, backupKey] = keys;
         const rawLease = stringData.get(leaseKey);
         if (rawLease && JSON.parse(rawLease).owner !== args[0]) return 0;
+        const live = hashData.get(hashKey);
+        if (live && backupKey) hashData.set(backupKey, new Map(live));
         return hashData.delete(hashKey) ? 1 : 0;
       }
 

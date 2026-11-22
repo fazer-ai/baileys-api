@@ -52,6 +52,9 @@ if raw then
   local lease = cjson.decode(raw)
   if lease.owner ~= ARGV[1] then return 0 end
 end
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  redis.call('COPY', KEYS[1], KEYS[3], 'REPLACE')
+end
 return redis.call('DEL', KEYS[1])
 `;
 
@@ -115,10 +118,15 @@ export async function writeAuthMetadata(
 // explicit intent (DELETE /connections) and must not survive to be resumed
 // by the next connect. Same owner fence as the in-connection clear; the
 // caller must hold the lease (acquireExplicitLease) or the DEL no-ops.
+/** Onde o `clear` deixa a copia antes do DEL: `<id>:authState.bak`. */
+function backupKeyFor(id: string): string {
+  return `${redisKeyPrefix}:${id}:authState.bak`;
+}
+
 export async function clearRedisAuthState(id: string): Promise<boolean> {
   const key = `${redisKeyPrefix}:${id}:authState`;
   const result = await redis.eval(CLEAR_IF_OWNER_SCRIPT, {
-    keys: [key, clusterKeys.lease(id)],
+    keys: [key, clusterKeys.lease(id), backupKeyFor(id)],
     arguments: [instanceId],
   });
   if (result !== 0) {
@@ -303,7 +311,11 @@ export async function useRedisAuthState(
         },
         clear: async () => {
           const result = await redis.eval(CLEAR_IF_OWNER_SCRIPT, {
-            keys: [createKey("authState"), clusterKeys.lease(id)],
+            keys: [
+              createKey("authState"),
+              clusterKeys.lease(id),
+              createKey("authState.bak"),
+            ],
             arguments: [instanceId],
           });
           if (result === 0) {

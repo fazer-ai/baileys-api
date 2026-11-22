@@ -1005,7 +1005,7 @@ export class BaileysConnection {
     });
   }
 
-  private async close() {
+  private async close({ keepAuthState = true }: { keepAuthState?: boolean } = {}) {
     // Inert from here on. close() is the terminal teardown -- logout, and a
     // remote `loggedOut` -- and it is where the auth state is destroyed, but it
     // was leaving isDiscarded false. Anything awaiting across it (the send-stall
@@ -1021,7 +1021,13 @@ export class BaileysConnection {
       clearTimeout(this.clearOnlinePresenceTimeout);
       this.clearOnlinePresenceTimeout = null;
     }
-    await this.clearAuthState?.();
+    // Apagar o authState custa a sessão pareada: o usuário tem que parear de
+    // novo. Só um logout explícito justifica isso. O `keepAuthState` torna a
+    // intenção explícita no ponto da chamada, em vez de depender de todo
+    // caminho futuro que chegue aqui ser, por acaso, terminal.
+    if (!keepAuthState) {
+      await this.clearAuthState?.();
+    }
     this.clearAuthState = null;
     // Here, not only in the coordinator's logout: this is where the session
     // stops existing, and every destructive path goes through it -- admin
@@ -1062,7 +1068,7 @@ export class BaileysConnection {
         errorToString(error),
       );
     }
-    await this.close();
+    await this.close({ keepAuthState: false });
   }
 
   // Atomically disowns this connection so it cannot resurrect itself.

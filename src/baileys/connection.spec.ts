@@ -6627,4 +6627,49 @@ describe("BaileysConnection", () => {
       expect(connection.receiveState).toBe("pending");
     });
   });
+
+  // `close()` chamava `clearAuthState()` sempre. Ele e alcancado por `logout()`
+  // E por caminhos nao-logout (`loggedOut` remoto, "QR refs attempts ended"),
+  // e nesses o estado pareado era destruido sem o usuario ter pedido. Agora so
+  // `logout()` apaga, e ele deixa uma copia antes.
+  describe("authState survives a non-logout teardown", () => {
+    const authKey = "@baileys-api:connections:+5511999999999:authState";
+    const backupKey = `${authKey}.bak`;
+
+    it("preserva o hash quando o socket fecha por QR esgotado", async () => {
+      await connection.connect();
+      expect((redis as any).__hashData.has(authKey)).toBe(true);
+      const handler = mockEventHandlers.get("connection.update")!;
+
+      // `shouldReconnect` e false para esta mensagem: cai no `close()`.
+      await handler({
+        connection: "close" as const,
+        lastDisconnect: {
+          error: {
+            output: {
+              statusCode: 500,
+              payload: { message: "QR refs attempts ended" },
+            },
+            message: "QR refs attempts ended",
+          } as any,
+        },
+      });
+
+      expect((redis as any).__hashData.has(authKey)).toBe(true);
+    });
+
+    it("logout apaga o hash e deixa copia em authState.bak", async () => {
+      await connection.connect();
+      const before = new Map((redis as any).__hashData.get(authKey));
+      expect(before.size).toBeGreaterThan(0);
+
+      await connection.logout();
+
+      expect((redis as any).__hashData.has(authKey)).toBe(false);
+      const backup = (redis as any).__hashData.get(backupKey);
+      expect(backup).toBeDefined();
+      expect(backup.get("creds")).toBe(before.get("creds"));
+    });
+  });
+
 });
