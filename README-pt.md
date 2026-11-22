@@ -6,6 +6,11 @@
 
 Este projeto fornece uma interface API para interagir com o WhatsApp usando a biblioteca [Baileys](https://github.com/WhiskeySockets/Baileys).
 
+> [!WARNING]
+> **O baileys-api está em modo legado.** A [equipe do Baileys anunciou](https://discord.com/channels/725839806084546610/1333555494920388790/1535090107001085973) que a biblioteca entrará em LTS em breve e passará a receber apenas pequenas atualizações. O repositório continua aberto, e as instalações existentes podem seguir em operação.
+>
+> Aceitamos apenas PRs com correções críticas para o comportamento atual da API. Para novos projetos e integrações, a fazer.ai recomenda o [whatsapp-connector](https://github.com/fazer-ai/whatsapp-connector), desenvolvido com o [whatsmeow](https://github.com/tulir/whatsmeow).
+
 > [!NOTE]
 > 🇺🇸 This README is also available in English: [README.md](README.md)
 
