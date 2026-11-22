@@ -525,6 +525,10 @@ export class BaileysConnectionsHandler {
     return this.getConnection(phoneNumber).presenceSubscribe(jids);
   }
 
+  requestPairingCode(phoneNumber: string) {
+    return this.getConnection(phoneNumber).requestPairingCode();
+  }
+
   sendMessage(
     phoneNumber: string,
     {

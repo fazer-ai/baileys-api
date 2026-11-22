@@ -2249,6 +2249,19 @@ export class BaileysConnection {
     return this.safeSocket().groupFetchAllParticipating();
   }
 
+  /**
+   * Pede ao WhatsApp um código de pareamento por número de telefone.
+   *
+   * Precisa de socket aberto e de credenciais não pareadas — as duas condições
+   * são verificadas por quem chama (a rota) e pela espera interna, porque a
+   * biblioteca grava `creds.me` antes de enviar o nó: falhar depois dessa
+   * escrita custa a sessão.
+   */
+  requestPairingCode() {
+    const phoneNumber = this.phoneNumber.replace(/\D/g, "");
+    return this.safeSocket().requestPairingCode(phoneNumber);
+  }
+
   private safeSocket() {
     if (!this.socket) {
       throw new BaileysNotConnectedError();

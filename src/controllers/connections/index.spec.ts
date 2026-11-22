@@ -998,3 +998,62 @@ describe("connectionsController connection health", () => {
     }
   });
 });
+
+// `POST /:phoneNumber/pairing-code` vivia apenas dentro de uma imagem
+// construida localmente antes deste branch; estes sao os primeiros testes dela.
+// Fixam o contrato atual (200 + {data:{code}}) para que as guardas
+// adicionadas por cima tenham uma base verificavel.
+describe("connectionsController pairing-code", () => {
+  let prevEnv: typeof config.env;
+  let prevRole: typeof config.cluster.role;
+
+  beforeEach(() => {
+    prevEnv = config.env;
+    prevRole = config.cluster.role;
+    config.env = "development";
+    config.cluster.role = "standalone";
+  });
+
+  afterEach(() => {
+    config.env = prevEnv;
+    config.cluster.role = prevRole;
+  });
+
+  const pairRequest = (phoneNumber: string) =>
+    new Request(`http://localhost/connections/${phoneNumber}/pairing-code`, {
+      method: "POST",
+    });
+
+  it("returns the code from the connection", async () => {
+    const spy = spyOn(baileys, "requestPairingCode").mockImplementation(
+      async () => "ABCD-1234",
+    );
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(pairRequest("+551234567890"));
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: { code: "ABCD-1234" } });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("propagates a missing socket instead of inventing a code", async () => {
+    const spy = spyOn(baileys, "requestPairingCode").mockImplementation(
+      async () => {
+        throw new Error("Connection Closed");
+      },
+    );
+    try {
+      const app = new Elysia().use(connectionsController);
+      const res = await app.handle(pairRequest("+551234567890"));
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(await res.text()).not.toContain("ABCD");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

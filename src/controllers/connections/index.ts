@@ -251,6 +251,25 @@ const connectionsController = new Elysia({
     },
   )
   .post(
+    "/:phoneNumber/pairing-code",
+    async ({ params }) => {
+      const { phoneNumber } = params;
+      const code = await baileys.requestPairingCode(phoneNumber);
+      return { data: { code } };
+    },
+    {
+      params: phoneNumberParams,
+      detail: {
+        summary: "Request a WhatsApp phone-number pairing code",
+        responses: {
+          200: {
+            description: "Pairing code generated",
+          },
+        },
+      },
+    },
+  )
+  .post(
     "/:phoneNumber/import-session",
     async ({ params, body, apiKeyHash, set }) => {
       const { phoneNumber } = params;
